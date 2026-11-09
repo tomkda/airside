@@ -244,3 +244,11 @@ input[type=range] { width: 100%; accent-color: var(--ink); }
 .budget { display: flex; height: 8px; border-radius: 2px; overflow: hidden; margin: 2px 0 4px; background: rgba(40,36,30,0.08); }
 .budget i { display: block; min-width: 2px; }
 .budget .b-hold { background: rgba(47,93,124,0.35); } .budget .b-spine { background: rgba(40,36,30,0.15); } .budget .b-shop { background: rgba(168,112,48,0.55); }
+
+/* ---------- v0.7: concourse commerce */
+.chip-s.df { background: rgba(94,122,85,0.7); }
+.chip-s.ramp { width: 28px; background: linear-gradient(90deg, rgb(226,214,188), rgb(194,133,46), rgb(140,48,28)); }
+.sbar { display: inline-block; width: 64px; height: 6px; border-radius: 2px; background: rgba(40,36,30,0.1); vertical-align: 1px; overflow: hidden; }
+.sbar i { display: block; height: 100%; background: rgb(194,133,46); }
+.kv dd .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: var(--r); padding: 2px; margin-bottom: 4px; }
+.kv dd .seg button { font: 600 11px var(--display); padding: 5px 8px; min-height: 26px; }

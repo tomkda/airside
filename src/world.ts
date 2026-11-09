@@ -5,13 +5,20 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ShopType } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ShopType, TenantId } from './config';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, Budget } from './bands';
+import { letLots } from './commerce';
 
-export interface Zone { id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[] }
+export interface Zone {
+  id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
+  /** Concourses (v0.7): walk-through duty free at the security exit, who holds each lot, and the running footfall count. */
+  dutyFree?: boolean; tenants?: Record<string, TenantId>; flow?: Flow;
+}
+/** Footfall along a concourse's long axis, one entry per COMMERCE.binM: weighted passers, raw passers, and spare minutes summed. */
+export interface Flow { w: number[]; n: number[]; s: number[] }
 export interface Runway { id: number; a: Pt; b: Pt }
 export type WayKind = 'taxi' | 'road' | 'walk';
 export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lanes: number }
@@ -19,9 +26,19 @@ export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: 
 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1 });
 
-/** Saves from before v0.6 had separate gate areas and concourses; both become one concourse type. */
+/** Bring older saves up to date. */
 export function migrateWorld(w: World): World {
+  // v0.6: separate gate areas and concourses become one concourse type.
   for (const z of w.zones) if ((z.type as string) === 'gates') { z.type = 'concourse'; z.leased = undefined; }
+  // v0.7: concourses gain tenants, footfall and a duty-free toggle. Older saves start with none; tenants then bid
+  // from the plan's structure until footfall builds up. Drop anything malformed.
+  for (const z of w.zones) {
+    if (z.type !== 'concourse') { delete z.dutyFree; delete z.tenants; delete z.flow; continue; }
+    z.dutyFree = !!z.dutyFree;
+    if (z.tenants && typeof z.tenants !== 'object') delete z.tenants;
+    const f = z.flow;
+    if (f && !(Array.isArray(f.w) && Array.isArray(f.n) && Array.isArray(f.s) && f.w.length === f.n.length && f.n.length === f.s.length)) delete z.flow;
+  }
   return w;
 }
 
@@ -45,7 +62,25 @@ export interface Route { pts: Pt[]; lvs: Level[]; len: number }
 export interface Crosswalk { p: Pt; ang: number; width: number }
 export interface TaxiLabel { text: string; p: Pt; ang: number }
 /** A commercial lot carved from a concourse: what it is, how big, and how many customers it holds. */
-export interface Shop { zone: Zone; i: number; pts: Pt[]; door: Pt; type: ShopType; kind: string; area: number; cap: number; window: boolean; rank: number }
+export interface Shop {
+  zone: Zone; i: number; pts: Pt[]; door: Pt; type: ShopType; kind: string; area: number; cap: number; window: boolean; rank: number;
+  /** key: stable within the concourse while the lot keeps its place (side + frontage). id: zone id + key, unique overall. */
+  key: string; id: string;
+  side: 'A' | 'B' | 'E'; u0: number; u1: number; depth: number; frontage: number;
+  tenant: TenantId;
+  // scores, 0–1 unless noted
+  vis: number;              // how much of the spine sees the shopfront
+  near: number;             // closeness to the security exit
+  far: number;              // distance along the pier from the security exit
+  gates: number;            // seats of the gates within reach (raw; normalised per concourse into gateScore)
+  gateScore: number;
+  prior: number;            // structural footfall estimate: passengers a day whose way to the gate passes the lot
+  foot: number;             // weighted passers a day (measured once the sim has counted, else the prior)
+  dwell: number;            // average spare minutes of those passers
+  measured: boolean;
+  footScore: number; dwellScore: number;
+  bids: Partial<Record<TenantId, number>>; bid: number; rent: number;   // rent: minimum guarantee, $ per day
+}
 export interface Terminal {
   id: number; name: string; zones: Zone[]; active: boolean; problems: string[]; bbox: Rect;
   gateAreas: number; gates: number; shops: number;
@@ -248,8 +283,12 @@ export function derive(world: World): Derived {
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     const C = carveConcourse(z, world, gates);
     shops.set(z.id, C.shops); budgets.set(z.id, C.budget); bandItems.set(z.id, C.items);
-    const n = C.shops.length;
-    lease.set(z.id, { max: n, count: n ? clamp(z.leased ?? Math.ceil(n * 0.4), 1, n) : 0 });
+  }
+  // ---- Tenants bid for the lots by footfall, visibility, dwell and position (see commerce.ts); best lots lease first.
+  letLots(world, shops, budgets);
+  for (const [id, list] of shops) {
+    const z = world.zones.find(q => q.id === id)!; const n = list.length;
+    lease.set(id, { max: n, count: n ? clamp(z.leased ?? Math.ceil(n * 0.4), 1, n) : 0 });
   }
 
   // ---- Airfield network: runways, player taxiways and gate stubs (stands join the taxiway they face).

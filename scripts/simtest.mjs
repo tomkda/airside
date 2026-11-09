@@ -19,7 +19,7 @@ sim.onDayEnd = r => {
     '| flights', s.flights, 'delayed', s.delayed, 'cxl', s.cancelled,
     '| pax dep', s.paxDep, 'arr', s.paxArr, 'missed', s.missed,
     '| waits avg/max curb', w('curb'), 'checkin', w('checkin'), 'sec', w('security'), 'claim', w('claim'),
-    '| shops/food/lounge $', Math.round(s.rev.shops), Math.round(s.rev.food), Math.round(s.rev.lounges), 'leased', sim.world.zones.filter(z=>z.type==='concourse').map(z=>sim.d.lease.get(z.id).count+'/'+sim.d.lease.get(z.id).max).join(','), '| sat', r.sat.toFixed(0), 'onTime', (r.onTime * 100).toFixed(0) + '%', '| profit/day $', Math.round(r.profit), 'maxLivePax', maxPax);
+    '| shops/food/lounge/dutyfree/rent $', Math.round(s.rev.shops), Math.round(s.rev.food), Math.round(s.rev.lounges), Math.round(s.rev.dutyfree), Math.round(s.rev.rent), 'leased', sim.world.zones.filter(z=>z.type==='concourse').map(z=>sim.d.lease.get(z.id).count+'/'+sim.d.lease.get(z.id).max).join(','), '| sat', r.sat.toFixed(0), 'onTime', (r.onTime * 100).toFixed(0) + '%', '| profit/day $', Math.round(r.profit), 'maxLivePax', maxPax);
   maxPax = 0;
 };
 const t0 = Date.now();

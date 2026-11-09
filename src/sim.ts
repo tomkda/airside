@@ -2,12 +2,13 @@
 // Time unit: minutes of the day. One sim "day" stands in for several calendar days.
 // Everything moves on networks: aircraft on taxiways, cars on roads, people through doors, cores and sidewalks.
 import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
-import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType } from './config';
-import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, derive, runwayUsable, unitsOf, Frame } from './world';
+import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE } from './config';
+import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
+import { flowBins, newFlow, tenantsOf } from './commerce';
 import { DJ, dijkstra, trace, nearestNode } from './net';
 
 // ------------------------------------------------------------------ entities
-export type Step = 'checkin' | 'security' | 'shop' | 'gate' | 'claim' | 'curb' | 'lot';
+export type Step = 'checkin' | 'security' | 'dutyfree' | 'shop' | 'gate' | 'claim' | 'curb' | 'lot';
 
 export interface Party {
   id: number; dep: boolean; mode: 'curb' | 'park'; pax: Pax[]; atCurb: number; car?: Car; flight: Flight;
@@ -21,6 +22,8 @@ export interface Pax {
   stage: 'walk' | 'queue' | 'service' | 'dwell' | 'waitBag' | 'curbWait' | 'shopping' | 'stuck' | 'done';
   proc?: Proc; since: number; serviceEnd: number; bagNo: number;
   walked: number; sat: number; mood: 0 | 1 | 2; why?: string; stranded: boolean; premium: boolean; shop?: Shop;
+  browse?: boolean;            // in duty free: stopped to shop (true) or just walking the serpentine (false)
+  fz?: number; fb?: number; fe?: number;   // footfall: concourse, and the bins already counted there
 }
 
 export interface Car {
@@ -51,7 +54,7 @@ export interface DayStats {
   paxDep: number; paxArr: number; missed: number; stranded: number; satSum: number; satN: number;
   waits: Record<WaitKey, { sum: number; n: number; max: number }>;
   walkSum: number; walkN: number; flights: number; delayed: number; cancelled: number; delaySum: number;
-  rev: { slots: number; pax: number; shops: number; food: number; lounges: number; parking: number; curb: number };
+  rev: { slots: number; pax: number; shops: number; food: number; lounges: number; dutyfree: number; rent: number; parking: number; curb: number };
   cost: { staff: number; upkeep: number };
   lotFull: number;
 }
@@ -66,8 +69,11 @@ const emptyStats = (): DayStats => ({
   paxDep: 0, paxArr: 0, missed: 0, stranded: 0, satSum: 0, satN: 0,
   waits: { curb: { sum: 0, n: 0, max: 0 }, checkin: { sum: 0, n: 0, max: 0 }, security: { sum: 0, n: 0, max: 0 }, claim: { sum: 0, n: 0, max: 0 } },
   walkSum: 0, walkN: 0, flights: 0, delayed: 0, cancelled: 0, delaySum: 0,
-  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, parking: 0, curb: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0,
+  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, dutyfree: 0, rent: 0, parking: 0, curb: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0,
 });
+
+/** All revenue lines for a day. rent is the top-up when a lot's sales share falls short of its minimum guarantee. */
+export const revTotal = (r: DayStats['rev']) => r.slots + r.pax + r.shops + r.food + r.lounges + r.dutyfree + r.rent + r.parking + r.curb;
 
 export const DAY_START = 4 * 60;
 export const DAY_END = 24 * 60;
@@ -108,6 +114,11 @@ export class Sim {
   private bagCounter: Record<number, number> = {};
   shopLoad = new Map<Shop, number>();
   shopDay = new Map<number, { visits: number; rev: number }>();
+  /** Per lot (Shop.id): today's visits, revenue and, for duty free, passers; and yesterday's, for the heatmap. */
+  lotDay = new Map<string, { visits: number; rev: number; passed: number }>();
+  lotPrev = new Map<string, { visits: number; rev: number; passed: number }>();
+  /** Today's footfall per concourse, in COMMERCE.binM bins along its long axis. Folded into zone.flow at day end. */
+  flowDay = new Map<number, Flow>();
   onDayEnd?: (r: Report) => void;
 
   constructor(world: World, seed = 7) {
@@ -211,7 +222,7 @@ export class Sim {
   startDay() {
     this.t = DAY_START;
     this.flights = []; this.pax = []; this.cars = []; this.pending = [];
-    this.openArr.clear(); this.bagCounter = {}; this.noted.clear(); this.shopLoad.clear(); this.shopDay.clear();
+    this.openArr.clear(); this.bagCounter = {}; this.noted.clear(); this.shopLoad.clear(); this.shopDay.clear(); this.lotDay.clear(); this.flowDay.clear();
     this.gateBusy.clear(); this.rwFree.clear();
     for (const p of this.procs.values()) {
       p.queue = []; p.busy = p.busy.map(() => null); p.served = 0; p.waitSum = 0; p.recentWait = 0;
@@ -664,12 +675,17 @@ export class Sim {
         const T = this.termOf(p.flight);
         // Lots along the way to the gate win: score by detour, then pick among the best few.
         const gd = p.flight.gate.door;
+        // First what they want: a meal or a drink if they have time, otherwise a browse. Premium passengers head for a lounge.
+        const spare = p.flight.schedDep - COMMERCE.boardLead - this.t;
+        const want: ShopType = p.premium && spare > 40 && this.r() < COMMERCE.wantLounge ? 'lounge' : this.r() < (spare > 45 ? COMMERCE.wantFood[1] : COMMERCE.wantFood[0]) ? 'food' : 'shop';
         const cands: { sh: Shop; c: number }[] = [];
-        for (const z of T?.zones ?? []) if (z.type === 'concourse') for (const sh of this.d.shops.get(z.id) ?? []) {
-          if (!this.leased(sh) || (sh.type === 'lounge' && !p.premium)) continue;
+        for (let pass = 0; pass < 2 && !cands.length; pass++) for (const z of T?.zones ?? []) if (z.type === 'concourse') for (const sh of this.d.shops.get(z.id) ?? []) {
+          if (!this.leased(sh) || sh.tenant === 'dutyfree' || (sh.type === 'lounge' && !p.premium)) continue;
+          if (pass === 0 && sh.type !== want) continue;
           if ((this.shopLoad.get(sh) ?? 0) >= sh.cap) continue;
           const detour = Math.hypot(sh.door.x - here.x, sh.door.y - here.y) + Math.hypot(sh.door.x - gd.x, sh.door.y - gd.y) - Math.hypot(gd.x - here.x, gd.y - here.y);
-          cands.push({ sh, c: detour * (0.6 + this.r() * 0.8) - (sh.type === 'lounge' ? 200 : 0) });
+          // a shopfront people can see from the spine draws them: worth up to ~40 m of detour
+          cands.push({ sh, c: detour * (0.6 + this.r() * 0.8) - sh.vis * 40 - (sh.type === 'lounge' ? 400 : 0) });
         }
         cands.sort((a, b) => a.c - b.c);
         const top = cands.slice(0, 6);
@@ -678,6 +694,12 @@ export class Sim {
         if (!pick || !r) { p.steps.shift(); this.advance(p); return; }
         p.shop = pick; this.shopLoad.set(pick, (this.shopLoad.get(pick) ?? 0) + 1);
         route = r; break;
+      }
+      case 'dutyfree': {
+        const sh = this.dutyFreeFor(p);
+        const r = sh && go(sh.door, sh.zone.level);
+        if (!sh || !r) { p.steps.shift(); this.advance(p); return; }
+        p.shop = sh; route = r; break;
       }
       case 'gate': {
         const g = p.flight.gate;
@@ -734,17 +756,65 @@ export class Sim {
 
   termOf(f: Flight): Terminal | undefined { return this.d.termOf.get(f.gate.zone.id); }
   inTerm(z: Zone, T?: Terminal) { return !T || this.d.termOf.get(z.id) === T; }
-  leased(sh: Shop) { return sh.rank < (this.d.lease.get(sh.zone.id)?.count ?? 0); }
+  leased(sh: Shop) { return sh.rank < (this.d.lease.get(sh.zone.id)?.count ?? 0) && sh.bid >= COMMERCE.minBid; }
+
+  /** The walk-through duty free a departing passenger crosses after security: one in their terminal they can reach. */
+  dutyFreeFor(p: Pax): Shop | undefined {
+    const T = this.termOf(p.flight);
+    for (const z of T?.zones ?? []) if (z.type === 'concourse' && z.dutyFree) {
+      const sh = this.d.shops.get(z.id)?.find(q => q.tenant === 'dutyfree');
+      if (sh && this.d.zoneReach(z.id, p.flight.gate.zone.id)) return sh;
+    }
+    return undefined;
+  }
+
+  lotLedger(sh: Shop) {
+    let e = this.lotDay.get(sh.id);
+    if (!e) { e = { visits: 0, rev: 0, passed: 0 }; this.lotDay.set(sh.id, e); }
+    return e;
+  }
+
+  /** Count a departing passenger across the footfall bins they walked over since last tick, weighted by spare time. */
+  countFootfall(p: Pax) {
+    const z = this.d.zoneAt(p, p.level);
+    if (!z || z.type !== 'concourse') { p.fz = undefined; return; }
+    const B = this.d.budgets.get(z.id); if (!B) return;
+    const n = flowBins(B.long);
+    let f = this.flowDay.get(z.id);
+    if (!f || f.w.length !== n) { f = newFlow(n); this.flowDay.set(z.id, f); }
+    const u = B.horiz ? p.x - z.x : p.y - z.y;
+    const b = clamp(Math.floor(u / COMMERCE.binM), 0, n - 1);
+    const spare = Math.max(0, p.flight.schedDep - COMMERCE.boardLead - this.t);
+    const w = clamp(spare / COMMERCE.spareRef, COMMERCE.spareMin, COMMERCE.spareCap);
+    // each bin counts a passenger once per concourse visit: [fb, fe] is the stretch already counted
+    const add1 = (k: number) => { f!.w[k] += w; f!.n[k]++; f!.s[k] += spare; };
+    if (p.fz !== z.id || p.fb === undefined || p.fe === undefined) { add1(b); p.fb = p.fe = b; }
+    else if (b < p.fb) { for (let k = b; k < p.fb; k++) add1(k); p.fb = b; }
+    else if (b > p.fe) { for (let k = p.fe + 1; k <= b; k++) add1(k); p.fe = b; }
+    p.fz = z.id;
+  }
 
   /** Pay for the visit (pro rata if cut short), free the unit, head to the gate. */
   leaveShop(p: Pax) {
     const sh = p.shop; if (!sh) return;
+    if (sh.tenant === 'dutyfree') {
+      if (p.browse) {
+        const take = COMMERCE.dfTake * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15);
+        this.stats.rev.dutyfree += take;
+        const L = this.lotLedger(sh); L.visits++; L.rev += take;
+        const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; day.rev += take; this.shopDay.set(sh.zone.id, day);
+      }
+      p.shop = undefined; p.browse = undefined;
+      if (p.stage !== 'done') { p.steps.shift(); p.stage = 'walk'; this.advance(p); }
+      return;
+    }
     const S = TUNE.shops[sh.type]; const m = S.min;
     const frac = clamp((this.t - p.since) / ((m[0] + m[1]) / 2), 0.3, 1);
     const take = S.take * frac * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15);
     const key: Record<ShopType, 'shops' | 'food' | 'lounges'> = { shop: 'shops', food: 'food', lounge: 'lounges' };
     this.stats.rev[key[sh.type]] += take;
     const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; day.rev += take; this.shopDay.set(sh.zone.id, day);
+    const L = this.lotLedger(sh); L.visits++; L.rev += take;
     if (sh.type !== 'shop') p.sat += 3;
     this.shopLoad.set(sh, Math.max(0, (this.shopLoad.get(sh) ?? 1) - 1));
     p.shop = undefined;
@@ -784,6 +854,7 @@ export class Sim {
           if (dd <= step) { p.x = tgt.x; p.y = tgt.y; p.level = p.pathLv[0]; p.path.shift(); p.pathLv.shift(); step -= dd; p.walked += dd; }
           else { p.x += ((tgt.x - p.x) / dd) * step; p.y += ((tgt.y - p.y) / dd) * step; p.walked += step; step = 0; }
         }
+        if (p.dep && (p.steps[0] === 'gate' || p.steps[0] === 'shop' || p.steps[0] === 'dutyfree')) this.countFootfall(p);
         if (!p.path.length) this.arrive(p);
         p.mood = p.sat < 45 ? 2 : p.sat < 65 ? 1 : 0;
       } else if (p.stage === 'queue') {
@@ -817,6 +888,21 @@ export class Sim {
       case 'checkin': case 'security':
         if (!p.proc || !this.procs.has(p.proc.zone.id)) { this.advance(p); return; }
         p.stage = 'queue'; p.since = this.t; p.proc.queue.push(p); return;
+      case 'dutyfree': {
+        const sh = p.shop;
+        if (!sh) { p.steps.shift(); this.advance(p); return; }
+        // everyone walks the serpentine; about 60% stop to browse. People short of time resent the detour.
+        const spare = p.flight.schedDep - COMMERCE.boardLead - this.t;
+        if (spare < COMMERCE.dfHurry) p.sat -= COMMERCE.dfHurrySat;
+        p.browse = spare > 8 && this.r() < COMMERCE.dfCapture;
+        const b = COMMERCE.dfBrowse;
+        p.stage = 'shopping'; p.since = this.t;
+        p.serviceEnd = this.t + COMMERCE.dfWalk + (p.browse ? b[0] + this.r() * (b[1] - b[0]) : 0);
+        this.lotLedger(sh).passed++;
+        const c = { x: (sh.pts[0].x + sh.pts[2].x) / 2, y: (sh.pts[0].y + sh.pts[2].y) / 2 };
+        p.x = c.x + (this.r() - .5) * 14; p.y = c.y + (this.r() - .5) * 10;
+        return;
+      }
       case 'shop': {
         const sh = p.shop!; const m = TUNE.shops[sh.type].min;
         p.stage = 'shopping'; p.since = this.t; p.serviceEnd = this.t + m[0] + this.r() * (m[1] - m[0]);
@@ -862,6 +948,7 @@ export class Sim {
         if (b && t >= b.serviceEnd) {
           proc.busy[i] = null; proc.served++; b.proc = undefined; b.steps.shift();
           if (proc.type === 'security' && b.steps[0] === 'gate' && b.flight.schedDep - 25 - t > 25 && this.r() < 0.85) b.steps.unshift('shop');
+          if (proc.type === 'security' && this.dutyFreeFor(b)) b.steps.unshift('dutyfree');
           this.advance(b);
         }
         if (!proc.busy[i] && proc.queue.length) {
@@ -1084,6 +1171,22 @@ export class Sim {
     s.cost.upkeep = this.world.zones.reduce((u, z) => u + z.w * z.h * ZONES[z.type].upkeepPerM2, 0)
       + this.d.runways.reduce((u, r) => u + r.length * 4, 0)
       + this.world.ways.reduce((u, w) => u + dist(w.a, w.b) * (w.kind === 'taxi' ? 1.2 : w.kind === 'road' ? 0.8 : 0.2), 0);
+    // Rent: each leased lot pays the greater of its sales share and its minimum guarantee (ACRP Report 54).
+    for (const list of this.d.shops.values()) for (const sh of list) if (this.leased(sh)) {
+      const L = this.lotLedger(sh); const short = sh.rent - L.rev;
+      if (short > 0) { s.rev.rent += short; L.rev += short; }
+    }
+    this.lotPrev = new Map(this.lotDay);
+    // Footfall: fold today's count into each concourse's running count, so scores move over two or three days.
+    const before = new Map<number, Record<string, string>>();
+    for (const z of this.world.zones) if (z.type === 'concourse') {
+      const B = this.d.budgets.get(z.id); if (!B) continue;
+      const n = flowBins(B.long); const today = this.flowDay.get(z.id) ?? newFlow(n);
+      const old = z.flow && z.flow.w.length === n ? z.flow : undefined; const k = old ? COMMERCE.memory : 0;
+      const mix = (a: number[] | undefined, b: number[]) => b.map((x, i) => Math.round(((a?.[i] ?? 0) * k + x * (1 - k)) * 10) / 10);
+      z.flow = { w: mix(old?.w, today.w), n: mix(old?.n, today.n), s: mix(old?.s, today.s) };
+      before.set(z.id, Object.fromEntries((this.d.shops.get(z.id) ?? []).map(sh => [sh.key, sh.kind])));
+    }
     // Tenants: busy concourses lease more units, quiet ones lose a tenant.
     for (const z of this.world.zones) if (z.type === 'concourse') {
       const n = this.d.shops.get(z.id)?.length ?? 0; if (!n) continue;
@@ -1094,7 +1197,7 @@ export class Sim {
       else if (per < 8) next = Math.max(1, cur - 1);
       if (next !== cur) { z.leased = next; if (next > cur) this.note(`${next - cur} new tenant${next - cur > 1 ? 's' : ''} opened in a concourse (${next} of ${n} units)`); }
     }
-    const rev = s.rev.slots + s.rev.pax + s.rev.shops + s.rev.food + s.rev.lounges + s.rev.parking + s.rev.curb;
+    const rev = revTotal(s.rev);
     const profit = rev - (s.cost.staff + s.cost.upkeep);
     const period = this.periodDays;
     if (this.moneyOn) this.money += profit * period;
@@ -1108,6 +1211,16 @@ export class Sim {
     this.calDays += period; this.day++;
     this.onDayEnd?.(rep);
     this.relayout();
+    // Re-let: with the new scores, tenants bid again. Save who holds what, and say what moved.
+    for (const z of this.world.zones) if (z.type === 'concourse') {
+      const list = this.d.shops.get(z.id) ?? []; const was = before.get(z.id) ?? {};
+      const moved = list.filter(sh => was[sh.key] && was[sh.key] !== sh.kind && this.leased(sh));
+      if (moved.length) {
+        const eg = moved.slice(0, 2).map(sh => `${was[sh.key]} → ${sh.kind}`).join(', ');
+        this.note(`Concourse ${this.d.gateLetter.get(z.id) ?? ''}: ${moved.length} lot${moved.length > 1 ? 's' : ''} re-let as footfall shifted (${eg}${moved.length > 2 ? ', …' : ''})`);
+      }
+      z.tenants = tenantsOf(list);
+    }
     this.startDay();
   }
 }
