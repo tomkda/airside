@@ -1,4 +1,4 @@
-# Airport Builder — browser alpha
+# Airside — airport builder, browser alpha
 
 Phase 1 vertical slice from the design doc. You draw runways, block out terminal modules on two levels, and the game fits them out procedurally. Aircraft, passengers, bags and cars then flow through what you built. Lines grow, moods sour, and every failure can be fixed with staff, space or layout.
 
@@ -10,8 +10,11 @@ npm run build        # writes dist/index.html; open it in any browser
 npm run dev          # rebuilds on every save
 npm run check        # TypeScript type-check
 npm run simtest      # headless: runs 3 sim days and prints the daily report
-node scripts/stress.mjs   # 60 days with mid-day demolitions and runway changes
+node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
+npm test                  # all three sims
 ```
+
+CI runs the type-check, build and all three sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
 There is no server and no runtime dependency. The build is one self-contained HTML file (~100 KB).
 
