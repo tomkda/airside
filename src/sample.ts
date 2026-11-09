@@ -37,7 +37,6 @@ export function sampleWorld(): World {
   way('road', 2780, 2955, 3320, 2955, 0, 2);
   way('road', 2950, 2955, 2950, 3010, 0, 2);
 
-  // Sidewalk from the lot to the arrivals curb, crossing the service road and the frontage road.
-  way('walk', 3100, 3010, 3100, 2888, 0, 0);
+  // No sidewalk is drawn: the lot lays its own to the arrivals curb (v0.9), with crosswalks over both roads.
   return w;
 }

@@ -6,7 +6,7 @@ import {
   rectsOverlap, intersectRect, inRect, rectSegDist, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
 import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ShopType, TenantId, SITES } from './config';
-import { autoFrontage, curbCuts, AutoTag, DeckSpan, FrontGuide } from './frontage';
+import { autoFrontage, curbCuts, autoWalks, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES } from './gates';
 import { layoutZone, LItem } from './layout';
@@ -153,6 +153,8 @@ export interface Derived {
   longest: number; maxCls: number; coverage: number;
   /** v0.8: every zone, including curbs grown along roads; upper road decks; road guides along terminal faces. */
   zones: Zone[]; decks: DeckSpan[]; frontGuides: FrontGuide[];
+  /** v0.9: sidewalks parking lots laid for themselves (generated, never saved). */
+  autoWalks: Way[];
   zoneAt(p: Pt, lv: Level): Zone | undefined;
   pedRoute(p: Pt, lv: Level, q: Pt, lvq: Level): Route | null;
   zoneReach(a: number, b: number): boolean;
@@ -473,7 +475,9 @@ export function derive(source: World): Derived {
     if (cores.some(k => !k.frontage && Math.hypot(k.x - c.x, k.y - c.y) < 40)) continue;
     vertical(c, zonesAt(c, 1), zonesAt(c, 0), false);
   }
-  const walks = world.ways.filter(w => w.kind === 'walk');
+  // v0.9: a lot that no sidewalk reaches lays its own to the nearest curb (frontage.ts)
+  const laid = autoWalks(world, zs, aprons.map(a => a.rect));
+  const walks = [...world.ways.filter(w => w.kind === 'walk'), ...laid];
   const walkNet = buildNet(walks.map(w => ({ a: w.a, b: w.b, kind: 'walk', cls: 0, ref: w.id })), 4);
   const wOff = ped.length;
   for (const p of walkNet.nodes) ped.push({ p, level: 0, zones: zs.filter(z => z.level === 0 && inRect(p, z, 3)).map(z => z.id) });
@@ -683,7 +687,7 @@ export function derive(source: World): Derived {
     runways, aprons, gates, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
-    zones: zs, decks: FR.decks, frontGuides: FR.guides,
+    zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
   };
 }
 

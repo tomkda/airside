@@ -1,21 +1,35 @@
-// 3D view (v0.8): the same sim, seen in perspective with an orbiting camera. Reads sim state, never writes it.
+// 3D view: the same sim, seen in perspective with an orbiting camera. Reads sim state, never writes it.
 // World plan coordinates (x, y) map to three.js (x, up, y); heights are real metres (LEVELS z0 / z1).
-// The static scene (ground, pavements, buildings, decks, fit-out) is rebuilt only when the layout, the level of
-// detail or the selection changes; aircraft, cars and people are instanced and move every frame.
+//
+// v0.9 detail pass. The look is a presentation model: warm white roofs, glazed facades with mullions, painted
+// runway and apron markings, model trees, a control tower, jet bridges that dock, turnaround vehicles, parked cars,
+// curb canopies, and a night that lights up (glazing, runway and taxiway lights, apron floodlights, street lamps).
+//
+// The static scene is rebuilt only when the layout, the level of detail or the selection changes; aircraft,
+// bridges, vehicles, cars and people are instanced and move every frame. New buildings rise into place.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Pt, Rect, dist, sub, norm } from './geom';
-import { PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE } from './config';
-import type { Sim } from './sim';
+import { Pt, Rect, dist, sub, norm, add, mul, lerpPt } from './geom';
+import { PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES } from './config';
+import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
 import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
+import { scenery } from './scenery';
+import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
+const ROOF = '#F1ECE2', PLINTH = '#8C8576', MULLION = '#E4DDCF';
+const GLASS: Record<ZoneType, string> = {
+  checkin: '#B6C3C4', security: '#AEB9BA', concourse: '#BBC8C9', claim: '#B1BDBE', curb: '#A49E92', parking: '#C9BEA8',
+};
 const MOD_COL: Record<ZoneType, string> = {
   checkin: '#CDBFA6', security: '#BDB29E', concourse: '#D4CBB8', claim: '#C3B9A6', curb: '#A49E92', parking: '#C9BEA8',
 };
 const LOT_COL: Record<string, string> = { shop: '#6E6252', food: '#B07A3E', lounge: '#4D7390' };
 const ITEM_H: Record<string, number> = { counter: 1.1, xray: 1.6, body: 2.2, divest: 0.9, recompose: 0.9, kiosk: 1.4, wc: 3, office: 3, table: 0.75, belt: 0.5, carousel: 0.6 };
+const CAR_COLS = ['#3A352D', '#8C8576', '#E9E4DA', '#B0472B', '#2F4E78', '#6E7F86', '#CFC6B4', '#5E7A55', '#1F1C18'];
+const YELLOW = '#D6A43C', WHITE = '#F0ECE2';
+const RISE_MS = 1400;
 
 export class Renderer3D {
   canvas: HTMLCanvasElement;
@@ -25,12 +39,29 @@ export class Renderer3D {
   controls: OrbitControls;
   private stat = new THREE.Group();
   private ghostG = new THREE.Group();
+  private riseG = new THREE.Group();
   private key = '';
   private dRef: unknown = null; private dGen = 0;
   private sun: THREE.DirectionalLight; private hemi: THREE.HemisphereLight;
-  private planes: { fus: THREE.InstancedMesh; wing: THREE.InstancedMesh; tail: THREE.InstancedMesh };
-  private cars: THREE.InstancedMesh;
+  private skyDay: THREE.Texture; private skyNight: THREE.Texture;
+  // shared materials whose look follows the time of day
+  private glassMat = new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#F4C46A', emissiveIntensity: 0 });
+  private cityMat = new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#E8B868', emissiveIntensity: 0 });
+  private lightMats: THREE.PointsMaterial[] = [];      // moving lights (headlights, beacons): live for the session
+  private statLights: THREE.PointsMaterial[] = [];     // fixed lights: rebuilt with the static scene
+  private poolMat: THREE.MeshBasicMaterial;
+  // moving things
+  private planeGeos: PlaneGeo[];
+  private planes: { body: THREE.InstancedMesh; fin: THREE.InstancedMesh; eng: THREE.InstancedMesh }[];
+  private bridges: THREE.InstancedMesh; private drums: THREE.InstancedMesh;
+  private gse: THREE.InstancedMesh;
+  private cars: THREE.InstancedMesh; private cabs: THREE.InstancedMesh;
+  private parked: THREE.InstancedMesh; private parkedKey = '';
   private people: THREE.InstancedMesh;
+  private heads: THREE.Points; private headPos = new Float32Array(3000 * 3);
+  private beacons: THREE.Points; private beaconPos = new Float32Array(400 * 3);
+  // construction: zones appear by rising out of the ground
+  private born = new Map<number, number>(); private known: Set<number> | null = null;
   private tmp = new THREE.Object3D();
   private ray = new THREE.Raycaster();
   private col = new THREE.Color();
@@ -41,33 +72,54 @@ export class Renderer3D {
     ren.canvas.parentElement!.insertBefore(this.canvas, ren.canvas);
     this.gl = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, preserveDrawingBuffer: true });
     this.gl.shadowMap.enabled = true; this.gl.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.camera = new THREE.PerspectiveCamera(40, 1, 4, 60000);
+    this.gl.outputColorSpace = THREE.SRGBColorSpace;
+    this.camera = new THREE.PerspectiveCamera(38, 1, 2, 60000);
     // the 2D canvas stays on top and transparent, so the UI keeps one set of pointer handlers
     this.controls = new OrbitControls(this.camera, ren.canvas);
     this.controls.enableDamping = true; this.controls.dampingFactor = 0.12;
-    this.controls.maxPolarAngle = Math.PI * 0.47; this.controls.minDistance = 40; this.controls.maxDistance = 16000;
+    this.controls.maxPolarAngle = Math.PI * 0.48; this.controls.minDistance = 25; this.controls.maxDistance = 16000;
     this.controls.screenSpacePanning = false;
 
-    this.scene.background = new THREE.Color('#E9E1CF');
-    this.scene.fog = new THREE.Fog('#E9E1CF', 9000, 26000);
-    this.hemi = new THREE.HemisphereLight('#F6F0E4', '#9C9078', 1.15);
-    this.sun = new THREE.DirectionalLight('#FFF2DA', 2.7);
-    this.sun.castShadow = true; this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.bias = -0.0004;
-    this.scene.add(this.hemi, this.sun, this.sun.target, this.stat, this.ghostG);
+    this.skyDay = skyTexture('#CFDCE0', '#EFE6D3'); this.skyNight = skyTexture('#11152A', '#3A3B52');
+    this.scene.background = this.skyDay;
+    this.scene.fog = new THREE.Fog('#EFE6D3', 7000, 24000);
+    this.hemi = new THREE.HemisphereLight('#F4EEE2', '#8C8270', 0.85);
+    this.sun = new THREE.DirectionalLight('#FFEBCB', 1.9);
+    this.sun.castShadow = true; this.sun.shadow.mapSize.set(2048, 2048); this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.4;
+    this.scene.add(this.hemi, this.sun, this.sun.target, this.stat, this.ghostG, this.riseG);
+    this.poolMat = new THREE.MeshBasicMaterial({ map: glowTexture('#FFD58A'), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
 
-    const lam = (c: string) => new THREE.MeshLambertMaterial({ color: c });
-    this.planes = {
-      fus: new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), lam('#F4F1EA'), 400),
-      wing: new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), lam('#E3DED3'), 400),
-      tail: new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), lam('#2F5D7C'), 400),
+    const lam = (c: string, side: THREE.Side = THREE.FrontSide) => new THREE.MeshLambertMaterial({ color: c, side });
+    const inst = (g: THREE.BufferGeometry, m: THREE.Material, n: number, colors = false) => {
+      const x = new THREE.InstancedMesh(g, m, n); x.castShadow = true; x.receiveShadow = true; x.count = 0; x.frustumCulled = false;
+      if (colors) x.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+      this.scene.add(x); return x;
     };
-    this.cars = new THREE.InstancedMesh(new THREE.BoxGeometry(4.6, 1.5, 1.9), lam('#ffffff'), 3000);
-    this.people = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.32, 0.32, 1.7, 6), lam('#ffffff'), 8000);
-    for (const m of [this.planes.fus, this.planes.wing, this.planes.tail, this.cars, this.people]) { m.castShadow = true; m.count = 0; m.frustumCulled = false; this.scene.add(m); }
-    this.cars.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(3000 * 3), 3);
-    this.people.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(8000 * 3), 3);
+    this.planeGeos = CLASSES.map(c => aircraftGeo(c.cls));
+    this.planes = this.planeGeos.map(pg => ({
+      body: inst(pg.body, lam('#F5F2EB', THREE.DoubleSide), 160),
+      fin: inst(pg.fin, lam('#ffffff', THREE.DoubleSide), 160, true),
+      eng: inst(pg.engines, lam('#9A9C9E', THREE.DoubleSide), 160),
+    }));
+    this.bridges = inst(new THREE.BoxGeometry(1, 1, 1), lam('#DCD5C6'), 400);
+    this.drums = inst(new THREE.CylinderGeometry(1, 1, 1, 10), lam('#BDB4A3'), 800);
+    this.gse = inst(new THREE.BoxGeometry(1, 1, 1), lam('#ffffff'), 2400, true);
+    this.cars = inst(new THREE.BoxGeometry(4.5, 0.9, 1.85), lam('#ffffff'), 3000, true);
+    this.cabs = inst(new THREE.BoxGeometry(2.4, 0.6, 1.6), lam('#2C2A27'), 3000);
+    this.parked = inst(new THREE.BoxGeometry(4.4, 1.4, 1.8), lam('#ffffff'), 8000, true);
+    const person = new THREE.CylinderGeometry(0.26, 0.3, 1.25, 6); person.translate(0, 0.62, 0);
+    const head = new THREE.SphereGeometry(0.2, 6, 4); head.translate(0, 1.5, 0);
+    this.people = inst(mergeTwo(person, head), lam('#ffffff'), 8000, true);
+    this.heads = this.points(this.headPos, '#FFF2C8', 2.2); this.heads.geometry.setDrawRange(0, 0);
+    this.beacons = this.points(this.beaconPos, '#FF5A3C', 3); this.beacons.geometry.setDrawRange(0, 0);
     this.resize();
+  }
+
+  private points(pos: Float32Array, color: string, size: number) {
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const m = new THREE.PointsMaterial({ color, size, map: glowTexture(color), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
+    this.lightMats.push(m);
+    const p = new THREE.Points(g, m); p.frustumCulled = false; this.scene.add(p); return p;
   }
 
   resize() {
@@ -116,94 +168,171 @@ export class Renderer3D {
   // ------------------------------------------------------------ frame
   draw(sim: Sim, night: number) {
     this.controls.update();
-    if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; }
-    const key = [this.dGen, this.ren.lod, this.ren.focus, this.ren.level, JSON.stringify(this.ren.selected), this.ren.commerce, sim.world.sites?.length].join('|');
-    if (key !== this.key) { this.key = key; this.buildStatic(sim); }
-    this.drawMoving(sim);
+    const now = performance.now();
+    if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; this.noteBirths(sim, now); }
+    const rising = [...this.born.entries()].filter(([, t]) => now - t < RISE_MS).map(([id]) => id);
+    const key = [this.dGen, this.ren.lod, this.ren.focus, this.ren.level, JSON.stringify(this.ren.selected), this.ren.commerce, sim.world.sites?.length, rising.join(',')].join('|');
+    if (key !== this.key) { this.key = key; this.buildStatic(sim, new Set(rising)); }
+    this.drawRising(sim, rising, now);
+    this.drawMoving(sim, night, now);
+    this.drawParked(sim);
     this.drawGhost();
     // daylight: the sun follows the view so shadows stay crisp where you look
-    const t = this.controls.target; const span = Math.min(2500, Math.max(300, this.camera.position.distanceTo(t)));
-    this.sun.position.set(t.x - span * 0.6, span * 1.2, t.z + span * 0.4); this.sun.target.position.copy(t);
+    const t = this.controls.target; const span = Math.min(2500, Math.max(250, this.camera.position.distanceTo(t)));
+    this.sun.position.set(t.x - span * 0.6, span * 1.1, t.z + span * 0.45); this.sun.target.position.copy(t);
     const sc = this.sun.shadow.camera as THREE.OrthographicCamera;
     sc.left = -span; sc.right = span; sc.top = span; sc.bottom = -span; sc.near = 1; sc.far = span * 4; sc.updateProjectionMatrix();
-    this.sun.intensity = 2.7 * (1 - 0.8 * night); this.hemi.intensity = 1.15 * (1 - 0.6 * night);
-    (this.scene.background as THREE.Color).set(night > 0.5 ? '#2B3048' : '#E9E1CF').lerp(new THREE.Color('#2B3048'), night * 0.6);
+    this.sun.intensity = 1.9 * (1 - 0.85 * night); this.hemi.intensity = 0.85 * (1 - 0.55 * night);
+    this.hemi.color.set(night > 0.5 ? '#8E97C2' : '#F7F2E8');
+    this.scene.background = night > 0.5 ? this.skyNight : this.skyDay;
+    (this.scene.fog as THREE.Fog).color.set('#EFE6D3').lerp(this.col.set('#3A3B52'), night);
+    this.glassMat.emissiveIntensity = 0.05 + 0.85 * night; this.cityMat.emissiveIntensity = 0.55 * night;
+    for (const m of [...this.lightMats, ...this.statLights]) m.opacity = Math.min(1, night * 1.4);
+    this.poolMat.opacity = 0.55 * night;
     this.gl.render(this.scene, this.camera);
   }
 
-  // ------------------------------------------------------------ static scene
-  private buildStatic(sim: Sim) {
-    for (const o of [...this.stat.children]) { this.stat.remove(o); dispose(o); }
-    const d = sim.d; const lod = this.ren.lod; const focus = this.ren.focus;
-    const add = (m: THREE.Object3D) => { this.stat.add(m); return m; };
-    const mat = cache();
+  /** Remember when each zone first appeared, so it can rise into place. Nothing rises on first load. */
+  private noteBirths(sim: Sim, now: number) {
+    const ids = new Set(sim.d.zones.filter(z => ZONES[z.type].terminal).map(z => z.id));
+    if (this.known) for (const id of ids) if (!this.known.has(id)) this.born.set(id, now);
+    for (const id of [...this.born.keys()]) if (!ids.has(id)) this.born.delete(id);
+    this.known = ids;
+  }
 
-    // ground, lake, buildable boundary
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(SITE.width * 3, SITE.height * 3), mat(PAL.ground));
-    ground.rotation.x = -Math.PI / 2; ground.position.set(SITE.width / 2, 0, SITE.height / 2); ground.receiveShadow = true; add(ground);
-    add(flatShape(SITE.lake, 0.02, mat(PAL.lake)));
-    // the city, as blocks east of the airport
-    const blocks: { r: Rect; h: number }[] = [];
+  // ------------------------------------------------------------ static scene
+  private buildStatic(sim: Sim, rising: Set<number>) {
+    for (const o of [...this.stat.children]) { this.stat.remove(o); dispose(o, [this.glassMat, this.cityMat, this.poolMat, ...this.lightMats]); }
+    this.statLights = [];
+    const d = sim.d; const lod = this.ren.lod; const focus = this.ren.focus;
+    const add3 = (m: THREE.Object3D) => { this.stat.add(m); return m; };
+    const sc = scenery(sim.world, d);
+
+    // ---- ground: the open country, the airport's graded land, runway strips, the lake, the city
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(SITE.width * 3, SITE.height * 3), new THREE.MeshLambertMaterial({ color: '#D9CDAE' }));
+    ground.rotation.x = -Math.PI / 2; ground.position.set(SITE.width / 2, 0, SITE.height / 2); ground.receiveShadow = true; add3(ground);
+    add3(flatRect(SITE.buildable, 0.01, '#D6CBAD'));
+    add3(flatShape(SITE.lake, 0.03, '#C9CDC4'));
+    add3(lineLoop(SITE.lake, 0.06, '#AFB2A6'));
+    const blocks: Box[] = [];
     for (let x = SITE.cityX; x < SITE.width; x += 150) for (let y = 300; y < SITE.height - 200; y += 150) {
       const h = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453; const r = h - Math.floor(h);
       if (r < 0.18) continue;
-      blocks.push({ r: { x: x + 18, y: y + 18, w: 114 * (0.7 + 0.3 * r), h: 114 }, h: 8 + r * r * 60 });
+      const w = 114 * (0.7 + 0.3 * r), H = 8 + r * r * 60;
+      blocks.push({ x: x + 18, y: y + 18, w, h: 114, z0: 0, z1: H, c: r > 0.7 ? '#D2C6AC' : '#DDD2BA' });
     }
-    add(instancedBoxes(blocks.map(b => ({ x: b.r.x, y: b.r.y, w: b.r.w, h: b.r.h, z0: 0, z1: b.h, c: '#D6CAB0' })), true));
-
-    // pavements: runways, taxiways, aprons, roads, sidewalks
+    add3(instancedBoxes(blocks, true, this.cityMat));
     const strips: Strip[] = [];
-    for (const r of d.runways) strips.push({ a: r.rw.a, b: r.rw.b, w: r.width, z: 0.15, c: PAL.runway });
-    for (const w of sim.world.ways) strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : w.kind === 'road' ? 0.12 : 0.14, c: w.kind === 'taxi' ? PAL.pave : w.kind === 'road' ? PAL.road : PAL.walk });
-    for (const x of d.airExtra) strips.push({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0), z: 0.1, c: PAL.pave });
-    strips.push({ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, w: 24, z: 0.12, c: PAL.road });
-    for (const g of d.gates) strips.push({ a: g.front, b: g.stand, w: 1, z: 0.13, c: PAL.paveLine });
-    for (const r of d.runways) {   // centreline dashes
-      for (let s = 30; s < r.length - 30; s += 60) { const p = { x: r.rw.a.x + r.dir.x * s, y: r.rw.a.y + r.dir.y * s }; strips.push({ a: p, b: { x: p.x + r.dir.x * 30, y: p.y + r.dir.y * 30 }, w: 0.9, z: 0.17, c: '#E8E2D4' }); }
-    }
-    add(stripMesh(strips));
-    const flats: Box[] = [];
-    for (const ap of d.aprons) flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: PAL.paveLight });
-    for (const z of d.zones) if (z.type === 'parking') flats.push({ ...z, z0: 0, z1: 0.11, c: PAL.paveLight });
-    for (const z of d.zones) if (z.type === 'curb' && z.level === 0) flats.push({ ...z, z0: 0, z1: 0.16, c: PAL.road });
-    add(instancedBoxes(flats, false, true));
+    for (const r of d.runways) strips.push({ a: r.rw.a, b: r.rw.b, w: r.width + 300, z: 0.02, c: '#E7DEC6' });   // graded strip
 
-    // upper decks: slab on columns, with ramps down to the road at either end
-    const deckBoxes: Box[] = [];
+    // ---- pavements
+    for (const r of d.runways) strips.push({ a: sub(r.rw.a, mul(r.dir, 60)), b: add(r.rw.b, mul(r.dir, 60)), w: r.width + 8, z: 0.13, c: '#B7AC95' }, { a: r.rw.a, b: r.rw.b, w: r.width, z: 0.15, c: '#3A3631' });
+    for (const w of [...sim.world.ways, ...d.autoWalks]) strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : w.kind === 'road' ? 0.12 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : w.kind === 'road' ? '#8E8A83' : '#EFE8DA' });
+    for (const x of d.airExtra) strips.push({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0), z: 0.1, c: '#BDB29C' });
+    strips.push({ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, w: 24, z: 0.12, c: '#8E8A83' });
+    add3(stripMesh(strips));
+    const flats: Box[] = [];
+    for (const ap of d.aprons) flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' });
+    for (const z of d.zones) if (z.type === 'parking') flats.push({ ...z, z0: 0, z1: 0.11, c: '#A7A39A' });
+    for (const z of d.zones) if (z.type === 'curb' && z.level === 0) flats.push({ ...z, z0: 0, z1: 0.16, c: '#8E8A83' });
+    add3(instancedBoxes(flats, false));
+
+    // ---- markings: runways, taxiways, stands, roads, crosswalks, parking bays
+    const mk: Strip[] = [];
+    const m = (a: Pt, b: Pt, w: number, c: string, z = 0.2) => mk.push({ a, b, w, z, c });
+    const dashed = (a: Pt, b: Pt, w: number, c: string, dash: number, gap: number, z = 0.2) => {
+      const L = dist(a, b); const dv = norm(sub(b, a));
+      for (let s = gap / 2; s < L - dash / 2; s += dash + gap) m(add(a, mul(dv, s)), add(a, mul(dv, Math.min(L, s + dash))), w, c, z);
+    };
+    for (const r of d.runways) {
+      const W = r.width; const n = r.normal, dv = r.dir;
+      for (const s of [-1, 1]) m(add(r.rw.a, mul(n, s * (W / 2 - 1.2))), add(r.rw.b, mul(n, s * (W / 2 - 1.2))), 0.9, WHITE);
+      dashed(add(r.rw.a, mul(dv, 90)), sub(r.rw.b, mul(dv, 90)), 0.9, WHITE, 30, 20);
+      for (const [end, sgn] of [[r.rw.a, 1], [r.rw.b, -1]] as const) {
+        const at = (s: number, l: number) => add(add(end, mul(dv, sgn * s)), mul(n, l));
+        const bars = W >= 45 ? 12 : 8; const span = W - 6;
+        for (let i = 0; i < bars; i++) { const l = -span / 2 + (i + 0.5) * span / bars; if (Math.abs(l) < 2.5) continue; m(at(6, l), at(36, l), 1.8, WHITE); }
+        for (const l of [-1, 1]) { m(at(300, l * W * 0.22), at(345, l * W * 0.22), 9, WHITE); }
+        for (const s0 of [150, 450, 600]) for (const l of [-1, 1]) for (const k of [0, 1, 2]) { const off = l * (W * 0.2 + k * 2.6); m(at(s0, off), at(s0 + 22, off), 1.6, WHITE); }
+      }
+      // designators, read as you land: labels[0] at end a, facing along the runway
+      for (const [end, sgn, txt] of [[r.rw.a, 1, r.labels[0]], [r.rw.b, -1, r.labels[1]]] as const) {
+        const p = add(end, mul(dv, sgn * 62));
+        const plane = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(W * 0.55, 22), 30), new THREE.MeshBasicMaterial({ map: textTexture(txt, 256, 360, 300), transparent: true, depthWrite: false }));
+        plane.rotation.order = 'YXZ'; plane.rotation.y = -Math.atan2(dv.y * sgn, dv.x * sgn) - Math.PI / 2; plane.rotation.x = -Math.PI / 2;
+        plane.position.set(p.x, 0.25, p.y); add3(plane);
+      }
+    }
+    const taxiLines = (a: Pt, b: Pt, w: number) => { m(a, b, 0.35, YELLOW); const n = perp(a, b); for (const s of [-1, 1]) m(add(a, mul(n, s * (w / 2 - 0.7))), add(b, mul(n, s * (w / 2 - 0.7))), 0.25, YELLOW); };
+    for (const w of sim.world.ways) if (w.kind === 'taxi') taxiLines(w.a, w.b, wayWidth('taxi', w.cls, 0));
+    for (const x of d.airExtra) m(x.a, x.b, 0.35, YELLOW);
+    for (const g of d.gates) {
+      const L = CLASSES[g.cls].length; const dv = norm(sub(g.door, g.stand)); const nose = add(g.stand, mul(dv, L / 2));
+      m(g.front, add(nose, mul(dv, 2)), 0.35, YELLOW);
+      const n = { x: -dv.y, y: dv.x }; m(add(nose, mul(n, -3)), add(nose, mul(n, 3)), 0.6, YELLOW);
+      const half = CLASSES[g.cls].gateSpacing / 2 - 1; // stand boundary ticks
+      for (const s of [-1, 1]) dashed(add(g.door, mul(n, s * half)), add(add(g.door, mul(n, s * half)), mul(dv, -CLASSES[g.cls].apronDepth * 0.8)), 0.3, '#EDE7D9', 3, 3, 0.18);
+    }
+    for (const w of sim.world.ways) if (w.kind === 'road') {
+      const W = wayWidth('road', 0, w.lanes); const n = perp(w.a, w.b);
+      for (const s of [-1, 1]) m(add(w.a, mul(n, s * (W / 2 - 0.6))), add(w.b, mul(n, s * (W / 2 - 0.6))), 0.2, WHITE, 0.17);
+      if (w.lanes >= 4) { m(add(w.a, mul(n, -0.25)), add(w.b, mul(n, -0.25)), 0.18, YELLOW, 0.17); m(add(w.a, mul(n, 0.25)), add(w.b, mul(n, 0.25)), 0.18, YELLOW, 0.17); for (const s of [-1, 1]) dashed(add(w.a, mul(n, s * W / 4)), add(w.b, mul(n, s * W / 4)), 0.18, WHITE, 3, 6, 0.17); }
+      else dashed(w.a, w.b, 0.18, WHITE, 3, 6, 0.17);
+    }
+    for (const c of d.crosswalks) {
+      const road = { x: Math.cos(c.ang), y: Math.sin(c.ang) }, walk = { x: -road.y, y: road.x };
+      for (let s = -c.width / 2 + 0.9; s <= c.width / 2 - 0.6; s += 1.4) { const p = add(c.p, mul(walk, s)); m(add(p, mul(road, -2)), add(p, mul(road, 2)), 0.7, WHITE, 0.19); }
+    }
+    for (const z of d.zones) if (z.type === 'parking') {
+      for (let y = z.y + 8; y < z.y + z.h - 4; y += 14) {
+        for (let x = z.x + 6; x < z.x + z.w - 6; x += 2.7) { m({ x, y: y - 5 }, { x, y }, 0.12, '#E8E2D4', 0.16); m({ x, y: y + 6 }, { x, y: y + 11 }, 0.12, '#E8E2D4', 0.16); }
+      }
+    }
+    add3(stripMesh(mk));
+
+    // ---- upper decks: slab on columns with ramps; curb canopies over the sidewalk at each curb
+    const misc: Box[] = [];
     for (const dk of d.decks) {
       const L = dist(dk.a, dk.b); const dir = norm(sub(dk.b, dk.a)); const ramp = FRONTAGE.ramp;
       const z1 = LEVELS[1].z0;
-      add(slab(dk.a, dk.b, dk.width + 2, z1 - 0.8, z1, '#B4AEA2', ramp));
+      add3(slab(dk.a, dk.b, dk.width + 2, z1 - 0.8, z1, '#B9B2A4', ramp));
       for (let s = ramp; s <= L - ramp; s += 30) for (const side of [-1, 1]) {
-        const c = { x: dk.a.x + dir.x * s - dir.y * side * (dk.width / 2), y: dk.a.y + dir.y * s + dir.x * side * (dk.width / 2) };
-        deckBoxes.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: z1 - 0.8, c: '#8C8576' });
+        const c = add(add(dk.a, mul(dir, s)), { x: -dir.y * side * (dk.width / 2), y: dir.x * side * (dk.width / 2) });
+        misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: z1 - 0.8, c: '#8C8576' });
       }
     }
-    for (const z of d.zones) if (z.type === 'curb' && z.level === 1) deckBoxes.push({ ...z, z0: LEVELS[1].z0 - 0.6, z1: LEVELS[1].z0, c: '#B4AEA2' });
-    add(instancedBoxes(deckBoxes, true));
-
-    // terminal sites
-    for (const st of sim.world.sites ?? []) {
-      const T = d.terminals.find(t => t.site?.id === st.id);
-      add(outline(st, 0.3, this.ren.selected?.kind === 'site' && this.ren.selected.id === st.id ? PAL.select : '#7C725F'));
-      if (!T?.zones.length) add(flatRect(st, 0.05, '#D8CCB2', 0.7));
-      add(labelSprite(T ? `T${T.id}` : 'T', st, T?.active ? PAL.ink : PAL.bad));
+    for (const z of d.zones) if (z.type === 'curb') {
+      const zz = LEVELS[z.level].z0; if (z.level === 1) misc.push({ ...z, z0: zz - 0.6, z1: zz, c: '#B4AEA2' });
+      const f = d.frames.get(z.id); if (!f) continue;
+      // canopy: 7 m deep over the sidewalk, on a row of slender columns
+      const a = f.a, b = f.b, inw = f.inward;
+      const corners = [a, b, add(b, mul(inw, 7)), add(a, mul(inw, 7))];
+      misc.push({ ...bbox(corners), z0: zz + 5.2, z1: zz + 5.7, c: ROOF });
+      const L = dist(a, b); const al = norm(sub(b, a));
+      for (let s = 6; s < L - 3; s += 12) { const p = add(add(a, mul(al, s)), mul(inw, 6.4)); misc.push({ x: p.x - 0.2, y: p.y - 0.2, w: 0.4, h: 0.4, z0: zz, z1: zz + 5.2, c: '#7C725F' }); }
     }
 
-    // buildings: solid massing, or opened up (glass walls, floors and fit-out) in the terminal you are working on
+    // ---- terminal sites and their names
+    for (const st of sim.world.sites ?? []) {
+      const T = d.terminals.find(t => t.site?.id === st.id);
+      add3(outline(st, 0.3, this.ren.selected?.kind === 'site' && this.ren.selected.id === st.id ? PAL.select : '#7C725F'));
+      if (!T?.zones.length) add3(flatRect(st, 0.05, '#D8CCB2', 0.7));
+      add3(labelSprite(T ? `T${T.id}` : 'T', st, T?.active ? PAL.ink : PAL.bad));
+    }
+
+    // ---- buildings: a glazed box under a white roof, or opened up (glass walls, floor and fit-out)
     const openSite = (z: Zone) => lod === 'terminal' && (focus === null || siteOf(sim.world, z)?.id === focus || d.termOf.get(z.id)?.site?.id === focus);
-    const solid: Box[] = []; const glass: Box[] = []; const fit: Box[] = [];
+    const solid: Box[] = []; const glazing: Box[] = []; const see: Box[] = []; const fit: Box[] = []; const roofs: Box[] = [];
     for (const z of d.zones) {
-      if (!ZONES[z.type].terminal) continue;
+      if (!ZONES[z.type].terminal || rising.has(z.id)) continue;
       const L = LEVELS[z.level];
       const sel = this.ren.selected?.kind === 'zone' && this.ren.selected.id === z.id;
+      if (!openSite(z)) { massing(z, L.z0, L.z1, sel, solid, glazing, roofs); continue; }
       const c = sel ? '#8FB0C6' : MOD_COL[z.type];
-      if (!openSite(z)) { solid.push({ ...z, z0: L.z0, z1: L.z1 - 0.4, c }); continue; }
-      // opened: a floor slab, glass to the level you're on, nothing above it
-      if (z.level > this.ren.level) { glass.push({ ...z, z0: L.z0, z1: L.z1 - 0.4, c }); continue; }
+      if (z.level > this.ren.level) { see.push({ ...z, z0: L.z0, z1: L.z1 - 0.4, c }); continue; }
       solid.push({ ...z, z0: L.z0, z1: L.z0 + 0.5, c });
       if (z.level < this.ren.level) continue;
-      glass.push({ ...z, z0: L.z0 + 0.5, z1: L.z1 - 0.4, c });
+      see.push({ ...z, z0: L.z0 + 0.5, z1: L.z1 - 0.4, c });
       const f = d.frames.get(z.id);
       for (const it of f?.items ?? []) {
         const h = ITEM_H[it.k]; if (!h || !it.closed) continue;
@@ -213,62 +342,193 @@ export class Renderer3D {
         if (!sim.leased(sh)) continue;
         const b = bbox(sh.pts); fit.push({ ...b, z0: L.z0 + 0.5, z1: L.z0 + (sh.tenant === 'dutyfree' ? 2.6 : 1.2), c: sh.tenant === 'dutyfree' ? '#5E7A55' : LOT_COL[sh.type] });
       }
+      for (const k of d.cores) if (inRectPt(k, z)) fit.push({ x: k.x - 6, y: k.y - 6, w: 12, h: 12, z0: 0, z1: L.z1 - 0.6, c: '#7C725F' });
     }
-    for (const k of d.cores) solid.push({ x: k.x - 6, y: k.y - 6, w: 12, h: 12, z0: 0, z1: LEVELS[1].z1, c: '#7C725F' });
-    add(instancedBoxes(solid, true));
-    add(instancedBoxes(fit, true));
-    if (glass.length) add(instancedBoxes(glass, false, false, 0.22));
-    // crisp roof and wall edges, like a massing model
-    const edges: Box[] = solid.filter(b => b.z1 - b.z0 > 2);
-    add(edgeLines([...edges, ...glass]));
+    add3(instancedBoxes([...solid, ...misc, ...fit], true));
+    if (glazing.length) add3(instancedBoxes(glazing, true, this.glassMat));
+    if (roofs.length) { add3(instancedBoxes(roofs, true)); add3(edgeLines(roofs.filter(b => b.w > 12 && b.h > 12 && b.z1 - b.z0 < 1.2), 0.35)); }
+    if (see.length) add3(instancedBoxes(see, false, undefined, 0.22));
+
+    // ---- trees, lamps, floodlight masts, the control tower
+    const tg = treeGeo();
+    const crowns = new THREE.InstancedMesh(tg.crown, new THREE.MeshLambertMaterial({ color: '#ffffff' }), Math.max(1, sc.trees.length));
+    const trunks = new THREE.InstancedMesh(tg.trunk, new THREE.MeshLambertMaterial({ color: '#7A6A55' }), Math.max(1, sc.trees.length));
+    const o = this.tmp;
+    sc.trees.forEach((t, i) => {
+      o.position.set(t.x, 0, t.y); o.rotation.set(0, t.k * 6, 0); o.scale.set(t.s, t.s * (0.9 + t.k * 0.4), t.s); o.updateMatrix();
+      crowns.setMatrixAt(i, o.matrix); trunks.setMatrixAt(i, o.matrix);
+      crowns.setColorAt(i, this.col.set(t.k < 0.33 ? '#A9B28A' : t.k < 0.66 ? '#98A47D' : '#B7B694'));
+    });
+    crowns.count = trunks.count = sc.trees.length; crowns.castShadow = true; crowns.receiveShadow = true; trunks.castShadow = true;
+    add3(crowns); add3(trunks);
+    const poles = new THREE.InstancedMesh(poleGeo(), new THREE.MeshLambertMaterial({ color: '#6D6454' }), Math.max(1, sc.lamps.length + sc.masts.length));
+    const glow: number[] = []; const pools: { p: Pt; r: number }[] = [];
+    [...sc.lamps.map(p => ({ p, h: 9 })), ...sc.masts.map(p => ({ p, h: 24 }))].forEach(({ p, h }, i) => {
+      o.position.set(p.x, 0, p.y); o.rotation.set(0, 0, 0); o.scale.set(h > 10 ? 2.4 : 1, h, h > 10 ? 2.4 : 1); o.updateMatrix(); poles.setMatrixAt(i, o.matrix);
+      glow.push(p.x, h + 0.4, p.y); pools.push({ p, r: h > 10 ? 38 : 11 });
+    });
+    poles.count = sc.lamps.length + sc.masts.length; poles.castShadow = true; add3(poles);
+    add3(this.lightPoints(glow, '#FFE0A0', 7));
+    add3(lightPools(pools, this.poolMat));
+    if (sc.tower) {
+      const tw = towerGeo();
+      const solidT = new THREE.Mesh(tw.solid, new THREE.MeshLambertMaterial({ color: '#E9E3D6' })); solidT.position.set(sc.tower.x, 0, sc.tower.y); solidT.castShadow = true;
+      const glassT = new THREE.Mesh(tw.glass, this.glassMat); glassT.position.copy(solidT.position);
+      add3(solidT); add3(glassT);
+      add3(this.lightPoints([sc.tower.x, 63.5, sc.tower.y], '#FF5A3C', 6));
+    }
+    // airfield lights: runway edges every 60 m, taxiway centrelines every 30 m
+    const rl: number[] = [], tl: number[] = [];
+    for (const r of d.runways) for (let s = 0; s <= r.length; s += 60) for (const k of [-1, 1]) { const p = add(add(r.rw.a, mul(r.dir, s)), mul(r.normal, k * (r.width / 2 + 2))); rl.push(p.x, 0.6, p.y); }
+    for (const w of [...sim.world.ways.filter(x => x.kind === 'taxi'), ...d.airExtra]) { const L = dist(w.a, w.b); const dv = norm(sub(w.b, w.a)); for (let s = 0; s <= L; s += 30) { const p = add(w.a, mul(dv, s)); tl.push(p.x, 0.5, p.y); } }
+    add3(this.lightPoints(rl, '#FFF1C8', 9)); add3(this.lightPoints(tl, '#9BE07C', 6));
+  }
+
+  private lightPoints(xyz: number[], color: string, size: number) {
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(xyz.length ? xyz : [0, -999, 0], 3));
+    const mt = new THREE.PointsMaterial({ color, size, map: glowTexture(color), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 });
+    this.statLights.push(mt);
+    const p = new THREE.Points(g, mt); p.frustumCulled = false; return p;
+  }
+
+  /** New modules rise out of the ground on a sandy scaffold colour, then settle. */
+  private drawRising(sim: Sim, rising: number[], now: number) {
+    for (const o of [...this.riseG.children]) { this.riseG.remove(o); dispose(o, [this.glassMat]); }
+    if (!rising.length) return;
+    const bs: Box[] = [];
+    for (const id of rising) {
+      const z = sim.d.zones.find(q => q.id === id); if (!z) continue;
+      const k = Math.min(1, (now - this.born.get(id)!) / RISE_MS);
+      const e = 1 - Math.pow(1 - k, 3) + Math.sin(k * Math.PI) * 0.06;   // ease out with a little overshoot
+      const L = LEVELS[z.level];
+      bs.push({ ...z, z0: L.z0, z1: L.z0 + Math.max(0.3, (L.z1 - L.z0) * e), c: k < 0.6 ? '#E2C68E' : '#E9E1D0' });
+    }
+    this.riseG.add(instancedBoxes(bs, true));
   }
 
   // ------------------------------------------------------------ moving things
-  private drawMoving(sim: Sim) {
-    const { fus, wing, tail } = this.planes; const o = this.tmp;
-    let n = 0;
+  private drawMoving(sim: Sim, night: number, now: number) {
+    const o = this.tmp;
+    // aircraft, by class
+    const n = [0, 0, 0, 0]; let nb = 0, ng = 0, dr = 0, nbe = 0;
+    const atStand = new Map<string, Flight>();
     for (const f of sim.flights) {
-      if (f.state === 'pending' || f.state === 'hold' || f.state === 'gone' || f.state === 'cancelled' || !f.path.length || n >= 400) continue;
-      const L = f.ac.length, S = f.ac.span, h = f.alt * 340 + 3;
-      const yaw = -f.ang;
-      const put = (m: THREE.InstancedMesh, fx: number, fy: number, fz: number, sx: number, sy: number, sz: number) => {
-        o.position.set(f.x + Math.cos(f.ang) * fx - Math.sin(f.ang) * fz, h + fy, f.y + Math.sin(f.ang) * fx + Math.cos(f.ang) * fz);
-        o.rotation.set(0, yaw, 0); o.scale.set(sx, sy, sz); o.updateMatrix(); m.setMatrixAt(n, o.matrix);
-      };
-      const D = L * (f.cls === 3 ? 0.09 : 0.075);
-      put(fus, 0, 0, 0, L, D, D);
-      put(wing, -L * 0.05, -D * 0.2, 0, L * 0.16, D * 0.18, S);
-      put(tail, -L * 0.44, D * 0.9, 0, L * 0.12, D * 1.4, D * 0.18);
-      n++;
+      if (f.state === 'pending' || f.state === 'hold' || f.state === 'gone' || f.state === 'cancelled' || !f.path.length) continue;
+      const P = this.planes[f.cls]; const i = n[f.cls]; if (i >= 160) continue;
+      const h = f.alt * 340;
+      o.position.set(f.x, h, f.y); o.rotation.set(0, -f.ang, f.alt > 0.02 ? -0.06 : 0); o.scale.set(1, 1, 1); o.updateMatrix();
+      P.body.setMatrixAt(i, o.matrix); P.fin.setMatrixAt(i, o.matrix); P.eng.setMatrixAt(i, o.matrix);
+      P.fin.setColorAt(i, this.col.set(f.airline.color));
+      n[f.cls]++;
+      if (f.state === 'stand') atStand.set(f.gate.id, f);
+      if (nbe < 400 && f.state !== 'stand') { const k = nbe * 3; this.beaconPos[k] = f.x; this.beaconPos[k + 1] = h + this.planeGeos[f.cls].doorY + this.planeGeos[f.cls].radius * 1.6; this.beaconPos[k + 2] = f.y; nbe++; }
     }
-    for (const m of [fus, wing, tail]) { m.count = n; m.instanceMatrix.needsUpdate = true; }
+    this.planes.forEach((P, c) => { for (const mm of [P.body, P.fin, P.eng]) { mm.count = n[c]; mm.instanceMatrix.needsUpdate = true; } if (P.fin.instanceColor) P.fin.instanceColor.needsUpdate = true; });
+    this.beacons.geometry.setDrawRange(0, Math.floor(now / 600) % 2 ? nbe : 0); (this.beacons.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
 
-    const showCars = this.ren.lod !== 'airfield';
-    let c = 0;
-    if (showCars) for (const car of sim.cars) {
+    // jet bridges: a rotunda off the building face, a tunnel that docks at the forward door, or sits retracted
+    for (const g of sim.d.gates) {
+      if (nb >= 400 || dr >= 790) break;
+      const out = g.apron.outward; const face = add(g.door, mul(out, 7));
+      const C = CLASSES[g.cls]; const pg = this.planeGeos[g.cls];
+      const side = { x: -out.y, y: out.x };
+      // the aircraft's forward door is on its `side`: the rotunda stands out there, on a fixed link from the face
+      const rot = add(add(face, mul(out, 4)), mul(side, C.span * 0.24 + 7));
+      const link0 = add(face, mul(side, C.span * 0.24 + 7));
+      const zLv = LEVELS[g.zone.level].z0 + (g.zone.level ? 1 : 3.2);
+      const f = atStand.get(g.id);
+      let end: Pt, zEnd: number;
+      if (f) {
+        const dv = { x: Math.cos(f.ang), y: Math.sin(f.ang) }; const left = { x: dv.y, y: -dv.x };
+        end = add(add({ x: f.x, y: f.y }, mul(dv, pg.doorX - (dv.x * 0 + 0))), mul(left, pg.radius + 1.4));
+        zEnd = pg.doorY + 0.2;
+      } else { end = add(add(rot, mul(out, 13)), mul(side, -5)); zEnd = zLv - 0.4; }
+      const a3 = new THREE.Vector3(rot.x, zLv, rot.y), b3 = new THREE.Vector3(end.x, zEnd, end.y);
+      const len = a3.distanceTo(b3);
+      o.position.copy(a3).lerp(b3, 0.5); o.scale.set(2.8, 2.9, len); o.lookAt(b3); o.updateMatrix(); this.bridges.setMatrixAt(nb++, o.matrix);
+      { const l0 = new THREE.Vector3(link0.x, zLv, link0.y); o.position.copy(l0).lerp(a3, 0.5); o.scale.set(2.6, 2.8, l0.distanceTo(a3) + 1); o.lookAt(a3); o.updateMatrix(); if (nb < 400) this.bridges.setMatrixAt(nb++, o.matrix); }
+      o.rotation.set(0, 0, 0);
+      o.position.set(rot.x, zLv / 2, rot.y); o.scale.set(2.4, zLv + 1.2, 2.4); o.updateMatrix(); this.drums.setMatrixAt(dr++, o.matrix);
+      const leg = a3.clone().lerp(b3, 0.8);
+      o.position.set(leg.x, leg.y / 2, leg.z); o.scale.set(0.5, leg.y, 0.5); o.updateMatrix(); this.drums.setMatrixAt(dr++, o.matrix);
+      // the turnaround: tug and bag carts aft, a catering truck forward, fuel under the wing, a pushback tug at the nose
+      if (f) {
+        const dv = { x: Math.cos(f.ang), y: Math.sin(f.ang) }; const left = { x: dv.y, y: -dv.x }; const L = C.length;
+        const veh = (fx: number, fl: number, w: number, l: number, h: number, c: string, z0 = 0) => {
+          if (ng >= 2400) return;
+          const p = add(add({ x: f.x, y: f.y }, mul(dv, fx)), mul(left, fl));
+          o.position.set(p.x, z0 + h / 2, p.y); o.rotation.set(0, -f.ang, 0); o.scale.set(l, h, w); o.updateMatrix();
+          this.gse.setMatrixAt(ng, o.matrix); this.gse.setColorAt(ng, this.col.set(c)); ng++;
+        };
+        const busy = sim.t - f.standT > 3 && f.readyT - sim.t > 6;
+        veh(L / 2 + 5, 0, 2.2, 4.5, 1.6, '#D8B44A');                                         // pushback tug
+        if (busy) {
+          for (let k = 0; k < 3; k++) veh(-L * 0.22 - k * 4.2, -(pg.radius + 5), 1.8, 3.4, 1.3, '#A9A396');   // bag carts
+          veh(-L * 0.22 + 4.5, -(pg.radius + 5), 1.8, 3, 1.5, '#5E7A55');                    // bag tug
+          veh(L * 0.3, -(pg.radius + 3.5), 1.8, 10, 1.2, '#8C8576'); veh(L * 0.3, -(pg.radius + 3.5), 1.8, 4, 1.4, '#DCD5C6', 1.2);   // belt loader
+          veh(L * 0.32, pg.radius + 5, 2.5, 7, 2.8, '#ECE7DD', 0.6);                           // catering truck
+          veh(-L * 0.05, C.span * 0.3, 2.6, 9, 3, '#C9A24A');                                  // fuel truck
+        }
+      }
+    }
+    this.bridges.count = nb; this.drums.count = dr; this.gse.count = ng;
+    for (const mm of [this.bridges, this.drums, this.gse]) mm.instanceMatrix.needsUpdate = true;
+    if (this.gse.instanceColor) this.gse.instanceColor.needsUpdate = true;
+
+    // cars, with headlights after dark
+    let c = 0, hl = 0;
+    if (this.ren.lod !== 'airfield') for (const car of sim.cars) {
       if (car.stage === 'gone' || c >= 3000) continue;
       const up = car.curb?.zone.level === 1 && (car.stage === 'queue' || car.stage === 'bay') ? LEVELS[1].z0 : 0;
-      o.position.set(car.x, up + 0.9, car.y); o.rotation.set(0, -car.ang, 0); o.scale.set(1, 1, 1); o.updateMatrix();
-      this.cars.setMatrixAt(c, o.matrix);
-      this.cars.setColorAt(c, this.col.set(car.pick ? '#3A352D' : car.id % 3 ? '#8C8576' : '#B0472B'));
+      o.position.set(car.x, up + 0.65, car.y); o.rotation.set(0, -car.ang, 0); o.scale.set(1, 1, 1); o.updateMatrix();
+      this.cars.setMatrixAt(c, o.matrix); this.cars.setColorAt(c, this.col.set(CAR_COLS[car.id % CAR_COLS.length]));
+      o.position.set(car.x - Math.cos(car.ang) * 0.3, up + 1.4, car.y - Math.sin(car.ang) * 0.3); o.updateMatrix(); this.cabs.setMatrixAt(c, o.matrix);
+      if (night > 0.1 && hl < 3000 && car.stage !== 'bay') { const k = hl * 3; this.headPos[k] = car.x + Math.cos(car.ang) * 2.6; this.headPos[k + 1] = up + 0.8; this.headPos[k + 2] = car.y + Math.sin(car.ang) * 2.6; hl++; }
       c++;
     }
-    this.cars.count = c; this.cars.instanceMatrix.needsUpdate = true; if (this.cars.instanceColor) this.cars.instanceColor.needsUpdate = true;
+    this.cars.count = this.cabs.count = c;
+    for (const mm of [this.cars, this.cabs]) mm.instanceMatrix.needsUpdate = true;
+    if (this.cars.instanceColor) this.cars.instanceColor.needsUpdate = true;
+    this.heads.geometry.setDrawRange(0, hl); (this.heads.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
 
+    // people: mood colours, so a queue going sour still reads in 3D
     let p = 0;
     if (this.ren.lod !== 'airfield') {
-      const cols = ['#3A352D', PAL.warn, PAL.bad];
+      const cols = ['#3E5A72', PAL.warn, PAL.bad];
       for (const q of sim.pax) {
         if (q.stage === 'done' || p >= 8000) continue;
-        o.position.set(q.x, LEVELS[q.level].z0 + 0.5 + 0.85, q.y); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1); o.updateMatrix();
-        this.people.setMatrixAt(p, o.matrix); this.people.setColorAt(p, this.col.set(cols[q.mood])); p++;
+        o.position.set(q.x, LEVELS[q.level].z0 + 0.5, q.y); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1); o.updateMatrix();
+        this.people.setMatrixAt(p, o.matrix); this.people.setColorAt(p, this.col.set(q.mood ? cols[q.mood] : q.id % 3 ? '#3E5A72' : q.id % 2 ? '#8A6BB0' : '#5E7A55')); p++;
       }
     }
     this.people.count = p; this.people.instanceMatrix.needsUpdate = true; if (this.people.instanceColor) this.people.instanceColor.needsUpdate = true;
   }
 
+  /** Parked cars fill each lot's bays as the lot fills; refreshed only when occupancy moves by a few percent. */
+  private drawParked(sim: Sim) {
+    const lots = sim.d.zones.filter(z => z.type === 'parking');
+    const cap = sim.lotCapacity() || 1; const frac = Math.min(1, sim.lotUsed / cap);
+    const key = `${this.dGen}|${Math.round(frac * 40)}`;
+    if (key === this.parkedKey) return; this.parkedKey = key;
+    const o = this.tmp; let k = 0;
+    for (const z of lots) {
+      const bays: { x: number; y: number; r: number }[] = [];
+      for (let y = z.y + 8; y < z.y + z.h - 4; y += 14) for (let x = z.x + 7.35; x < z.x + z.w - 6; x += 2.7) {
+        bays.push({ x, y: y - 2.6, r: hashN(x, y) }, { x, y: y + 8.6, r: hashN(y, x) });
+      }
+      bays.sort((a, b) => a.r - b.r);
+      const nOn = Math.round(bays.length * frac);
+      for (let i = 0; i < nOn && k < 8000; i++) {
+        const b = bays[i];
+        o.position.set(b.x, 0.8, b.y); o.rotation.set(0, Math.PI / 2, 0); o.scale.set(1, 1, 1); o.updateMatrix();
+        this.parked.setMatrixAt(k, o.matrix); this.parked.setColorAt(k, this.col.set(CAR_COLS[Math.floor(b.r * 977) % CAR_COLS.length])); k++;
+      }
+    }
+    this.parked.count = k; this.parked.instanceMatrix.needsUpdate = true; if (this.parked.instanceColor) this.parked.instanceColor.needsUpdate = true;
+  }
+
   private drawGhost() {
-    for (const o of [...this.ghostG.children]) { this.ghostG.remove(o); dispose(o); }
+    for (const o of [...this.ghostG.children]) { this.ghostG.remove(o); dispose(o, []); }
     const gh = this.ren.ghost;
     if (this.ren.cursor && !gh) this.ghostG.add(ring(this.ren.cursor, PAL.select));
     if (!gh) return;
@@ -289,32 +549,65 @@ export class Renderer3D {
 interface Box extends Rect { z0: number; z1: number; c: string }
 interface Strip { a: Pt; b: Pt; w: number; z: number; c: string }
 
-function cache() {
-  const m = new Map<string, THREE.Material>();
-  return (c: string) => { let x = m.get(c); if (!x) { x = new THREE.MeshLambertMaterial({ color: c }); m.set(c, x); } return x; };
-}
+const hashN = (a: number, b: number) => { const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453; return h - Math.floor(h); };
+const perp = (a: Pt, b: Pt) => { const d = norm(sub(b, a)); return { x: -d.y, y: d.x }; };
+const inRectPt = (p: Pt, r: Rect) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 const bbox = (pts: Pt[]): Rect => {
   const xs = pts.map(p => p.x), ys = pts.map(p => p.y); const x = Math.min(...xs), y = Math.min(...ys);
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 };
+function mergeTwo(a: THREE.BufferGeometry, b: THREE.BufferGeometry) {
+  const A = a.index ? a.toNonIndexed() : a, B = b.index ? b.toNonIndexed() : b;
+  const g = new THREE.BufferGeometry();
+  for (const k of ['position', 'normal']) {
+    const pa = A.getAttribute(k).array as Float32Array, pb = B.getAttribute(k).array as Float32Array;
+    const o = new Float32Array(pa.length + pb.length); o.set(pa); o.set(pb, pa.length); g.setAttribute(k, new THREE.BufferAttribute(o, 3));
+  }
+  return g;
+}
+/**
+ * A module as an architectural model: a dark plinth, a glazed band with mullions every 7.5 m, a white roof slab
+ * with a slight overhang, and on top either a clerestory along a concourse's spine or a couple of plant enclosures.
+ */
+function massing(z: Zone, z0: number, z1: number, sel: boolean, solid: Box[], glazing: Box[], roofs: Box[]) {
+  const top = z1 - 0.4;
+  solid.push({ ...z, z0, z1: z0 + 0.7, c: PLINTH });
+  glazing.push({ x: z.x + 0.6, y: z.y + 0.6, w: z.w - 1.2, h: z.h - 1.2, z0: z0 + 0.7, z1: top - 1.1, c: sel ? '#8FB0C6' : GLASS[z.type] });
+  roofs.push({ x: z.x - 0.8, y: z.y - 0.8, w: z.w + 1.6, h: z.h + 1.6, z0: top - 1.1, z1: top, c: sel ? '#CFE0EA' : ROOF });
+  const mull = (x: number, y: number) => solid.push({ x: x - 0.18, y: y - 0.18, w: 0.36, h: 0.36, z0: z0 + 0.7, z1: top - 1.1, c: MULLION });
+  for (let x = z.x + 0.6; x <= z.x + z.w - 0.5; x += 7.5) { mull(x, z.y + 0.6); mull(x, z.y + z.h - 0.6); }
+  for (let y = z.y + 0.6 + 7.5; y < z.y + z.h - 0.6; y += 7.5) { mull(z.x + 0.6, y); mull(z.x + z.w - 0.6, y); }
+  if (z.type === 'concourse') {
+    const horiz = z.w >= z.h; const wC = Math.min(12, (horiz ? z.h : z.w) * 0.28);
+    const r: Rect = horiz ? { x: z.x + 8, y: z.y + z.h / 2 - wC / 2, w: z.w - 16, h: wC } : { x: z.x + z.w / 2 - wC / 2, y: z.y + 8, w: wC, h: z.h - 16 };
+    glazing.push({ ...r, z0: top, z1: top + 2.2, c: GLASS.concourse });
+    roofs.push({ x: r.x - 0.5, y: r.y - 0.5, w: r.w + 1, h: r.h + 1, z0: top + 2.2, z1: top + 2.7, c: ROOF });
+  } else {
+    const k = hashN(z.x, z.y);
+    for (let i = 0; i < 2; i++) {
+      const w = 10 + k * 8, h = 6 + i * 3; const x = z.x + z.w * (0.25 + 0.4 * i) - w / 2, y = z.y + z.h * (0.35 + 0.25 * ((k + i) % 1)) - h / 2;
+      if (w < z.w - 6 && h < z.h - 6) solid.push({ x, y, w, h, z0: top, z1: top + 2.4, c: '#CFC8BA' });
+    }
+  }
+}
 function boxGeo(b: Box | (Rect & { z0: number; z1: number })) {
   const g = new THREE.BoxGeometry(Math.max(0.2, b.w), Math.max(0.05, b.z1 - b.z0), Math.max(0.2, b.h));
   g.translate(b.x + b.w / 2, (b.z0 + b.z1) / 2, b.y + b.h / 2);
   return g;
 }
-/** Many boxes as one instanced mesh, coloured per instance. */
-function instancedBoxes(bs: Box[], shadows: boolean, receive = false, opacity = 1) {
-  const m = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshLambertMaterial({ color: '#ffffff', transparent: opacity < 1, opacity, depthWrite: opacity >= 1 }), Math.max(1, bs.length));
+/** Many boxes as one instanced mesh, coloured per instance (multiplying the material's own colour). */
+function instancedBoxes(bs: Box[], shadows: boolean, material?: THREE.Material, opacity = 1) {
+  const mat = material ?? new THREE.MeshLambertMaterial({ color: '#ffffff', transparent: opacity < 1, opacity, depthWrite: opacity >= 1 });
+  const m = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, Math.max(1, bs.length));
   const o = new THREE.Object3D(); const c = new THREE.Color();
   bs.forEach((b, i) => {
     o.position.set(b.x + b.w / 2, (b.z0 + b.z1) / 2, b.y + b.h / 2); o.scale.set(Math.max(0.2, b.w), Math.max(0.05, b.z1 - b.z0), Math.max(0.2, b.h)); o.updateMatrix();
     m.setMatrixAt(i, o.matrix); m.setColorAt(i, c.set(b.c));
   });
-  m.count = bs.length; m.castShadow = shadows; m.receiveShadow = true; void receive;
+  m.count = bs.length; m.castShadow = shadows; m.receiveShadow = true;
   return m;
 }
-/** Flat strips (pavements) merged into one mesh with vertex colours. */
+/** Flat strips (pavements, markings) merged into one mesh with vertex colours. */
 function stripMesh(ss: Strip[], opacity = 1) {
   const pos: number[] = [], col: number[] = [], idx: number[] = []; const c = new THREE.Color();
   for (const s of ss) {
@@ -346,9 +639,9 @@ function slab(a: Pt, b: Pt, w: number, z0: number, z1: number, c: string, ramp: 
   const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide })); m.castShadow = true; m.receiveShadow = true;
   return m;
 }
-function flatShape(pts: Pt[], z: number, mat: THREE.Material) {
+function flatShape(pts: Pt[], z: number, c: string) {
   const sh = new THREE.Shape(pts.map(p => new THREE.Vector2(p.x, -p.y)));
-  const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), mat); m.rotation.x = -Math.PI / 2; m.position.y = z; m.receiveShadow = true;
+  const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), new THREE.MeshLambertMaterial({ color: c })); m.rotation.x = -Math.PI / 2; m.position.y = z; m.receiveShadow = true;
   return m;
 }
 function flatRect(r: Rect, z: number, c: string, opacity = 1) {
@@ -356,41 +649,56 @@ function flatRect(r: Rect, z: number, c: string, opacity = 1) {
   m.rotation.x = -Math.PI / 2; m.position.set(r.x + r.w / 2, z + UP, r.y + r.h / 2); m.receiveShadow = true;
   return m;
 }
+function lightPools(ps: { p: Pt; r: number }[], mat: THREE.Material) {
+  const m = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, Math.max(1, ps.length));
+  const o = new THREE.Object3D();
+  ps.forEach(({ p, r }, i) => { o.position.set(p.x, 0.3, p.y); o.rotation.set(-Math.PI / 2, 0, 0); o.scale.set(r * 2, r * 2, 1); o.updateMatrix(); m.setMatrixAt(i, o.matrix); });
+  m.count = ps.length; m.frustumCulled = false;
+  return m;
+}
 function outline(r: Rect, z: number, c: string) {
-  const p = [r.x, z, r.y, r.x + r.w, z, r.y, r.x + r.w, z, r.y + r.h, r.x, z, r.y + r.h, r.x, z, r.y];
+  return lineLoop([{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }], z, c);
+}
+function lineLoop(pts: Pt[], z: number, c: string) {
+  const p = [...pts, pts[0]].flatMap(q => [q.x, z, q.y]);
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
   return new THREE.Line(g, new THREE.LineBasicMaterial({ color: c }));
 }
-function edgeLines(bs: Box[]) {
+function edgeLines(bs: Box[], opacity: number) {
   const p: number[] = [];
   for (const b of bs) {
-    const x0 = b.x, x1 = b.x + b.w, y0 = b.y, y1 = b.y + b.h;
-    for (const z of [b.z0, b.z1]) p.push(x0, z, y0, x1, z, y0, x1, z, y0, x1, z, y1, x1, z, y1, x0, z, y1, x0, z, y1, x0, z, y0);
-    for (const [x, y] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) p.push(x, b.z0, y, x, b.z1, y);
+    const x0 = b.x, x1 = b.x + b.w, y0 = b.y, y1 = b.y + b.h, z = b.z1 + 0.02;
+    p.push(x0, z, y0, x1, z, y0, x1, z, y0, x1, z, y1, x1, z, y1, x0, z, y1, x0, z, y1, x0, z, y0);
   }
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
-  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: '#28241E', transparent: true, opacity: 0.35 }));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: '#7C725F', transparent: true, opacity }));
 }
 function ring(p: Pt, c: string) {
   const m = new THREE.Mesh(new THREE.RingGeometry(4, 6, 24), new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide }));
   m.rotation.x = -Math.PI / 2; m.position.set(p.x, 0.6, p.y);
   return m;
 }
+/** Terminal name, a constant size on screen, floating over the site's corner. */
 function labelSprite(text: string, st: Site, color: string) {
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
   const g = cv.getContext('2d')!;
   g.font = '900 96px Archivo, "Helvetica Neue", Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.lineWidth = 10; g.strokeStyle = 'rgba(240,232,215,0.9)'; g.strokeText(text, 128, 64); g.fillStyle = color; g.fillText(text, 128, 64);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), depthTest: false }));
-  const k = Math.max(24, Math.min(60, Math.max(st.w, st.h) * 0.08));
-  sp.scale.set(k * 2, k, 1); sp.position.set(st.x + k, LEVELS[1].z1 + 12 + k / 2, st.y + k * 0.5);
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false }));
+  sp.scale.set(0.09, 0.045, 1); sp.position.set(st.x + 20, LEVELS[1].z1 + 18, st.y + 10);
   return sp;
 }
-function dispose(o: THREE.Object3D) {
+/** Free GPU memory for a removed object, except shared materials that live for the whole session. */
+function dispose(o: THREE.Object3D, keep: THREE.Material[]) {
   o.traverse(x => {
     const m = x as THREE.Mesh;
     m.geometry?.dispose?.();
     const mt = m.material as THREE.Material | THREE.Material[] | undefined;
-    for (const q of Array.isArray(mt) ? mt : mt ? [mt] : []) { (q as THREE.SpriteMaterial).map?.dispose(); q.dispose(); }
+    for (const q of Array.isArray(mt) ? mt : mt ? [mt] : []) {
+      if (keep.includes(q)) continue;
+      (q as THREE.SpriteMaterial).map?.dispose(); q.dispose();
+    }
   });
 }
+void lerpPt;

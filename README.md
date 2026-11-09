@@ -16,7 +16,7 @@ npm test                  # all three sims
 
 CI runs the type-check, build and all three sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
-There is no server. The build is one self-contained HTML file (~750 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
+There is no server. The build is one self-contained HTML file (~800 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
 ## Controls
 
@@ -30,7 +30,37 @@ There is no server. The build is one self-contained HTML file (~750 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | drag a selected module to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.8)
+## What's in the alpha (v0.9)
+
+- **A detailed 3D model (v0.9, `src/render3d.ts`, `src/models3d.ts`):** the 3D view now reads as a presentation model rather than blocks.
+  - **Buildings:** each module has a dark plinth, a glazed band with mullions every 7.5 m and a white roof slab with a slight overhang. A glazed clerestory runs down each concourse's spine, and plant enclosures sit on the other roofs. Departures and arrivals curbs get canopies on slender columns.
+  - **Aircraft:** modelled by class (turboprop with propellers, E175, A320, and an A380 with its double deck and four engines). Tails carry airline colours: Meridian navy, Larkspur violet, Northline teal, Polaris amber. Aircraft in motion flash a red beacon.
+  - **Jet bridges:** a fixed link and rotunda stand off each gate. The tunnel docks at the forward door when an aircraft is on stand, and sits retracted otherwise.
+  - **Turnarounds:** while an aircraft is being turned, a pushback tug waits at the nose, bag carts and a belt loader work the hold, a catering truck serves the forward galley, and a fuel truck stands under the wing.
+  - **Painted markings:**
+    - runways: threshold bars, designators, aiming points, touchdown zones, edge lines and centreline
+    - taxiways: yellow centrelines and edges
+    - stands: lead-in lines, stop bars and boundaries
+    - roads: lane lines, with zebra crossings where sidewalks cross
+    - parking: marked bays
+  - **Landscape:** model trees line every road and the highway, groves dot the countryside, and the city has street trees. Planting clears itself from anything you build. A control tower stands beside the first terminal. Parked cars fill the lots as occupancy rises.
+  - **Night:** glazing glows warm, runway edge and taxiway centreline lights come on, apron floodlight masts and street lamps light the ground, cars run headlights, and the sky goes to dusk blue.
+  - New modules rise out of the ground into place.
+- **The plan reads richer too (v0.9):**
+  - a planting plan along roads and in the countryside
+  - the control tower symbol (TWR) and apron floodlight masts
+  - roof plans on buildings outside the open terminal: parapet line, concourse clerestory with mullions, plant enclosures
+  - airline colours on tails
+  - turnaround vehicles around aircraft on stand
+- **Goals and an airport rating (v0.9, `src/goals.ts`):**
+  - **Milestones:** eleven, each with a grant, for example: open a terminal, build a two-level frontage road, lease 40 lots, open duty free, reach satisfaction 88, welcome an A380, $250k profit in a day.
+  - **Next goal:** the header shows it with a progress bar, and clicking it opens the full list in the Report tab.
+  - **Celebration:** reaching a goal stamps across the map, toasts and pays the grant.
+  - **Star rating:** a header rating (0.5–5) weighs satisfaction, on-time running, how much demand you could take, and missed flights. Goals are saved.
+- **Feedback as you build (v0.9):**
+  - New modules and curbs pulse as they appear, and what you spend floats up from where you built it.
+  - A road that grows a curb says so ("+ 2 curbs"), and one that makes a two-level frontage road says that too.
+- **Parking lots lay their own sidewalk (v0.9):** a lot that no sidewalk reaches lays one to the nearest ground-level curb (the arrivals curb if there is one). It goes straight or round one corner, never through a building, an apron or the airfield, and crosswalks appear where it crosses roads. The sample airport has no hand-drawn sidewalk now.
 
 - **Three levels of detail (v0.8):** the map has three readings, and zooming moves between them.
   - **Airfield:** runways, taxiways, aprons and aircraft, with each terminal as one block on its site. Zoom out past 0.3, or press `A`.
@@ -109,7 +139,9 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 - Terminal sites are rectangles. A pier that reaches far out grows its site's bounding box rather than an L or T shape.
 - Curbs grow only where a road is parallel to a straight building face. Curved or angled frontages still need a hand-drawn curb. Cars reach the upper deck by its ramps, but drive under it in the plan until they pull in.
 - In 3D, modules are drawn and selected, but not moved by dragging (switch to plan with `T` to move one). Labels in 3D are terminal names only.
-- Roads are two-way with no one-way loops or signal timing; sidewalks are ground-level only (no elevated walkways yet). Parking lots don't lay their own sidewalk to the curb yet.
+- Roads are two-way with no one-way loops or signal timing; sidewalks are ground-level only (no elevated walkways yet).
+- Lot sidewalks go straight or round one corner; a lot boxed in by buildings still needs a hand-drawn one.
+- The 3D view is heavier than the plan: a few thousand trees and instanced vehicles. On a slow laptop, use the plan for building and 3D for looking.
 - Departing bags are not simulated (arriving bags are).
 - Staff is a flat level all day; no shift curves.
 - One region and site; no international, transfer, rail, garages, rideshare lots or rental cars yet.

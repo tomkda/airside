@@ -7,6 +7,7 @@ import type { Sim, Flight } from './sim';
 import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
 import type { LItem } from './layout';
 import { Renderer3D } from './render3d';
+import { scenery } from './scenery';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -40,6 +41,10 @@ export class Renderer {
   /** v0.8: a true 3D view with an orbiting camera (render3d.ts), made on first use. */
   mode3d = false;
   r3?: Renderer3D;
+  /** v0.9 feedback: modules pulse as they appear, and what you spent floats up from where you built. */
+  private born = new Map<number, number>(); private knownIds: Set<number> | null = null; private dSeen: unknown = null;
+  private floaters: { text: string; p: Pt; z: number; t0: number; color: string }[] = [];
+  float(text: string, p: Pt, color: string = PAL.ink, z = 0) { this.floaters.push({ text, p, z, t0: performance.now(), color }); }
   commerce = false;            // commercial heatmap: footfall and revenue per lot (C)
   W = 0; H = 0; dpr = 1;
   selected: Sel | null = null;
@@ -125,9 +130,15 @@ export class Renderer {
   // ------------------------------------------------------------ frame
   draw(sim: Sim) {
     const g = this.ctx;
+    if (sim.d !== this.dSeen) {
+      this.dSeen = sim.d; const ids = new Set(sim.d.zones.map(q => q.id)); const now = performance.now();
+      if (this.knownIds) for (const id of ids) if (!this.knownIds.has(id)) this.born.set(id, now);
+      this.knownIds = ids;
+    }
     if (this.mode3d && this.r3) {
       g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); g.clearRect(0, 0, this.W, this.H);
       this.r3.draw(sim, this.nightness(sim.t));
+      this.drawFloaters();
       return;
     }
     this.tilt += (this.tiltTarget - this.tilt) * 0.18;
@@ -141,6 +152,7 @@ export class Renderer {
     this.drawAirfield(sim);
     this.drawLots(sim);
     if (lod !== 'airfield') this.drawWalks(sim);
+    this.drawScenery(sim);
     this.drawDecks(sim);
     this.drawStands(sim);
     if (lod !== 'landside') this.drawGateSlots(sim);
@@ -154,11 +166,39 @@ export class Renderer {
     this.drawFocus(sim);
     this.drawLinks(sim);
     this.drawGhost();
+    this.drawPulses(sim);
 
     const n = this.nightness(sim.t);
     if (n > 0) {
       g.save(); g.globalCompositeOperation = 'multiply'; g.fillStyle = `rgba(70,78,118,${0.42 * n})`; g.fillRect(0, 0, this.W, this.H); g.restore();
       this.drawLights(sim, n);
+    }
+    this.drawFloaters();
+  }
+
+  /** New modules and curbs: a ring that grows out from the outline and fades. */
+  drawPulses(sim: Sim) {
+    const now = performance.now(); const g = this.ctx;
+    for (const [id, t0] of this.born) {
+      const k = (now - t0) / 1100; if (k >= 1) { this.born.delete(id); continue; }
+      const zn = sim.d.zones.find(q => q.id === id); if (!zn) continue;
+      const grow = (8 + 22 * k) / this.cam.zoom;
+      g.strokeStyle = zn.auto ? `rgba(194,133,46,${1 - k})` : `rgba(47,93,124,${1 - k})`; g.lineWidth = 3 * (1 - k) + 1;
+      this.path(this.rectPts({ x: zn.x - grow, y: zn.y - grow, w: zn.w + 2 * grow, h: zn.h + 2 * grow }), 0); g.stroke();
+      if (k < 0.5) this.poly(this.rectPts(zn), `rgba(255,248,230,${0.5 - k})`, 0);
+    }
+  }
+  /** Costs and grants rising from where they happened. */
+  drawFloaters() {
+    const now = performance.now();
+    this.floaters = this.floaters.filter(f => now - f.t0 < 1800);
+    for (const f of this.floaters) {
+      const k = (now - f.t0) / 1800;
+      const [x, y] = this.P(f.p.x, f.p.y, f.z);
+      const g = this.ctx; g.save(); g.globalAlpha = 1 - k * k;
+      g.font = '800 15px Archivo, "Helvetica Neue", Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.lineWidth = 4; g.strokeStyle = 'rgba(244,237,223,0.95)'; g.strokeText(f.text, x, y - 46 * k);
+      g.fillStyle = f.color; g.fillText(f.text, x, y - 46 * k); g.restore();
     }
   }
 
@@ -232,7 +272,7 @@ export class Renderer {
   // ------------------------------------------------------------ sidewalks (people): pale paving with fine edges
   drawWalks(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom;
-    const walks = sim.world.ways.filter(w => w.kind === 'walk');
+    const walks = [...sim.world.ways.filter(w => w.kind === 'walk'), ...sim.d.autoWalks];
     if (z < 0.3) {
       g.setLineDash([2, 2]);
       for (const w of walks) this.line(w.a, w.b, 0, PAL.walkEdge, 0, 'butt', 1.2);
@@ -446,8 +486,9 @@ export class Renderer {
         labels.push([zn, top]);
       } else if (isActive && this.lod === 'landside') {
         if (this.overlay) this.heat(sim, zn, top);
+        this.roofPlan(zn, top);
         labels.push([zn, top]);
-      }
+      } else if (isActive) this.roofPlan(zn, top);
       this.selectOutline(zn, top);
     }
     for (const zn of zones) if (zn.level > active && this.lod === 'terminal') {
@@ -615,6 +656,59 @@ export class Renderer {
         case 'plant': if (z > 0.5) this.poly(it.pts, 'rgba(94,122,85,0.5)', top); break;
         case 'hold': this.poly(it.pts, 'rgba(47,93,124,0.08)', top); break;
       }
+    }
+  }
+
+  /** A roof plan for a module seen as massing: parapet line, a clerestory down a concourse, plant enclosures. */
+  roofPlan(zn: Zone, top: number) {
+    const z = this.cam.zoom; if (z < 0.2) return;
+    const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
+    g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
+    this.path(this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k }), top); g.stroke();
+    if (zn.type === 'concourse') {
+      const horiz = zn.w >= zn.h; const wC = Math.min(12, (horiz ? zn.h : zn.w) * 0.28);
+      const r = horiz ? { x: zn.x + 8, y: zn.y + zn.h / 2 - wC / 2, w: zn.w - 16, h: wC } : { x: zn.x + zn.w / 2 - wC / 2, y: zn.y + 8, w: wC, h: zn.h - 16 };
+      this.poly(this.rectPts(r), 'rgba(176,192,196,0.45)', top);
+      g.strokeStyle = 'rgba(40,36,30,0.25)'; this.path(this.rectPts(r), top); g.stroke();
+      if (z > 0.6) { const n = Math.floor((horiz ? r.w : r.h) / 7.5); g.beginPath(); for (let i = 1; i < n; i++) { const a = horiz ? { x: r.x + i * 7.5, y: r.y } : { x: r.x, y: r.y + i * 7.5 }, b = horiz ? { x: a.x, y: r.y + r.h } : { x: r.x + r.w, y: a.y }; const [x0, y0] = this.P(a.x, a.y, top), [x1, y1] = this.P(b.x, b.y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); }
+    } else if (z > 0.35) {
+      const h = Math.sin(zn.x * 12.9898 + zn.y * 78.233) * 43758.5453; const kk = h - Math.floor(h);
+      for (let i = 0; i < 2; i++) {
+        const w = 10 + kk * 8, hh = 6 + i * 3; const x = zn.x + zn.w * (0.25 + 0.4 * i) - w / 2, y = zn.y + zn.h * (0.35 + 0.25 * ((kk + i) % 1)) - hh / 2;
+        if (w < zn.w - 6 && hh < zn.h - 6) { this.poly(this.rectPts({ x, y, w, h: hh }), 'rgba(124,114,95,0.35)', top); }
+      }
+    }
+  }
+
+  /** Planting, apron floodlight masts and the control tower, drawn like trees on a landscape plan. */
+  drawScenery(sim: Sim) {
+    const g = this.ctx; const z = this.cam.zoom;
+    if (z < 0.12) return;
+    const sc = scenery(sim.world, sim.d);
+    const [vx0, vy0] = [this.toWorld(0, 0), this.toWorld(this.W, this.H)].map(p => p) as unknown as [Pt, Pt];
+    const view = { x0: vx0.x - 20, y0: vx0.y - 20, x1: vy0.x + 20, y1: vy0.y + 20 };
+    const shade = ['rgba(122,133,92,0.30)', 'rgba(108,122,84,0.34)', 'rgba(140,140,98,0.28)'];
+    for (let k = 0; k < 3; k++) {
+      g.fillStyle = shade[k]; g.beginPath();
+      for (const t of sc.trees) {
+        if (Math.floor(t.k * 3) !== k || t.x < view.x0 || t.x > view.x1 || t.y < view.y0 || t.y > view.y1) continue;
+        const [x, y] = this.P(t.x, t.y); const r = Math.max(1.2, t.s * 0.45 * z);
+        g.moveTo(x + r, y); g.arc(x, y, r, 0, Math.PI * 2);
+      }
+      g.fill();
+    }
+    if (z > 0.5) {   // crown outlines and trunk dots, like a planting plan
+      g.strokeStyle = 'rgba(78,88,58,0.35)'; g.lineWidth = 0.8; g.beginPath();
+      for (const t of sc.trees) { if (t.x < view.x0 || t.x > view.x1 || t.y < view.y0 || t.y > view.y1) continue; const [x, y] = this.P(t.x, t.y); const r = t.s * 0.45 * z; g.moveTo(x + r, y); g.arc(x, y, r, 0, Math.PI * 2); }
+      g.stroke();
+    }
+    if (z > 0.35) { g.fillStyle = PAL.ink2; for (const m of sc.masts) { const [x, y] = this.P(m.x, m.y); g.fillRect(x - 1.5, y - 1.5, 3, 3); } }
+    if (sc.tower) {
+      const [x, y] = this.P(sc.tower.x, sc.tower.y); const r = Math.max(4, 8 * z);
+      g.fillStyle = PAL.bldgTop; g.strokeStyle = PAL.ink; g.lineWidth = 1.5;
+      g.beginPath(); for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2 + Math.PI / 8; const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r * this.yScale; i ? g.lineTo(px, py) : g.moveTo(px, py); } g.closePath(); g.fill(); g.stroke();
+      g.fillStyle = PAL.ink; g.beginPath(); g.arc(x, y, r * 0.35, 0, Math.PI * 2); g.fill();
+      if (z > 0.25) this.label('TWR', { x: sc.tower.x, y: sc.tower.y + (r + 9) / z }, 0, 8, PAL.ink2, { weight: 800, spacing: 1.2 });
     }
   }
 
@@ -816,6 +910,8 @@ export class Renderer {
       const alt = f.alt;
       if (alt > 0.02) this.plane(f, f.x + 160 * alt, f.y + 120 * alt, 0, 'rgba(40,36,30,0.18)', 1);
       this.plane(f, f.x, f.y, alt * 260, PAL.ink, 1 + alt * 0.5);
+      if (z > 0.45) this.tail(f, f.x, f.y, alt * 260, 1 + alt * 0.5);
+      if (f.state === 'stand' && z > 0.9 && sim.t - f.standT > 3 && f.readyT - sim.t > 6) this.turnaround(f);
       if (z > 1.3 && (f.state === 'stand' || f.state === 'taxiIn' || f.state === 'waitGate'))
         this.label(f.code, add({ x: f.x, y: f.y }, mul(norm(sub(f.gate.stand, f.gate.door)), f.ac.length / 2 + 10)), 0, 9, PAL.ink2, { weight: 600, spacing: 0.5 });
       if (f.state === 'stand' && z > 0.4) {
@@ -848,6 +944,31 @@ export class Renderer {
     g.lineTo(-L * 0.5, S * 0.17); g.lineTo(-L * 0.47, S * 0.17); g.lineTo(-L * 0.36, fw);
     g.fill();
     g.restore();
+  }
+
+  /** The airline's colour on the fin, so a busy apron reads by carrier. */
+  tail(f: Flight, x: number, y: number, zLift: number, scale: number) {
+    const g = this.ctx; const z = this.cam.zoom;
+    const [sx, sy0] = this.P(x, y); const sy = sy0 - zLift * z * 0.4;
+    const L = f.ac.length * scale, S = f.ac.span * scale; const k = Math.max(z, 7 / L);
+    g.save(); g.translate(sx, sy); g.scale(k, k * this.yScale); g.rotate(f.ang);
+    g.fillStyle = f.airline.color; g.beginPath();
+    g.moveTo(-L * 0.36, 0); g.lineTo(-L * 0.47, -S * 0.17); g.lineTo(-L * 0.5, -S * 0.17); g.lineTo(-L * 0.45, 0); g.lineTo(-L * 0.5, S * 0.17); g.lineTo(-L * 0.47, S * 0.17); g.closePath(); g.fill();
+    g.fillRect(-L * 0.47, -L * 0.012, L * 0.2, L * 0.024);
+    g.restore();
+  }
+  /** Turnaround: bag carts aft, a catering truck forward, fuel under the wing, the pushback tug at the nose. */
+  turnaround(f: Flight) {
+    const g = this.ctx; const z = this.cam.zoom; const L = f.ac.length, S = f.ac.span;
+    const dv = { x: Math.cos(f.ang), y: Math.sin(f.ang) }; const left = { x: dv.y, y: -dv.x }; const r = f.cls === 3 ? 3.6 : 2;
+    const veh = (fx: number, fl: number, l: number, w: number, c: string) => {
+      const p = add(add({ x: f.x, y: f.y }, mul(dv, fx)), mul(left, fl)); const [x, y] = this.P(p.x, p.y);
+      g.save(); g.translate(x, y); g.scale(1, this.yScale); g.rotate(f.ang); g.fillStyle = c; g.fillRect(-l * z / 2, -w * z / 2, l * z, w * z); g.restore();
+    };
+    veh(L / 2 + 5, 0, 4.5, 2.2, '#B8962E');
+    for (let k = 0; k < 3; k++) veh(-L * 0.22 - k * 4.2, -(r + 5), 3.4, 1.8, '#7C725F');
+    veh(L * 0.32, r + 5, 7, 2.5, '#9C9483');
+    veh(-L * 0.05, S * 0.3, 9, 2.6, '#B08A3A');
   }
 
   drawLinks(sim: Sim) {
