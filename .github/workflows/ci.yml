@@ -19,3 +19,4 @@ jobs:
       - run: node scripts/stress.mjs
       - run: node scripts/growth.mjs
       - run: node scripts/roads.mjs
+      - run: node scripts/halls.mjs

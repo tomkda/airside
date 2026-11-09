@@ -295,6 +295,7 @@ export const FRONTAGE = {
   minLen: 30,              // m of shared frontage before a curb appears
   ramp: 60,                // m of ramp either end of an upper deck
   snap: 40,                // m: the road tool snaps to a frontage guide within this distance
+  reach: 320,              // m: v0.12, a hall lays its own forecourt to any road this close to its landside face
 };
 export const SITES = {
   minW: 80, minH: 60,      // smallest terminal site, m

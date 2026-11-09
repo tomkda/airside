@@ -11,12 +11,13 @@ npm run dev          # rebuilds on every save
 npm run check        # TypeScript type-check
 npm run simtest      # headless: runs 3 sim days and prints the daily report
 node scripts/roads.mjs     # curves, roundabouts and one-way loops
+node scripts/halls.mjs     # stacked halls and self-laid forecourts
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
 node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
-npm test                  # all five sims
+npm test                  # all six sims
 ```
 
-CI runs the type-check, build and all five sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
+CI runs the type-check, build and all six sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
 There is no server. The build is one self-contained HTML file (~840 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
@@ -24,7 +25,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 | Action | Input |
 | --- | --- |
-| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` check-in · `4` security · `5` concourse · `6` bag claim · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
+| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` hall (check-in over bag claim) · `4` security · `5` concourse · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
 | Pan / zoom | drag empty space (or Shift-drag, right-drag) · scroll wheel · pinch on touch · in 3D: drag to orbit, right-drag to pan, scroll to zoom |
 | Detail | `A` airfield · `L` landside · `Enter` (or double-click a terminal) open a terminal · `Esc` step back out · zooming moves between them too |
 | Levels | `[` Ground · `]` Level 1 |
@@ -33,6 +34,12 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
 ## What's in the alpha (v0.12)
+
+- **One hall, and a forecourt that lays itself (v0.12):** getting a road, check-in and baggage claim to line up was the hardest part of building a terminal. It no longer needs lining up.
+  - **The hall.** Check-in and baggage claim are one building now: the **Hall** tool (`3`) places check-in on Level 1 with baggage claim directly under it on Ground, in one drag. The two move together and are demolished together. Separate check-in and claim modules in older saves keep working.
+  - **The forecourt.** If no road runs along the hall's face, and any road (or State Route 12) is within 320 m of it, the hall lays its own forecourt: a four-lane frontage road at the right distance from its open face, with a link from each end down to that road. Because departures sit over arrivals, it splits by itself into an upper departures deck and a lower arrivals road, each with its curb. So: build the hall, draw any road nearby, and the terminal has a working two-level curbside. Move the hall or the road and the forecourt follows.
+  - A road you draw along the face yourself still becomes the curb, exactly as before, and then the hall lays nothing.
+  - Car parks, rental centres and bus stations connect their drives to a forecourt as they do to any road.
 
 - **Traffic that reads as traffic, and sound (v0.12):**
   - **Cars keep to their lanes.** Every car drives on the right, in a lane (two each way on a four-lane road, all lanes on a one-way road, both lanes of a large roundabout), and takes corners as curves instead of pivoting on the junction. This is how cars are drawn, in the plan and in 3D; the sim's numbers are unchanged.
@@ -196,7 +203,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 - Unlocks depend on the best day's departures only. Weather and offers are light: no de-icing, diversions or negotiation yet.
 - Adding a second terminal splits the same check-in agents and screeners across both, so queues grow until you hire more in Operations.
 - Terminal sites are rectangles. A pier that reaches far out grows its site's bounding box rather than an L or T shape.
-- Curbs grow only where a road is parallel to a straight building face. Curved or angled frontages still need a hand-drawn curb. Cars reach the upper deck by its ramps, but drive under it in the plan until they pull in.
+- A forecourt is laid along one straight face of the hall and its links run straight out (or straight on) to the nearest road; it does not yet find its way round obstacles or pick a one-way loop, and it links to the nearest road even if that road goes nowhere (the design check then reports the curb has no road to State Route 12). A hand-drawn frontage road must still be parallel to the face to grow a curb. Cars reach the upper deck by its ramps, but drive under it in the plan view.
 - In 3D, modules are drawn and selected, but not moved by dragging (switch to plan with `T` to move one). Labels in 3D are terminal names only.
 - No signal timing at junctions; sidewalks are ground-level only (no elevated walkways yet), and they cannot cross a roundabout.
 - Lot sidewalks go straight or round one corner; a lot boxed in by buildings still needs a hand-drawn one.
