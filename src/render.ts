@@ -2,7 +2,7 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod } from './config';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH } from './config';
 import type { Sim, Flight } from './sim';
 import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
 import type { LItem } from './layout';
@@ -149,11 +149,14 @@ export class Renderer {
     const lod = this.lod;
     this.drawTerrain();
     this.drawRoads(sim);
+    this.drawGround(sim);
     this.drawAirfield(sim);
+    this.drawApronJoints(sim);
     this.drawLots(sim);
     if (lod !== 'airfield') this.drawWalks(sim);
     this.drawScenery(sim);
     this.drawDecks(sim);
+    this.drawTrain(sim);
     this.drawStands(sim);
     if (lod !== 'landside') this.drawGateSlots(sim);
     this.drawGateGuides(sim, this.showGuides);
@@ -173,6 +176,7 @@ export class Renderer {
       g.save(); g.globalCompositeOperation = 'multiply'; g.fillStyle = `rgba(70,78,118,${0.42 * n})`; g.fillRect(0, 0, this.W, this.H); g.restore();
       this.drawLights(sim, n);
     }
+    if (this.cam.zoom > 0.1) this.drawSheet();
     this.drawFloaters();
   }
 
@@ -232,7 +236,7 @@ export class Renderer {
     const g = this.ctx; const z = this.cam.zoom;
     const HY = SITE.highwayY;
     const hwy = { a: { x: 0, y: HY }, b: { x: SITE.width, y: HY }, w: 24, lanes: 6, id: -1 };
-    const roads = [hwy, ...sim.world.ways.filter(w => w.kind === 'road').map(w => ({ a: w.a, b: w.b, w: wayWidth('road', 0, w.lanes), lanes: w.lanes, id: w.id }))];
+    const roads = [hwy, ...[...sim.world.ways, ...sim.d.autoRoads].filter(w => w.kind === 'road').map(w => ({ a: w.a, b: w.b, w: wayWidth('road', 0, w.lanes), lanes: w.lanes, id: w.id }))];
     g.lineJoin = 'round';
     // kerb (darker, slightly wider) then asphalt
     if (this.lod === 'airfield') g.globalAlpha = 0.55;
@@ -423,15 +427,30 @@ export class Renderer {
     const order = [...sim.d.zones].sort((a, b) => Number(a.level === this.level) - Number(b.level === this.level));
     for (const zn of order) {
       if (zn.type === 'parking') {
-        this.poly(this.rectPts(zn), PAL.paveLight);
+        const decks = zn.floors ?? 1;
+        if (decks > 1) this.shadow(zn, decks * 3.2);
+        this.poly(this.rectPts(zn), decks > 1 ? '#BDB4A0' : PAL.paveLight);
         const used = sim.lotUsed / (sim.lotCapacity() || 1);
         if (z > 0.35) {
           g.strokeStyle = 'rgba(40,36,30,0.16)'; g.lineWidth = 1;
           for (let y = zn.y + 8; y < zn.y + zn.h - 4; y += 14) { this.path([{ x: zn.x + 6, y }, { x: zn.x + zn.w - 6, y }], 0, false); g.stroke(); }
-          const rows = Math.floor((zn.h - 12) / 14);
-          for (let i = 0; i < Math.round(rows * used); i++) this.poly(this.rectPts({ x: zn.x + 8, y: zn.y + 8 + i * 14 + 3, w: zn.w - 16, h: 8 }), 'rgba(110,100,84,0.35)');
+          if (z > 1.1) {   // every car in its bay
+            const cols = ['rgba(58,53,45,0.75)', 'rgba(140,133,118,0.8)', 'rgba(233,228,218,0.9)', 'rgba(176,71,43,0.75)', 'rgba(47,78,120,0.75)', 'rgba(94,122,85,0.7)'];
+            for (let y = zn.y + 8; y < zn.y + zn.h - 4; y += 14) for (let x = zn.x + 7.35; x < zn.x + zn.w - 6; x += 2.7) for (const [dy, hx, hy] of [[-5, x, y], [1.4, y, x]] as const) {
+              const r = hash2(hx, hy); if (r > used) continue;
+              this.poly(this.rectPts({ x: x - 0.9, y: y + dy, w: 1.8, h: 4.2 }), cols[Math.floor(r * 977) % cols.length]);
+            }
+          } else { const rows = Math.floor((zn.h - 12) / 14); for (let i = 0; i < Math.round(rows * used); i++) this.poly(this.rectPts({ x: zn.x + 8, y: zn.y + 8 + i * 14 + 3, w: zn.w - 16, h: 8 }), 'rgba(110,100,84,0.35)'); }
+        }
+        if (decks > 1) {   // a garage: heavy edge, a ramp helix in the corner, the deck count
+          g.strokeStyle = PAL.ink2; g.lineWidth = 2; this.path(this.rectPts(zn)); g.stroke();
+          const c = { x: zn.x + 14, y: zn.y + 14 }; const [cx, cy] = this.P(c.x, c.y);
+          g.strokeStyle = PAL.ink2; g.lineWidth = 1.2; for (const r of [4, 8, 11]) { g.beginPath(); g.ellipse(cx, cy, r * z, r * z * this.yScale, 0, 0, Math.PI * 1.6); g.stroke(); }
+          if (z > 0.3) this.label(`P × ${decks}`, { x: zn.x + zn.w - 24 / z, y: zn.y + 12 / z }, 0, 10, PAL.ink, { weight: 900, spacing: 0.5, bg: 'rgba(240,232,215,0.85)' });
         }
         this.zoneLabel(sim, zn, 0);
+      } else if (zn.type === 'rideshare' || zn.type === 'rental' || zn.type === 'bus' || zn.type === 'hotel' || zn.type === 'train') {
+        this.facility(sim, zn);
       } else if (zn.type === 'curb') {
         if (zn.level !== this.level && order.some(o => o.type === 'curb' && o.level === this.level && rectsTouch(o, zn))) continue;
         this.poly(this.rectPts(zn), zn.level === 1 ? '#B4AEA2' : PAL.road);
@@ -446,7 +465,7 @@ export class Renderer {
         this.line(add(f.a, mul(f.inward, 4)), add(f.b, mul(f.inward, 4)), 0.3, PAL.walkEdge, 0, 'butt', 0.5);
         if (this.lod !== 'airfield' && (zn.level === this.level || this.cam.zoom < 0.7)) this.zoneLabel(sim, zn, 0);
       }
-      if (zn.type === 'parking' || zn.type === 'curb') this.selectOutline(zn, 0);
+      if (!ZONES[zn.type].terminal) this.selectOutline(zn, 0);
     }
   }
 
@@ -465,6 +484,7 @@ export class Renderer {
     zones.sort((a, b) => a.level - b.level || (a.y + a.h) - (b.y + b.h));
     const tilted = this.tilt > 0.02;
     const labels: [Zone, number][] = [];
+    if (!tilted) for (const zn of zones) if (zn.level <= active) this.shadow(zn, LEVELS[zn.level].z1 * 0.9);
     for (const zn of zones) {
       const L = LEVELS[zn.level];
       if (zn.level > active) continue;
@@ -659,6 +679,110 @@ export class Renderer {
     }
   }
 
+  /** A soft cast shadow to the south-east, as long as the thing is tall: what makes a plan read as buildings. */
+  shadow(r: Rect, h: number) {
+    const k = h * 0.55; const g = this.ctx;
+    g.fillStyle = 'rgba(40,36,30,0.13)';
+    this.path([{ x: r.x + r.w, y: r.y }, { x: r.x + r.w + k, y: r.y + k }, { x: r.x + r.w + k, y: r.y + r.h + k }, { x: r.x + k, y: r.y + r.h + k }, { x: r.x, y: r.y + r.h }, { x: r.x + r.w, y: r.y + r.h }]); g.fill();
+  }
+
+  /** Landside facilities (v0.10), each drawn so it reads at a glance on the plan. */
+  facility(sim: Sim, zn: Zone) {
+    const g = this.ctx; const z = this.cam.zoom; const horiz = zn.w >= zn.h;
+    const ok = sim.d.served.has(zn.id);
+    const R = (x: number, y: number, w: number, h: number) => this.rectPts({ x: zn.x + x, y: zn.y + y, w, h });
+    if (zn.type === 'hotel') {
+      this.shadow(zn, GROWTH.hotelFloors * 3.6);
+      this.poly(this.rectPts(zn), '#C9BFAC'); g.strokeStyle = PAL.ink2; g.lineWidth = 1.5; this.path(this.rectPts(zn)); g.stroke();
+      // a double-loaded corridor with rooms either side
+      const c = horiz ? R(3, zn.h / 2 - 1.2, zn.w - 6, 2.4) : R(zn.w / 2 - 1.2, 3, 2.4, zn.h - 6);
+      this.poly(c, 'rgba(244,237,223,0.7)');
+      if (z > 0.7) { g.strokeStyle = 'rgba(40,36,30,0.3)'; g.lineWidth = 0.8; g.beginPath(); const L = horiz ? zn.w : zn.h; for (let u = 4; u < L - 2; u += 4) { const a = horiz ? { x: zn.x + u, y: zn.y + 1 } : { x: zn.x + 1, y: zn.y + u }, b = horiz ? { x: zn.x + u, y: zn.y + zn.h - 1 } : { x: zn.x + zn.w - 1, y: zn.y + u }; const [x0, y0] = this.P(a.x, a.y), [x1, y1] = this.P(b.x, b.y); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); }
+    } else if (zn.type === 'rental') {
+      this.poly(this.rectPts(zn), PAL.paveLight);
+      const bw = Math.min(zn.w, zn.h) * 0.3; const b = horiz ? { x: zn.x, y: zn.y, w: zn.w, h: bw } : { x: zn.x, y: zn.y, w: bw, h: zn.h };
+      this.shadow(b, 6); this.poly(this.rectPts(b), PAL.bldgTop); g.strokeStyle = PAL.ink2; g.lineWidth = 1; this.path(this.rectPts(b)); g.stroke();
+      if (z > 0.6) { const cols = ['rgba(58,53,45,0.7)', 'rgba(233,228,218,0.9)', 'rgba(140,133,118,0.8)']; for (let y = zn.y + (horiz ? bw + 5 : 5); y < zn.y + zn.h - 5; y += 7) for (let x = zn.x + (horiz ? 4 : bw + 4); x < zn.x + zn.w - 3; x += 2.9) this.poly(this.rectPts({ x, y, w: 1.9, h: 4.4 }), cols[Math.floor(hash2(x, y) * 3)]); }
+    } else if (zn.type === 'rideshare') {
+      this.poly(this.rectPts(zn), PAL.road);
+      if (z > 0.5) { const L = horiz ? zn.w : zn.h; for (let u = 6; u < L - 4; u += 7) { const a = horiz ? { x: zn.x + u, y: zn.y + 3 } : { x: zn.x + 3, y: zn.y + u }, b = horiz ? { x: zn.x + u + 3, y: zn.y + zn.h * 0.45 } : { x: zn.x + zn.w * 0.45, y: zn.y + u + 3 }; this.line(a, b, 0.3, PAL.roadLine, 0, 'butt', 0.6); } }
+      this.poly(horiz ? R(0, zn.h - 5, zn.w, 5) : R(zn.w - 5, 0, 5, zn.h), PAL.walk);
+    } else if (zn.type === 'bus') {
+      this.poly(this.rectPts(zn), PAL.road);
+      const L = horiz ? zn.w : zn.h; const S = horiz ? zn.h : zn.w;
+      this.poly(horiz ? R(0, 0, zn.w, S * 0.38) : R(0, 0, S * 0.38, zn.h), PAL.walk);
+      for (let u = 4; u + 12 < L; u += 14) {   // sawtooth bays, a bus in every other one
+        const bay = horiz ? { x: zn.x + u, y: zn.y + S * 0.45, w: 12, h: 3 } : { x: zn.x + S * 0.45, y: zn.y + u, w: 3, h: 12 };
+        g.setLineDash([3, 3]); g.strokeStyle = PAL.roadLine; g.lineWidth = 1; this.path(this.rectPts(bay)); g.stroke(); g.setLineDash([]);
+        if (ok && hash2(u, zn.id + Math.floor(sim.t / 20)) > 0.45) this.poly(this.rectPts(bay), '#5E7A55');
+        const sh = horiz ? { x: zn.x + u + 2, y: zn.y + 2, w: 8, h: 2.4 } : { x: zn.x + 2, y: zn.y + u + 2, w: 2.4, h: 8 };
+        this.poly(this.rectPts(sh), 'rgba(176,192,196,0.8)');
+      }
+    } else {   // AirTrain station: platform either side of the track
+      this.shadow(zn, 9);
+      this.poly(this.rectPts(zn), '#D6CEBE'); g.strokeStyle = PAL.ink2; g.lineWidth = 1.5; this.path(this.rectPts(zn)); g.stroke();
+      this.poly(horiz ? R(2, zn.h / 2 - 2, zn.w - 4, 4) : R(zn.w / 2 - 2, 2, 4, zn.h - 4), 'rgba(47,93,124,0.35)');
+    }
+    if (!ok) { g.setLineDash([5, 4]); g.strokeStyle = PAL.bad; g.lineWidth = 1.5; this.path(this.rectPts(zn)); g.stroke(); g.setLineDash([]); }
+    if (this.lod !== 'airfield') this.zoneLabel(sim, zn, 0);
+  }
+
+  /** The AirTrain: a twin-beam guideway between stations, with trains shuttling along it. */
+  drawTrain(sim: Sim) {
+    const z = this.cam.zoom;
+    for (const [i, l] of sim.d.trainLinks.entries()) {
+      const n = norm({ x: -(l.b.y - l.a.y), y: l.b.x - l.a.x });
+      this.line(l.a, l.b, 5, 'rgba(40,36,30,0.10)', 0, 'butt', 2);
+      for (const s of [-1.4, 1.4]) this.line(add(l.a, mul(n, s)), add(l.b, mul(n, s)), 0.5, PAL.select, 0, 'butt', 1);
+      const L = dist(l.a, l.b); if (z > 0.5) for (let u = 20; u < L; u += 30) { const p = lerp2(l.a, l.b, u / L); this.line(add(p, mul(n, -2.2)), add(p, mul(n, 2.2)), 0.8, 'rgba(47,93,124,0.5)', 0, 'butt', 0.8); }
+      // a train out and back, about every four minutes
+      const T = Math.max(1.5, L / (TUNE.walkSpeed * GROWTH.trainSpeed)) + 1; const ph = ((sim.t + i * 1.7) % (2 * T)) / T; const k = ph < 1 ? ph : 2 - ph;
+      const e = clamp((k * T - 0.5) / (T - 1), 0, 1); const c = lerp2(l.a, l.b, e); const d = norm(sub(l.b, l.a));
+      this.line(add(c, mul(d, -9)), add(c, mul(d, 9)), 3.2, '#F4EDDF', 0, 'round', 3); this.line(add(c, mul(d, -9)), add(c, mul(d, 9)), 1.2, PAL.select, 0, 'butt', 1);
+    }
+  }
+
+  /** Under everything: farmland parcels in the countryside and depth rings in the lake, like a survey sheet. */
+  drawGround(sim: Sim) {
+    const g = this.ctx; const z = this.cam.zoom; void sim;
+    const b = SITE.buildable;
+    for (let x = 0; x < SITE.cityX - 200; x += 420) for (let y = 0; y < SITE.height; y += 360) {
+      const inside = x + 420 > b.x && x < b.x + b.w && y + 360 > b.y && y < b.y + b.h; if (inside) continue;
+      const h = hash2(x, y); if (h < 0.35) continue;
+      const r = { x: x + 20 + h * 60, y: y + 20, w: 240 + h * 120, h: 200 + hash2(y, x) * 110 };
+      if (pointInLake(r.x, r.y) || pointInLake(r.x + r.w, r.y + r.h) || Math.abs(r.y + r.h / 2 - SITE.highwayY) < 220) continue;
+      this.poly(this.rectPts(r), h > 0.7 ? 'rgba(170,160,110,0.16)' : 'rgba(150,160,120,0.14)');
+      if (z > 0.18) { g.save(); this.path(this.rectPts(r)); g.clip(); g.strokeStyle = 'rgba(120,112,84,0.16)'; g.lineWidth = 1; g.beginPath(); const step = 16; const diag = h > 0.6; for (let k = -r.h; k < r.w + r.h; k += step) { const [x0, y0] = this.P(r.x + k, r.y + (diag ? r.h : 0)), [x1, y1] = this.P(r.x + k + (diag ? r.h : 0), r.y + (diag ? 0 : r.h)); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); g.restore(); }
+    }
+    const cx = SITE.lake.reduce((n, p) => n + p.x, 0) / SITE.lake.length, cy = SITE.lake.reduce((n, p) => n + p.y, 0) / SITE.lake.length;
+    g.strokeStyle = 'rgba(120,128,128,0.35)'; g.lineWidth = 0.8;
+    for (const k of [0.88, 0.74, 0.58]) { this.path(SITE.lake.map(p => ({ x: 0 + (p.x - 0) * k + (cx * 0.12) * (1 - k), y: 0 + (p.y - 0) * k + (cy * 0.12) * (1 - k) }))); g.stroke(); }
+  }
+
+  /** Concrete slab joints on the aprons, close in. */
+  drawApronJoints(sim: Sim) {
+    const z = this.cam.zoom; if (z < 0.9) return;
+    const g = this.ctx; g.strokeStyle = 'rgba(40,36,30,0.07)'; g.lineWidth = 1; g.beginPath();
+    for (const ap of sim.d.aprons) { const r = ap.rect;
+      for (let x = r.x + 7.5; x < r.x + r.w; x += 7.5) { const [x0, y0] = this.P(x, r.y), [x1, y1] = this.P(x, r.y + r.h); g.moveTo(x0, y0); g.lineTo(x1, y1); }
+      for (let y = r.y + 7.5; y < r.y + r.h; y += 7.5) { const [x0, y0] = this.P(r.x, y), [x1, y1] = this.P(r.x + r.w, y); g.moveTo(x0, y0); g.lineTo(x1, y1); } }
+    g.stroke();
+  }
+
+  /** North arrow and scale bar, bottom left, like any drawing. */
+  drawSheet() {
+    const g = this.ctx; const z = this.cam.zoom;
+    const nice = [10, 20, 50, 100, 200, 500, 1000, 2000]; const m = nice.find(v => v * z >= 70) ?? 2000; const px = m * z;
+    const x = this.W > 820 ? 400 : 16, y = this.H - 26;
+    g.save(); g.fillStyle = PAL.ink2; g.strokeStyle = PAL.ink2; g.lineWidth = 1.2;
+    g.fillRect(x, y, px / 2, 4); g.strokeRect(x, y, px, 4);
+    g.font = '600 10px "Spline Sans Mono", ui-monospace, monospace'; g.textBaseline = 'bottom'; g.textAlign = 'left'; g.fillText('0', x - 2, y - 3); g.textAlign = 'right'; g.fillText(`${m >= 1000 ? m / 1000 + ' km' : m + ' m'}`, x + px + 2, y - 3);
+    const nx = x + px + 34, ny = y - 4;
+    g.beginPath(); g.moveTo(nx, ny - 20); g.lineTo(nx + 6, ny + 2); g.lineTo(nx, ny - 3); g.lineTo(nx - 6, ny + 2); g.closePath(); g.fill();
+    g.textAlign = 'center'; g.font = '800 10px Archivo, Arial, sans-serif'; g.fillText('N', nx, ny - 21);
+    g.restore();
+  }
+
   /** A roof plan for a module seen as massing: parapet line, a clerestory down a concourse, plant enclosures. */
   roofPlan(zn: Zone, top: number) {
     const z = this.cam.zoom; if (z < 0.2) return;
@@ -668,6 +792,7 @@ export class Renderer {
     if (zn.type === 'concourse') {
       const horiz = zn.w >= zn.h; const wC = Math.min(12, (horiz ? zn.h : zn.w) * 0.28);
       const r = horiz ? { x: zn.x + 8, y: zn.y + zn.h / 2 - wC / 2, w: zn.w - 16, h: wC } : { x: zn.x + zn.w / 2 - wC / 2, y: zn.y + 8, w: wC, h: zn.h - 16 };
+      if (zn.mezz) { const m = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; this.shadow(m, 5); this.poly(this.rectPts(m), 'rgba(244,237,223,0.55)', top); g.strokeStyle = 'rgba(40,36,30,0.3)'; this.path(this.rectPts(m), top); g.stroke(); }
       this.poly(this.rectPts(r), 'rgba(176,192,196,0.45)', top);
       g.strokeStyle = 'rgba(40,36,30,0.25)'; this.path(this.rectPts(r), top); g.stroke();
       if (z > 0.6) { const n = Math.floor((horiz ? r.w : r.h) / 7.5); g.beginPath(); for (let i = 1; i < n; i++) { const a = horiz ? { x: r.x + i * 7.5, y: r.y } : { x: r.x, y: r.y + i * 7.5 }, b = horiz ? { x: a.x, y: r.y + r.h } : { x: r.x + r.w, y: a.y }; const [x0, y0] = this.P(a.x, a.y, top), [x1, y1] = this.P(b.x, b.y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); }
@@ -1057,3 +1182,6 @@ export class Renderer {
 
 const rectsTouch = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) =>
   a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+const hash2 = (a: number, b: number) => { const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453; return h - Math.floor(h); };
+const pointInLake = (x: number, y: number) => { const L = SITE.lake; let c = false; for (let i = 0, j = L.length - 1; i < L.length; j = i++) if ((L[i].y > y) !== (L[j].y > y) && x < ((L[j].x - L[i].x) * (y - L[i].y)) / (L[j].y - L[i].y) + L[i].x) c = !c; return c; };

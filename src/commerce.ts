@@ -63,7 +63,7 @@ function fit(sh: Shop, t: TenantId) {
   const kind = TENANTS[t].kinds[depthIdx(sh.depth)] ?? TENANTS[t].kinds[2]!;
   const type: ShopType = kind === 'Convenience' ? 'shop' : TENANTS[t].type;
   sh.tenant = t; sh.kind = kind; sh.type = type;
-  sh.cap = Math.max(4, Math.round(sh.area / TUNE.shops[type].m2));
+  sh.cap = Math.max(4, Math.round(sh.area / TUNE.shops[type].m2)) * (type === 'lounge' && sh.zone.mezz ? 2 : 1);
   sh.bid = t === 'dutyfree' ? clamp(0.6 + 0.4 * sh.footScore, 0, 1) : sh.bids[t] ?? 0;
   sh.rent = sh.area * SC.rentPerM2Day[t] * (SC.rentFloor + sh.bid);
 }
@@ -94,7 +94,7 @@ export function letLots(world: World, shops: Map<number, Shop[]>, budgets: Map<n
     for (const sh of lots) sh.bids = bidsFor(sh);
     const sitting = (sh: Shop, t: TenantId) => (was[sh.key] === t ? 1 + SC.relet : 1);
     // lounges first, by quota: one per ~10 gates (at least one on a long pier), plus one with the premium fit-out
-    let quota = Math.max(B.long >= 150 ? 1 : 0, Math.round(B.gates / SC.loungePerGates)) + (z.tier ? 1 : 0);
+    let quota = Math.max(B.long >= 150 ? 1 : 0, Math.round(B.gates / SC.loungePerGates)) + (z.tier ? 1 : 0) + (z.mezz ? 1 : 0);   // a mezzanine adds a lounge upstairs
     const taken = new Set<Shop>();
     for (const sh of lots.filter(q => q.bids.lounge !== undefined).sort((p, q) => q.bids.lounge! * sitting(q, 'lounge') - p.bids.lounge! * sitting(p, 'lounge'))) {
       if (quota <= 0) break; fit(sh, 'lounge'); taken.add(sh); quota--;

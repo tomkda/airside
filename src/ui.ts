@@ -1,6 +1,6 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE } from './config';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, UNLOCK_OF, Unlock, UnlockId } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GOALS, Goal, nextGoals, rating } from './goals';
 import { GateSlot, slotAt, SIDE_NAMES, standDepth, sideReach } from './gates';
@@ -28,7 +28,7 @@ const n0 = (n: number) => Math.round(n).toLocaleString('en-US');
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 
 // Each tool belongs to the level of detail where it makes sense; picking it moves the map to that level.
-const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: string; lod?: Lod }[] = [
+const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: string; lod?: Lod; unlock?: UnlockId }[] = [
   { id: 'select', label: 'Select', key: 'V', icon: '<path d="M4 3l9 5-4 1-2 4z"/>' },
   { id: 'runway', label: 'Runway', key: '1', group: 'Airfield', lod: 'airfield', icon: '<path d="M2 13L14 3" stroke-width="3"/>' },
   { id: 'taxi', label: 'Taxiway', key: '2', lod: 'airfield', icon: '<path d="M2 12h7l5-8" stroke-width="2.2"/>' },
@@ -37,10 +37,16 @@ const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: strin
   { id: 'security', label: 'Security', key: '4', lod: 'terminal', icon: '<rect x="2" y="4" width="12" height="9"/><path d="M5 4v9M8 4v9M11 4v9"/>' },
   { id: 'concourse', label: 'Concourse', key: '5', lod: 'terminal', icon: '<rect x="2" y="6" width="12" height="7"/><path d="M2 9.5h12M4 6V3M8 6V3M12 6V3M6 9.5v3.5M10 9.5v3.5"/>' },
   { id: 'claim', label: 'Bag claim', key: '6', lod: 'terminal', icon: '<rect x="2" y="4" width="12" height="9"/><rect x="4" y="7" width="8" height="3" rx="1.5"/>' },
+  { id: 'passport', label: 'Passport', key: 'I', lod: 'terminal', unlock: 'intl', icon: '<rect x="3" y="2" width="10" height="12" rx="1"/><circle cx="8" cy="7" r="2"/><path d="M5.5 11.5h5"/>' },
   { id: 'road', label: 'Road', key: 'R', group: 'Landside', lod: 'landside', icon: '<path d="M2 5h12M2 11h12" stroke-width="1.6"/><path d="M3 8h2M7 8h2M11 8h2"/>' },
   { id: 'curb', label: 'Curb', key: '7', lod: 'landside', icon: '<path d="M2 6h12M2 11h12"/><path d="M5 8.5h2M9 8.5h2"/>' },
   { id: 'parking', label: 'Parking', key: '8', lod: 'landside', icon: '<rect x="2" y="3" width="12" height="10"/><path d="M6 11V6h2.5a1.5 1.5 0 010 3H6"/>' },
   { id: 'walk', label: 'Sidewalk', key: 'S', lod: 'landside', icon: '<path d="M2 9h12" stroke-width="3.5" stroke-opacity=".35"/><path d="M2 7h12M2 11h12"/>' },
+  { id: 'bus', label: 'Bus station', key: 'B', group: 'Access', lod: 'landside', unlock: 'bus', icon: '<rect x="2" y="4" width="12" height="7" rx="1.5"/><path d="M2 8h12"/><circle cx="5" cy="12.5" r="1"/><circle cx="11" cy="12.5" r="1"/>' },
+  { id: 'rideshare', label: 'Rideshare', key: 'U', lod: 'landside', unlock: 'rideshare', icon: '<path d="M3 10l1.5-4h7L13 10v2H3z"/><circle cx="8" cy="3" r="1.3"/>' },
+  { id: 'rental', label: 'Rental cars', key: 'K', lod: 'landside', unlock: 'rental', icon: '<path d="M2 11l1.5-4h7L12 11v2H2z"/><circle cx="12.5" cy="4.5" r="1.8"/><path d="M12.5 6.3V9"/>' },
+  { id: 'hotel', label: 'Hotel', key: 'O', lod: 'landside', unlock: 'hotel', icon: '<rect x="3" y="2" width="10" height="12"/><path d="M5.5 5h1M9.5 5h1M5.5 8h1M9.5 8h1M7 14v-3h2v3"/>' },
+  { id: 'train', label: 'AirTrain', key: 'M', lod: 'landside', unlock: 'train', icon: '<rect x="4" y="2" width="8" height="9" rx="2"/><path d="M4 7h8M5 14l2-3M11 14l-2-3"/>' },
   { id: 'demolish', label: 'Demolish', key: 'X', icon: '<path d="M4 4l8 8M12 4l-8 8"/>' },
 ];
 const isWay = (t: Tool): t is WayKind => t === 'taxi' || t === 'road' || t === 'walk';
@@ -136,6 +142,7 @@ export class UI {
     document.querySelectorAll<HTMLElement>('.tool').forEach(b => {
       const t = TOOLS.find(x => x.id === b.dataset.tool);
       b.classList.toggle('other-lod', !!t?.lod && t.lod !== l);
+      b.classList.toggle('locked', !!t?.unlock && !this.sim.has(t.unlock));
     });
     const lv = document.querySelector('#levels .levels') as HTMLElement | null; if (lv) lv.hidden = l === 'airfield';
     if (l === 'airfield' && this.ren.level !== 1) this.setLevel(1);
@@ -203,7 +210,29 @@ export class UI {
     el.innerHTML = html; el.hidden = !html;
   }
 
+  /** Tools that wait on growth show a lock; this refreshes them (after an unlock, or when sandbox is switched). */
+  syncLocks() {
+    document.querySelectorAll<HTMLElement>('.tool').forEach(b => {
+      const t = TOOLS.find(x => x.id === b.dataset.tool); const locked = !!t?.unlock && !this.sim.has(t.unlock);
+      b.classList.toggle('locked', locked);
+      const u = UNLOCKS.find(x => x.id === t?.unlock);
+      if (t) b.title = locked && u ? `${t.label}: unlocks at ${n0(u.at)} departures in a day` : `${t.label} (${t.key})`;
+    });
+  }
+  /** Growth unlocked something: say what and why, and show where it is. */
+  unlockedNow(u: Unlock) {
+    const el = $('#stamp'); el.innerHTML = `<b>Unlocked</b><span>${esc(u.title)}</span><em>${esc(u.why)}</em>`;
+    el.classList.remove('on'); void el.offsetWidth; el.classList.add('on', 'wide');
+    this.toast(`Unlocked: ${u.title}. ${u.why}`);
+    this.syncLocks(); if (this.tab === 'report') this.refresh(true);
+  }
+
   setTool(t: Tool) {
+    const def = TOOLS.find(x => x.id === t);
+    if (def?.unlock && !this.sim.has(def.unlock)) {
+      const u = UNLOCKS.find(x => x.id === def.unlock)!;
+      this.toast(`${def.label} unlocks at ${n0(u.at)} departures in a day (best so far ${n0(this.sim.bestPax)}).`, 'warn'); return;
+    }
     // terminal modules are laid out inside an open terminal; the other tools move the map to their level
     const want = TOOLS.find(x => x.id === t)?.lod;
     if (want === 'terminal' && this.ren.lod !== 'terminal') {
@@ -350,7 +379,7 @@ export class UI {
     }
     if (kind === 'road') {
       consider({ x: clamp(p.x, 0, SITE.width), y: SITE.highwayY }, 2);
-      for (const z of this.world.zones) if (z.type === 'curb' || z.type === 'parking') consider(edgePt(z), 3);
+      for (const z of this.world.zones) if (!ZONES[z.type].terminal) consider(edgePt(z), 3);
       // frontage guides: the line a road should follow to grow a curb along a terminal face
       const off = FRONTAGE.ideal + (this.opt.lanes >= 4 ? 8 : 4.5);
       for (const gd of this.sim.d.frontGuides) {
@@ -719,6 +748,7 @@ export class UI {
     this.sim.spend(cost);
     const z: Zone = { id: this.world.nextId++, type: t, level: ZONES[t].groundOnly ? 0 : this.ren.level, ...r, tier: 0 };
     if (t === 'concourse') z.cls = this.opt.conc;
+    if (t === 'passport' && !(this.sim.staff.officers ?? 0)) { this.sim.staff.officers = 8; this.toast('8 passport officers hired. Adjust them in Operations.'); }
     if (TERMINAL_TOOLS.has(t)) {
       const st = this.world.sites?.find(s => s.id === this.ren.focus) ?? siteOf(this.world, z);
       if (st) { z.site = st.id; this.world.zones.push(z); fitSite(this.world, st); } else this.world.zones.push(z);
@@ -806,6 +836,7 @@ export class UI {
 
   // ------------------------------------------------------------ panels
   refresh(force: boolean) {
+    if (force) this.syncLocks();
     const active = document.activeElement as HTMLElement | null;
     if (!force && active && active.closest('#panelBody') && active.tagName === 'INPUT') { this.liveNumbers(); this.renderCheck(); return; }
     document.querySelectorAll<HTMLElement>('#tabs [data-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === this.tab)));
@@ -822,7 +853,7 @@ export class UI {
     const el = document.getElementById('demandLive');
     if (el) el.textContent = `${n0(this.sim.demandAt(this.sim.slotPrice).reduce((s, q) => s + q.n, 0))} flights/day`;
     const pr = document.getElementById('priceOut'); if (pr) pr.textContent = money(this.sim.slotPrice);
-    for (const k of ['agents', 'screeners', 'handlers'] as const) { const o = document.getElementById(`out-${k}`); if (o) o.textContent = this.staffText(k); }
+    for (const k of ['agents', 'screeners', 'handlers', 'officers'] as const) { const o = document.getElementById(`out-${k}`); if (o) o.textContent = this.staffText(k); }
   }
 
   renderCheck() {
@@ -834,7 +865,8 @@ export class UI {
     const list = $('#checkList'); if (list.innerHTML !== html) list.innerHTML = html;
   }
 
-  staffText(k: 'agents' | 'screeners' | 'handlers') {
+  staffText(k: 'agents' | 'screeners' | 'handlers' | 'officers') {
+    if (k === 'officers') { const c = [...this.sim.procs.values()].filter(p => p.type === 'passport'); return `${c.reduce((a, p) => a + p.servers, 0)} of ${c.reduce((a, p) => a + p.maxServers, 0)} booths open`; }
     const procs = [...this.sim.procs.values()];
     if (k === 'agents') { const c = procs.filter(p => p.type === 'checkin'); return `${c.reduce((a, p) => a + p.servers, 0)} of ${c.reduce((a, p) => a + p.maxServers, 0)} counters open`; }
     if (k === 'screeners') { const c = procs.filter(p => p.type === 'security'); return `${c.reduce((a, p) => a + p.servers, 0)} of ${c.reduce((a, p) => a + p.maxServers, 0)} lanes open`; }
@@ -915,8 +947,8 @@ export class UI {
     const def = ZONES[z.type]; const u = s.d.units.get(z.id) ?? { max: 0, count: 0 };
     const proc = s.procs.get(z.id);
     let stats = '';
-    if (proc && (z.type === 'checkin' || z.type === 'security')) {
-      const svc = z.type === 'checkin' ? TUNE.checkinTime[z.tier] : TUNE.securityTime[z.tier];
+    if (proc && (z.type === 'checkin' || z.type === 'security' || z.type === 'passport')) {
+      const svc = s.svcTime(proc);
       const tol = TUNE.tolerance[z.type];
       stats = `
         <dt>Open now</dt><dd>${proc.servers} of ${proc.maxServers} ${def.unit}</dd>
@@ -932,8 +964,28 @@ export class UI {
       stats = (z.auto ? `<dt>Grown by</dt><dd>the road ${n0(z.auto.gap)} m off the ${ZONES[this.sim.d.zones.find(m => m.id === z.auto!.module)?.type ?? 'checkin'].short.toLowerCase()} face · ${deck}</dd>` : '') + `<dt>Bays in use</dt><dd>${proc.bays?.filter(Boolean).length ?? 0} of ${u.count}</dd><dt>Cars queuing</dt><dd class="${q > 8 ? 'bad' : ''}">${q}</dd>
         <dt>Road access</dt><dd class="${s.d.roadOK.has(z.id) ? '' : 'bad'}">${s.d.roadOK.has(z.id) ? 'Connected' : 'None: draw a road to its edge'}</dd>`;
     } else if (z.type === 'parking') {
-      stats = `<dt>Stalls used</dt><dd>${n0(s.lotUsed)} of ${n0(s.lotCapacity())} (all lots)</dd>
+      const fl = z.floors ?? 1; const deckCost = area(z) * GROWTH.deckCostPerM2;
+      stats = `<dt>Decks</dt><dd>${s.has('garage') ? `<span class="stepper"><button class="step" data-act="deck-" aria-label="Fewer decks">−</button><b>${fl}</b><button class="step" data-act="deck+" aria-label="More decks">+</button></span>
+          <span class="muted">${fl > 1 ? 'garage' : 'surface lot'} · ${money(deckCost)} a deck</span>` : `1 <span class="muted small">· decks unlock at ${n0(UNLOCKS.find(u => u.id === 'garage')!.at)} departures a day</span>`}</dd>
+        <dt>Stalls used</dt><dd>${n0(s.lotUsed)} of ${n0(s.lotCapacity())} (all lots)</dd>
         <dt>Road access</dt><dd class="${s.d.roadOK.has(z.id) ? '' : 'bad'}">${s.d.roadOK.has(z.id) ? 'Connected' : 'None: draw a road to its edge'}</dd>`;
+    } else if (z.type === 'rideshare' || z.type === 'rental' || z.type === 'bus' || z.type === 'hotel' || z.type === 'train') {
+      const ok = s.d.served.has(z.id); const road = z.type === 'train' || s.d.roadOK.has(z.id);
+      const laidR = s.d.autoRoads.some(w => w.id === -(700000 + z.id)), laidW = s.d.autoWalks.some(w => w.id === -(500000 + z.id));
+      const today = z.type === 'hotel' ? '' : z.type === 'rental' ? money(s.stats.rev.rental) : z.type === 'rideshare' ? money(s.stats.rev.rideshare) : '';
+      const using = s.pax.filter(p => p.stage !== 'done' && p.party.lot === z).length;
+      const what: Record<string, string> = {
+        rideshare: `${Math.round(GROWTH.rideShare * 100)}% of arriving parties meet their ride here instead of at the curb · ${money(GROWTH.rideFee)} a pickup`,
+        rental: `${Math.round(GROWTH.rentalShare * 100)}% of arriving parties rent a car · ${money(GROWTH.rentalFee)} concession each`,
+        bus: `${Math.round(GROWTH.busShare * 100)}% of passengers come and go by bus, with no car at the curb`,
+        hotel: `${n0(u.count)} rooms on ${GROWTH.hotelFloors} floors · ${money(GROWTH.hotelTake)} to the airport per room night · settled at midnight`,
+        train: `Rides to ${s.d.zones.filter(q => q.type === 'train').length - 1} other station${s.d.zones.filter(q => q.type === 'train').length === 2 ? '' : 's'} at ${GROWTH.trainSpeed}× walking pace`,
+      };
+      stats = `<dt>Working</dt><dd class="${ok ? '' : 'bad'}">${ok ? 'Yes' : !road ? `No road within ${GROWTH.autoRoadReach} m` : 'No way on foot to an open terminal'}</dd>
+        <dt>Connections</dt><dd class="small">${z.type === 'train' ? '' : laidR ? 'Laid its own access drive · ' : road ? 'Road at its edge · ' : ''}${laidW ? 'laid its own sidewalk' : 'sidewalk drawn or touching'}</dd>
+        <dt>Does</dt><dd class="small">${what[z.type]}</dd>
+        ${z.type !== 'hotel' && z.type !== 'train' ? `<dt>Heading here</dt><dd>${using} people${today ? ` · ${today} today (all)` : ''}</dd>` : ''}
+        <dt>Catchment</dt><dd class="small">+${Math.round(GROWTH.boost[z.type as 'bus'] * 100)}% demand while working</dd>`;
     } else if (z.type === 'concourse') {
       const gates = s.d.gates.filter(g => g.zone.id === z.id);
       const occ = gates.filter(g => s.gateBusy.get(g.id)).length;
@@ -958,6 +1010,8 @@ export class UI {
         <dt>Customers now</dt><dd>${inNow}</dd>
         <dt>Today so far</dt><dd>${n0(day.visits)} visits · ${money(day.rev)}</dd>
         ${this.dutyFreeHTML(z)}
+        <dt>Mezzanine</dt><dd>${s.has('mezz') ? `<div class="seg"><button data-act="mezz0" aria-pressed="${!z.mezz}">None</button><button data-act="mezz1" aria-pressed="${!!z.mezz}">Lounge floor${z.mezz ? '' : ` · ${money(area(z) * GROWTH.mezzCostPerM2 * 0.3)}`}</button></div>
+          <span class="muted small">A floor over the spine: one more lounge, and every lounge holds twice as many.</span>` : `<span class="muted small">Unlocks at ${n0(UNLOCKS.find(u => u.id === 'mezz')!.at)} departures a day.</span>`}</dd>
         <dt></dt><dd class="muted small">Every gate claims ${Math.round(holdDepth(z.cls ?? 2))} m of holdroom behind its frontage. Remove gates on a side to free that wall for window restaurants and lounges; widen the concourse to fit both.</dd>
         ${this.lotHTML(z, sel.key)}`;
     }
@@ -1083,14 +1137,15 @@ export class UI {
       'Aircraft size': 'Some airlines fly aircraft your runway, taxiways or gates cannot take.',
       'No runway': 'Build a runway first.', 'No gates': 'Build a concourse first.',
       'No connected gates': 'No terminal is open yet. See Terminals below.',
+      'Passport control': 'Aurora International wants in, but no terminal has passport control between a concourse and bag claim.',
     };
     const fleet = (a: typeof p.byAirline[0]['airline']) => Object.keys(a.mix).map(c => CLASS_EX(Number(c))).reverse().join(' · ');
     const rows = p.byAirline.map(b => `<tr><td>${esc(b.airline.name)}<span class="muted small">${esc(b.airline.model)}</span></td><td>${fleet(b.airline)}</td><td>${b.requested}</td><td class="${b.scheduled < b.requested ? 'bad' : ''}">${b.scheduled}</td></tr>`).join('');
     const sj = p.wantsSJ ? `<p class="note">Polaris wants ${p.wantsSJ} A380 flight${p.wantsSJ > 1 ? 's' : ''} a day. It needs a 3,000 m runway, Code F taxiways the whole way, and a concourse with A380 gates.</p>` : '';
-    const staffRow = (k: 'agents' | 'screeners' | 'handlers', label: string, max: number) => `
+    const staffRow = (k: 'agents' | 'screeners' | 'handlers' | 'officers', label: string, max: number) => `
       <div class="slider">
-        <label for="staff-${k}">${label} <b>${s.staff[k]}</b></label>
-        <input type="range" id="staff-${k}" min="0" max="${max}" step="1" value="${s.staff[k]}">
+        <label for="staff-${k}">${label} <b>${s.staff[k] ?? 0}</b></label>
+        <input type="range" id="staff-${k}" min="0" max="${max}" step="1" value="${s.staff[k] ?? 0}">
         <span class="muted" id="out-${k}">${this.staffText(k)}</span>
       </div>`;
     const terms = s.d.terminals.map(T => `<li class="${T.active ? 'open' : 'closed'}">
@@ -1124,6 +1179,7 @@ export class UI {
       ${staffRow('agents', 'Check-in agents', 200)}
       ${staffRow('screeners', 'Security screeners', 240)}
       ${staffRow('handlers', 'Baggage handlers', 160)}
+      ${s.d.zones.some(z => z.type === 'passport') ? staffRow('officers', 'Passport officers', 80) : ''}
       <p class="muted small">${money(TUNE.wagePerDay)} per person per day.</p>
 
       <h2>Game</h2>
@@ -1150,7 +1206,14 @@ export class UI {
       return `<li class="${done ? 'done' : ''}"><i class="tick">${done ? '✓' : ''}</i><div><b>${esc(g.title)}</b><span class="muted small">${done ? `Reached · ${money(g.reward)} grant` : esc(g.hint)}</span>
         ${done ? '' : `<i class="goalbar"><i style="width:${pct}%"></i></i>`}</div><em class="small">${money(g.reward)}</em></li>`;
     }).join('');
-    return `<h3>Goals <span class="muted small">${s.goalsDone.size} of ${GOALS.length}</span></h3><ul class="goals">${rows}</ul>`;
+    const best = s.bestPax;
+    const grow = UNLOCKS.map(u => {
+      const done = s.has(u.id);
+      return `<li class="${done ? 'done' : ''}"><i class="tick">${done ? '✓' : ''}</i><div><b>${esc(u.title)}</b><span class="muted small">${esc(u.why)}</span>
+        ${done ? '' : `<i class="goalbar"><i style="width:${clamp(best / u.at, 0, 1) * 100}%"></i></i>`}</div><em class="small">${n0(u.at)}</em></li>`;
+    }).join('');
+    return `<h3>Goals <span class="muted small">${s.goalsDone.size} of ${GOALS.length}</span></h3><ul class="goals">${rows}</ul>
+      <h3>Growth <span class="muted small">unlocks by departures in a day · best so far ${n0(best)}</span></h3><ul class="goals">${grow}</ul>`;
   }
 
   reportHTML(): string {
@@ -1180,7 +1243,7 @@ export class UI {
       <h3>Money per day ${r.periodDays > 1 ? `<span class="muted">× ${r.periodDays} days this period</span>` : ''}</h3>
       <dl class="kv money">
         <dt>Slot fees</dt><dd>${money(rev.slots)}</dd><dt>Passenger charges</dt><dd>${money(rev.pax)}</dd>
-        <dt>Shops</dt><dd>${money(rev.shops)}</dd><dt>Restaurants</dt><dd>${money(rev.food)}</dd><dt>Lounges</dt><dd>${money(rev.lounges)}</dd>${rev.dutyfree ? `<dt>Duty free</dt><dd>${money(rev.dutyfree)}</dd>` : ""}${rev.rent ? `<dt>Rent guarantees</dt><dd>${money(rev.rent)}</dd>` : ""}<dt>Parking</dt><dd>${money(rev.parking)}</dd><dt>Curb access</dt><dd>${money(rev.curb)}</dd>
+        <dt>Shops</dt><dd>${money(rev.shops)}</dd><dt>Restaurants</dt><dd>${money(rev.food)}</dd><dt>Lounges</dt><dd>${money(rev.lounges)}</dd>${rev.hotel ? `<dt>Hotel</dt><dd>${money(rev.hotel)}</dd>` : ''}${rev.rental ? `<dt>Rental cars</dt><dd>${money(rev.rental)}</dd>` : ''}${rev.rideshare ? `<dt>Rideshare fees</dt><dd>${money(rev.rideshare)}</dd>` : ''}${rev.dutyfree ? `<dt>Duty free</dt><dd>${money(rev.dutyfree)}</dd>` : ""}${rev.rent ? `<dt>Rent guarantees</dt><dd>${money(rev.rent)}</dd>` : ""}<dt>Parking</dt><dd>${money(rev.parking)}</dd><dt>Curb access</dt><dd>${money(rev.curb)}</dd>
         <dt>Staff</dt><dd>−${money(st.cost.staff)}</dd><dt>Upkeep</dt><dd>−${money(st.cost.upkeep)}</dd>
         <dt><b>Profit</b></dt><dd><b class="${r.profit < 0 ? 'bad' : ''}">${money(revT - cost)}</b></dd>
       </dl>
@@ -1214,7 +1277,7 @@ export class UI {
     const price = document.getElementById('price') as HTMLInputElement | null;
     price?.addEventListener('input', () => { s.slotPrice = Number(price.value); this.liveNumbers(); });
     price?.addEventListener('change', () => this.ctl.save());
-    for (const k of ['agents', 'screeners', 'handlers'] as const) {
+    for (const k of ['agents', 'screeners', 'handlers', 'officers'] as const) {
       const el = document.getElementById(`staff-${k}`) as HTMLInputElement | null;
       el?.addEventListener('input', () => {
         s.staff[k] = Number(el.value); s.allocateStaff();
@@ -1224,7 +1287,7 @@ export class UI {
       el?.addEventListener('change', () => this.ctl.save());
     }
     const mo = document.getElementById('moneyOn') as HTMLInputElement | null;
-    mo?.addEventListener('change', () => { s.moneyOn = mo.checked; this.ctl.save(); });
+    mo?.addEventListener('change', () => { s.moneyOn = mo.checked; this.syncLocks(); this.ctl.save(); });
   }
 
   act(a: string) {
@@ -1240,6 +1303,16 @@ export class UI {
       if (!pay(area(z) * ZONES[z.type].tierCostPerM2)) return;
       z.tier = 1; this.toast(`${ZONES[z.type].short} upgraded: ${ZONES[z.type].tierNames[1]}`); this.changed();
     } else if (a === 'tier0' && z && z.tier === 1) { z.tier = 0; this.changed(); }
+    else if ((a === 'deck+' || a === 'deck-') && z && z.type === 'parking') {
+      const fl = z.floors ?? 1; const nf = clamp(fl + (a === 'deck+' ? 1 : -1), 1, GROWTH.maxDecks);
+      if (nf > fl && !pay(area(z) * GROWTH.deckCostPerM2)) return;
+      if (nf !== fl) { z.floors = nf; this.changed(); this.toast(nf > 1 ? `Garage: ${nf} decks, ${n0(s.d.units.get(z.id)?.count ?? 0)} stalls` : 'Back to a surface lot'); }
+    }
+    else if ((a === 'mezz0' || a === 'mezz1') && z && z.type === 'concourse') {
+      if (a === 'mezz1' && !z.mezz) { if (!pay(area(z) * GROWTH.mezzCostPerM2 * 0.3)) return; z.mezz = true; this.toast('Mezzanine added over the spine: one more lounge, double lounge capacity'); }
+      else if (a === 'mezz0') z.mezz = false;
+      this.changed();
+    }
     else if ((a === 'df0' || a === 'df1') && z && z.type === 'concourse') {
       z.dutyFree = a === 'df1'; this.changed();
       this.toast(z.dutyFree ? 'Walk-through duty free opens at the security exit' : 'Duty free closed: the security exit opens straight onto the spine');
@@ -1281,6 +1354,6 @@ export class UI {
 }
 
 const CLASS_EX = (c: number) => CLASSES[c].example;
-const TERMINAL_TOOLS = new Set<ZoneType>(['checkin', 'security', 'concourse', 'claim']);
+const TERMINAL_TOOLS = new Set<ZoneType>(['checkin', 'security', 'concourse', 'claim', 'passport']);
 const PAL_BAD = '#B0472B';
 const center4 = (r: Rect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });

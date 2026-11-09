@@ -8,7 +8,8 @@ export const LEVELS: { id: Level; name: string; short: string; z0: number; z1: n
   { id: 1, name: 'Level 1 · Departures', short: 'L1', z0: 9, z1: 18 },
 ];
 
-export type ZoneType = 'checkin' | 'security' | 'concourse' | 'claim' | 'curb' | 'parking';
+export type ZoneType = 'checkin' | 'security' | 'concourse' | 'claim' | 'curb' | 'parking'
+  | 'passport' | 'rideshare' | 'rental' | 'bus' | 'hotel' | 'train';   // v0.10: unlocked as the airport grows
 export type ShopType = 'shop' | 'food' | 'lounge';
 /** Who leases a commercial lot. Core retail, sit-down dining, grab-and-go / convenience, lounges, and walk-through duty free. */
 export type TenantId = 'retail' | 'dining' | 'grab' | 'lounge' | 'dutyfree';
@@ -65,7 +66,43 @@ export const ZONES: Record<ZoneType, ZoneDef> = {
     type: 'parking', label: 'Surface parking', short: 'Parking', key: '7', terminal: false, groundOnly: true,
     costPerM2: 140, upkeepPerM2: 0.03, unit: 'stalls', m2PerUnit: 28, minW: 40, minH: 40,
     tierNames: ['Surface lot', 'Lot + shuttle'], tierCostPerM2: 40,
-    blurb: 'Long-stay parking. Far lots mean long walks with luggage.',
+    blurb: 'Long-stay parking. Far lots mean long walks with luggage. Add decks to make it a garage.',
+  },
+  passport: {
+    type: 'passport', label: 'Passport control', short: 'Passport', key: 'I', terminal: true, groundOnly: false,
+    costPerM2: 3000, upkeepPerM2: 0.55, unit: 'booths', m2PerUnit: 90, minW: 30, minH: 24,
+    tierNames: ['Staffed booths', 'E-gates'], tierCostPerM2: 1200,
+    blurb: 'Arriving international passengers clear here before bag claim. A terminal with passport control takes international flights.',
+  },
+  rideshare: {
+    type: 'rideshare', label: 'Rideshare pickup', short: 'Rideshare', key: 'U', terminal: false, groundOnly: true,
+    costPerM2: 260, upkeepPerM2: 0.05, unit: 'pickup bays', m2PerUnit: 40, minW: 40, minH: 24,
+    tierNames: ['Open lot', 'Covered waiting'], tierCostPerM2: 120,
+    blurb: 'App-hailed pickups meet here instead of the curb, which frees the frontage road. It finds its own road and sidewalk.',
+  },
+  rental: {
+    type: 'rental', label: 'Rental car centre', short: 'Rental cars', key: 'K', terminal: false, groundOnly: true,
+    costPerM2: 900, upkeepPerM2: 0.12, unit: 'ready stalls', m2PerUnit: 35, minW: 60, minH: 40,
+    tierNames: ['Counters + lot', 'Consolidated centre'], tierCostPerM2: 400,
+    blurb: 'Some arriving passengers walk (or ride the AirTrain) here and drive away. Pays a concession on every rental.',
+  },
+  bus: {
+    type: 'bus', label: 'Bus station', short: 'Bus', key: 'B', terminal: false, groundOnly: true,
+    costPerM2: 500, upkeepPerM2: 0.08, unit: 'bus bays', m2PerUnit: 120, minW: 40, minH: 16,
+    tierNames: ['Shelters', 'Covered station'], tierCostPerM2: 200,
+    blurb: 'City buses bring and take passengers without a car each, and widen the catchment. Needs a road; it lays its own drive and sidewalk.',
+  },
+  hotel: {
+    type: 'hotel', label: 'Airport hotel', short: 'Hotel', key: 'O', terminal: false, groundOnly: true,
+    costPerM2: 5000, upkeepPerM2: 0, unit: 'rooms', m2PerUnit: 6, minW: 40, minH: 20,
+    tierNames: ['Business hotel', 'Conference hotel'], tierCostPerM2: 3000,
+    blurb: 'Eight floors of rooms on a ground lease. Fills with early departures and late arrivals, if guests can walk or ride to a terminal.',
+  },
+  train: {
+    type: 'train', label: 'AirTrain station', short: 'AirTrain', key: 'M', terminal: false, groundOnly: true,
+    costPerM2: 6000, upkeepPerM2: 0.7, unit: 'platforms', m2PerUnit: 300, minW: 30, minH: 14,
+    tierNames: ['Two-car trains', 'Four-car trains'], tierCostPerM2: 2000,
+    blurb: 'Stations link themselves with an elevated guideway. People ride between them at eight times walking pace, so far garages, hotels and terminals work.',
   },
 };
 
@@ -125,14 +162,17 @@ export const ROAD_LANES = [
 ];
 export const WALK = { width: 4, costPerM: 900 };
 
+const GROWTH_INTL = 0.16;
 export interface Airline {
   id: string; name: string; iata: string; share: number; elasticity: number; model: string; color: string;   // tail livery
+  intl?: boolean;   // v0.10: flies only to terminals with passport control, once international is unlocked
   mix: Partial<Record<Cls, number>>; downgrade: boolean;
 }
 export const AIRLINES: Airline[] = [
   { id: 'meridian', name: 'Meridian Air', iata: 'MR', share: 0.42, elasticity: 0.45, model: 'Network', mix: { 2: 0.8, 1: 0.2 }, downgrade: true, color: '#2F4E78' },
   { id: 'larkspur', name: 'Larkspur', iata: 'LK', share: 0.30, elasticity: 1.15, model: 'Low-cost', mix: { 2: 1 }, downgrade: false, color: '#8A6BB0' },
   { id: 'northline', name: 'Northline Regional', iata: 'NL', share: 0.18, elasticity: 0.6, model: 'Regional', mix: { 0: 0.45, 1: 0.55 }, downgrade: true, color: '#3E8A7A' },
+  { id: 'aurora', name: 'Aurora International', iata: 'AU', share: GROWTH_INTL, elasticity: 0.55, model: 'International', mix: { 2: 0.75, 1: 0.25 }, downgrade: true, color: '#B0472B', intl: true },
   { id: 'polaris', name: 'Polaris Long-Haul', iata: 'PX', share: 0.10, elasticity: 0.5, model: 'Long-haul', mix: { 3: 1 }, downgrade: false, color: '#C2852E' },
 ];
 
@@ -159,7 +199,7 @@ export const TUNE = {
   carSpeed: 700,                 // m/min
   taxiSpeed: 380,                // m/min
   // tolerances (minutes) before passengers get irritated
-  tolerance: { curb: 6, checkin: 12, security: 10, claim: 14, gate: 0 },
+  tolerance: { curb: 6, checkin: 12, security: 10, claim: 14, gate: 0, passport: 12 },
   // concessions: airport's take per visit, minutes spent, people a unit holds at once
   shops: {
     // m2: floor area per customer at capacity, so a lot's capacity follows its size
@@ -176,6 +216,47 @@ export const TUNE = {
   retailPerMin: 0.32,
   parkingPerStay: 58,
   curbFeePerCar: 3,
+};
+
+// ---------------------------------------------------------------- Growth (v0.10)
+// Facilities unlock as traffic grows: the need shows up first, then the answer to it. Thresholds are departing
+// passengers on the best day so far. In sandbox mode (money off) everything is unlocked.
+export type UnlockId = 'bus' | 'rideshare' | 'garage' | 'rental' | 'mezz' | 'hotel' | 'intl' | 'train';
+export interface Unlock { id: UnlockId; at: number; title: string; why: string }
+export const UNLOCKS: Unlock[] = [
+  { id: 'bus', at: 2900, title: 'Bus station', why: 'The curb is filling with cars. City buses carry passengers without one.' },
+  { id: 'rideshare', at: 3100, title: 'Rideshare pickup', why: 'App-hailed cars are crowding the arrivals curb. Give them their own lot.' },
+  { id: 'garage', at: 3250, title: 'Parking decks', why: 'Surface lots are running out. Stack decks on a lot to make a garage.' },
+  { id: 'rental', at: 3400, title: 'Rental car centre', why: 'Visitors want cars. A rental centre pays a concession on each one.' },
+  { id: 'mezz', at: 3550, title: 'Concourse mezzanine', why: 'Lounges are full. Add a mezzanine floor over the concourse spine.' },
+  { id: 'hotel', at: 3700, title: 'Airport hotel', why: 'Early departures and late arrivals want a bed on site.' },
+  { id: 'intl', at: 3850, title: 'International flights', why: 'Aurora International wants routes here. Build passport control to take them.' },
+  { id: 'train', at: 4000, title: 'AirTrain', why: 'The airport is too big to walk. Stations link garages, hotels and terminals.' },
+];
+/** Which unlock a tool or zone type waits for. */
+export const UNLOCK_OF: Partial<Record<ZoneType | 'garage', UnlockId>> = { bus: 'bus', rideshare: 'rideshare', garage: 'garage', rental: 'rental', hotel: 'hotel', passport: 'intl', train: 'train' };
+export const GROWTH = {
+  // How arriving and departing parties split once the facility exists and is reachable. Rough US mode shares from
+  // ACRP Report 4 (Ground Access to Major Airports by Public Transportation, 2008) and ACRP Synthesis 84 on
+  // transportation network companies: public transport 5–15%, rental 5–10%, app-hailed rides around a fifth.
+  busShare: 0.08, rideShare: 0.2, rentalShare: 0.07,
+  // Catchment grows with access: each adds to demand once built and reachable (game tuning).
+  boost: { bus: 0.05, rideshare: 0.02, rental: 0.03, hotel: 0.04, train: 0.06, garage: 0.02 },
+  rideFee: 4,              // $ per pickup (typical airport TNC trip fee)
+  rentalFee: 46,           // $ concession per rental party (about 10% of a multi-day rental, plus the facility charge)
+  hotelFloors: 8, roomM2: 42,
+  hotelTake: 60,           // $ per occupied room night to the airport (ground lease and revenue share)
+  hotelGuests: 0.05,      // room nights wanted per departing passenger
+  maxDecks: 6, deckCostPerM2: 420,    // structured parking, $ per m² per extra deck
+  mezzCostPerM2: 700,      // per m² of concourse
+  trainSpeed: 8,           // times walking pace
+  trainWait: 2.5,          // minutes, average wait plus dwell
+  // International (unlock 'intl')
+  intlShare: 0.16,         // Aurora's demand as a share of the domestic total
+  passportTime: [0.75, 0.3] as [number, number],   // minutes per passenger per booth: officer, e-gate
+  intlPaxFee: 14,          // extra passenger charge on international departures
+  intlSpend: 1.5,          // duty free and concessions take, times domestic
+  autoRoadReach: 220,      // m: a facility this close to a road lays its own access drive
 };
 
 // ---------------------------------------------------------------- Frontage and terminal sites (v0.8)

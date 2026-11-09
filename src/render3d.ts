@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Pt, Rect, dist, sub, norm, add, mul, lerpPt } from './geom';
-import { PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES } from './config';
+import { PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE } from './config';
 import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
 import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
@@ -21,9 +21,11 @@ const UP = 0.05;   // lift flat things a little off the ground so they don't fli
 const ROOF = '#F1ECE2', PLINTH = '#8C8576', MULLION = '#E4DDCF';
 const GLASS: Record<ZoneType, string> = {
   checkin: '#B6C3C4', security: '#AEB9BA', concourse: '#BBC8C9', claim: '#B1BDBE', curb: '#A49E92', parking: '#C9BEA8',
+  passport: '#B3BFC6', rideshare: '#A7A39A', rental: '#B9C2BE', bus: '#B9C2BE', hotel: '#AFC0CC', train: '#BFCBCB',
 };
 const MOD_COL: Record<ZoneType, string> = {
   checkin: '#CDBFA6', security: '#BDB29E', concourse: '#D4CBB8', claim: '#C3B9A6', curb: '#A49E92', parking: '#C9BEA8',
+  passport: '#C6BCA8', rideshare: '#A7A39A', rental: '#C9BEA8', bus: '#C9BEA8', hotel: '#D4CBB8', train: '#D4CBB8',
 };
 const LOT_COL: Record<string, string> = { shop: '#6E6252', food: '#B07A3E', lounge: '#4D7390' };
 const ITEM_H: Record<string, number> = { counter: 1.1, xray: 1.6, body: 2.2, divest: 0.9, recompose: 0.9, kiosk: 1.4, wc: 3, office: 3, table: 0.75, belt: 0.5, carousel: 0.6 };
@@ -227,7 +229,7 @@ export class Renderer3D {
 
     // ---- pavements
     for (const r of d.runways) strips.push({ a: sub(r.rw.a, mul(r.dir, 60)), b: add(r.rw.b, mul(r.dir, 60)), w: r.width + 8, z: 0.13, c: '#B7AC95' }, { a: r.rw.a, b: r.rw.b, w: r.width, z: 0.15, c: '#3A3631' });
-    for (const w of [...sim.world.ways, ...d.autoWalks]) strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : w.kind === 'road' ? 0.12 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : w.kind === 'road' ? '#8E8A83' : '#EFE8DA' });
+    for (const w of [...sim.world.ways, ...d.autoWalks, ...d.autoRoads]) strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : w.kind === 'road' ? 0.12 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : w.kind === 'road' ? '#8E8A83' : '#EFE8DA' });
     for (const x of d.airExtra) strips.push({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0), z: 0.1, c: '#BDB29C' });
     strips.push({ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, w: 24, z: 0.12, c: '#8E8A83' });
     add3(stripMesh(strips));
@@ -273,7 +275,7 @@ export class Renderer3D {
       const half = CLASSES[g.cls].gateSpacing / 2 - 1; // stand boundary ticks
       for (const s of [-1, 1]) dashed(add(g.door, mul(n, s * half)), add(add(g.door, mul(n, s * half)), mul(dv, -CLASSES[g.cls].apronDepth * 0.8)), 0.3, '#EDE7D9', 3, 3, 0.18);
     }
-    for (const w of sim.world.ways) if (w.kind === 'road') {
+    for (const w of [...sim.world.ways, ...d.autoRoads]) if (w.kind === 'road') {
       const W = wayWidth('road', 0, w.lanes); const n = perp(w.a, w.b);
       for (const s of [-1, 1]) m(add(w.a, mul(n, s * (W / 2 - 0.6))), add(w.b, mul(n, s * (W / 2 - 0.6))), 0.2, WHITE, 0.17);
       if (w.lanes >= 4) { m(add(w.a, mul(n, -0.25)), add(w.b, mul(n, -0.25)), 0.18, YELLOW, 0.17); m(add(w.a, mul(n, 0.25)), add(w.b, mul(n, 0.25)), 0.18, YELLOW, 0.17); for (const s of [-1, 1]) dashed(add(w.a, mul(n, s * W / 4)), add(w.b, mul(n, s * W / 4)), 0.18, WHITE, 3, 6, 0.17); }
@@ -311,6 +313,53 @@ export class Renderer3D {
       const L = dist(a, b); const al = norm(sub(b, a));
       for (let s = 6; s < L - 3; s += 12) { const p = add(add(a, mul(al, s)), mul(inw, 6.4)); misc.push({ x: p.x - 0.2, y: p.y - 0.2, w: 0.4, h: 0.4, z0: zz, z1: zz + 5.2, c: '#7C725F' }); }
     }
+
+    // ---- landside facilities (v0.10): garages, hotels, rental centres, bus stations, rideshare lots, the AirTrain
+    const glassF: Box[] = [];
+    for (const z of d.zones) {
+      const horiz = z.w >= z.h;
+      if (z.type === 'parking' && (z.floors ?? 1) > 1) {
+        const n = z.floors!;
+        for (let k = 1; k <= n; k++) misc.push({ ...z, z0: k * 3.2 - 0.5, z1: k * 3.2, c: k === n ? '#A7A39A' : '#CFC8BA' });
+        for (let x = z.x + 1; x <= z.x + z.w; x += 9) for (const y of [z.y + 0.4, z.y + z.h - 1]) misc.push({ x: x - 0.3, y, w: 0.6, h: 0.6, z0: 0, z1: n * 3.2, c: '#8C8576' });
+        for (let y = z.y + 9; y < z.y + z.h; y += 9) for (const x of [z.x + 0.4, z.x + z.w - 1]) misc.push({ x, y: y - 0.3, w: 0.6, h: 0.6, z0: 0, z1: n * 3.2, c: '#8C8576' });
+        misc.push({ x: z.x + 3, y: z.y + 3, w: 9, h: 9, z0: 0, z1: n * 3.2 + 3, c: '#B9B2A4' });   // stair and lift core
+      } else if (z.type === 'hotel') {
+        const H = GROWTH.hotelFloors * 3.6;
+        misc.push({ ...z, z0: 0, z1: 4.4, c: PLINTH });
+        glassF.push({ x: z.x + 0.5, y: z.y + 0.5, w: z.w - 1, h: z.h - 1, z0: 4.4, z1: H + 4, c: GLASS.hotel });
+        for (let k = 0; k <= GROWTH.hotelFloors; k++) misc.push({ x: z.x - 0.3, y: z.y - 0.3, w: z.w + 0.6, h: z.h + 0.6, z0: 4.4 + k * 3.6 - 0.35, z1: 4.4 + k * 3.6, c: ROOF });
+        misc.push({ x: z.x + z.w * 0.3, y: z.y + z.h * 0.3, w: z.w * 0.4, h: z.h * 0.4, z0: H + 4, z1: H + 6.5, c: '#CFC8BA' });
+      } else if (z.type === 'rental') {
+        misc.push({ ...z, z0: 0, z1: 0.11, c: '#A7A39A' });
+        const bw = Math.min(z.w, z.h) * 0.3; const b = horiz ? { x: z.x, y: z.y, w: z.w, h: bw } : { x: z.x, y: z.y, w: bw, h: z.h };
+        misc.push({ ...b, z0: 0, z1: 0.6, c: PLINTH }); glassF.push({ x: b.x + 0.4, y: b.y + 0.4, w: b.w - 0.8, h: b.h - 0.8, z0: 0.6, z1: 5, c: GLASS.rental }); misc.push({ x: b.x - 0.6, y: b.y - 0.6, w: b.w + 1.2, h: b.h + 1.2, z0: 5, z1: 5.6, c: ROOF });
+        for (let y = z.y + (horiz ? bw + 5 : 5); y < z.y + z.h - 5; y += 7) for (let x = z.x + (horiz ? 4 : bw + 4); x < z.x + z.w - 3; x += 2.9) misc.push({ x, y, w: 1.8, h: 4.4, z0: 0.11, z1: 1.5, c: ['#3A352D', '#E9E4DA', '#8C8576'][Math.floor(hashN(x, y) * 3)] });
+      } else if (z.type === 'rideshare' || z.type === 'bus') {
+        misc.push({ ...z, z0: 0, z1: 0.14, c: '#8E8A83' });
+        const L = horiz ? z.w : z.h;
+        for (let u = 4; u + 12 < L; u += 14) {
+          const sh = horiz ? { x: z.x + u + 2, y: z.y + 1.5, w: 8, h: 2.6 } : { x: z.x + 1.5, y: z.y + u + 2, w: 2.6, h: 8 };
+          misc.push({ ...sh, z0: 2.6, z1: 2.85, c: ROOF }); misc.push({ x: sh.x, y: sh.y, w: 0.25, h: 0.25, z0: 0, z1: 2.6, c: '#7C725F' }, { x: sh.x + sh.w - 0.25, y: sh.y + sh.h - 0.25, w: 0.25, h: 0.25, z0: 0, z1: 2.6, c: '#7C725F' });
+          if (z.type === 'bus' && hashN(u, z.id) > 0.4) { const S = horiz ? z.h : z.w; const bus = horiz ? { x: z.x + u, y: z.y + S * 0.45, w: 12, h: 2.6 } : { x: z.x + S * 0.45, y: z.y + u, w: 2.6, h: 12 }; misc.push({ ...bus, z0: 0.3, z1: 3.3, c: '#5E7A55' }); }
+        }
+      } else if (z.type === 'train') {
+        misc.push({ ...z, z0: 6.2, z1: 7, c: '#D6CEBE' });
+        misc.push({ x: z.x - 1, y: z.y - 1, w: z.w + 2, h: z.h + 2, z0: 11.4, z1: 12, c: ROOF });
+        glassF.push({ x: z.x + 0.5, y: z.y + 0.5, w: z.w - 1, h: z.h - 1, z0: 7, z1: 11.4, c: GLASS.train });
+        for (const [cx, cy] of [[z.x + 2, z.y + 2], [z.x + z.w - 3, z.y + 2], [z.x + 2, z.y + z.h - 3], [z.x + z.w - 3, z.y + z.h - 3]]) misc.push({ x: cx, y: cy, w: 1, h: 1, z0: 0, z1: 6.2, c: '#8C8576' });
+        misc.push({ x: z.x + z.w / 2 - 3, y: z.y + z.h / 2 - 3, w: 6, h: 6, z0: 0, z1: 6.2, c: '#B9B2A4' });
+      }
+    }
+    // the AirTrain guideway: twin beams on pylons
+    const beams: Strip[] = [];
+    for (const l of d.trainLinks) {
+      const n = perp(l.a, l.b); const L = dist(l.a, l.b); const dv = norm(sub(l.b, l.a));
+      for (const k of [-1.4, 1.4]) beams.push({ a: add(l.a, mul(n, k)), b: add(l.b, mul(n, k)), w: 1.1, z: 7.3, c: '#C9C2B4' });
+      for (let u = 25; u < L - 10; u += 32) { const q = add(l.a, mul(dv, u)); misc.push({ x: q.x - 0.7, y: q.y - 0.7, w: 1.4, h: 1.4, z0: 0, z1: 7.2, c: '#A9A396' }); misc.push({ x: q.x - 2.4, y: q.y - 0.5, w: 4.8, h: 1, z0: 6.6, z1: 7.2, c: '#A9A396' }); }
+    }
+    if (beams.length) add3(stripMesh(beams));
+    if (glassF.length) add3(instancedBoxes(glassF, true, this.glassMat));
 
     // ---- terminal sites and their names
     for (const st of sim.world.sites ?? []) {
@@ -471,6 +520,14 @@ export class Renderer3D {
         }
       }
     }
+    sim.d.trainLinks.forEach((l, i) => {
+      if (ng >= 2400) return;
+      const L = dist(l.a, l.b); const T = Math.max(1.5, L / (TUNE.walkSpeed * GROWTH.trainSpeed)) + 1; const ph = ((sim.t + i * 1.7) % (2 * T)) / T; const k = ph < 1 ? ph : 2 - ph;
+      const e = Math.min(1, Math.max(0, (k * T - 0.5) / (T - 1))); const c = lerpPt(l.a, l.b, e);
+      o.position.set(c.x, 9.2, c.y); o.rotation.set(0, -Math.atan2(l.b.y - l.a.y, l.b.x - l.a.x), 0); o.scale.set(20, 3, 2.8); o.updateMatrix();
+      this.gse.setMatrixAt(ng, o.matrix); this.gse.setColorAt(ng, this.col.set('#F4F1EA')); ng++;
+      o.position.set(c.x, 9.5, c.y); o.scale.set(19, 0.9, 2.9); o.updateMatrix(); this.gse.setMatrixAt(ng, o.matrix); this.gse.setColorAt(ng, this.col.set('#2F5D7C')); ng++;
+    });
     this.bridges.count = nb; this.drums.count = dr; this.gse.count = ng;
     for (const mm of [this.bridges, this.drums, this.gse]) mm.instanceMatrix.needsUpdate = true;
     if (this.gse.instanceColor) this.gse.instanceColor.needsUpdate = true;
@@ -497,6 +554,7 @@ export class Renderer3D {
       const cols = ['#3E5A72', PAL.warn, PAL.bad];
       for (const q of sim.pax) {
         if (q.stage === 'done' || p >= 8000) continue;
+        if (q.ride) continue;   // on the AirTrain
         o.position.set(q.x, LEVELS[q.level].z0 + 0.5, q.y); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1); o.updateMatrix();
         this.people.setMatrixAt(p, o.matrix); this.people.setColorAt(p, this.col.set(q.mood ? cols[q.mood] : q.id % 3 ? '#3E5A72' : q.id % 2 ? '#8A6BB0' : '#5E7A55')); p++;
       }
@@ -520,7 +578,7 @@ export class Renderer3D {
       const nOn = Math.round(bays.length * frac);
       for (let i = 0; i < nOn && k < 8000; i++) {
         const b = bays[i];
-        o.position.set(b.x, 0.8, b.y); o.rotation.set(0, Math.PI / 2, 0); o.scale.set(1, 1, 1); o.updateMatrix();
+        o.position.set(b.x, 0.8 + ((z.floors ?? 1) > 1 ? z.floors! * 3.2 : 0), b.y); o.rotation.set(0, Math.PI / 2, 0); o.scale.set(1, 1, 1); o.updateMatrix();
         this.parked.setMatrixAt(k, o.matrix); this.parked.setColorAt(k, this.col.set(CAR_COLS[Math.floor(b.r * 977) % CAR_COLS.length])); k++;
       }
     }
@@ -580,6 +638,7 @@ function massing(z: Zone, z0: number, z1: number, sel: boolean, solid: Box[], gl
   if (z.type === 'concourse') {
     const horiz = z.w >= z.h; const wC = Math.min(12, (horiz ? z.h : z.w) * 0.28);
     const r: Rect = horiz ? { x: z.x + 8, y: z.y + z.h / 2 - wC / 2, w: z.w - 16, h: wC } : { x: z.x + z.w / 2 - wC / 2, y: z.y + 8, w: wC, h: z.h - 16 };
+    if (z.mezz) { const m: Rect = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; glazing.push({ ...m, z0: top, z1: top + 4.2, c: GLASS.concourse }); roofs.push({ x: m.x - 0.7, y: m.y - 0.7, w: m.w + 1.4, h: m.h + 1.4, z0: top + 4.2, z1: top + 4.8, c: ROOF }); return; }
     glazing.push({ ...r, z0: top, z1: top + 2.2, c: GLASS.concourse });
     roofs.push({ x: r.x - 0.5, y: r.y - 0.5, w: r.w + 1, h: r.h + 1, z0: top + 2.2, z1: top + 2.7, c: ROOF });
   } else {
@@ -701,4 +760,3 @@ function dispose(o: THREE.Object3D, keep: THREE.Material[]) {
     }
   });
 }
-void lerpPt;

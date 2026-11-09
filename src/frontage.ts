@@ -38,7 +38,7 @@ export function autoFrontage(world: World): { curbs: Zone[]; decks: DeckSpan[]; 
     const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a));
     // a face that touches another module on the same level is interior, not frontage
     const probe: Rect = boxOf(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
-    const inner = world.zones.some(o => o.id !== m.id && o.level === m.level && o.type !== 'curb' && o.type !== 'parking' && rectsOverlap(probe, o));
+    const inner = world.zones.some(o => o.id !== m.id && o.level === m.level && TERMINAL_SET.has(o.type) && rectsOverlap(probe, o));
     if (inner || L < FRONTAGE.minLen) continue;
     guides.push({ zone: m, a: sd.a, b: sd.b, out: sd.out });
     for (const r of roads) {
@@ -110,39 +110,95 @@ export function curbCuts(curbs: Zone[], roads: Way[]): Map<number, Pt[]> {
   return out;
 }
 
-/**
- * v0.9: a parking lot that no sidewalk reaches lays its own, to the nearest ground-level curb (an arrivals curb
- * if there is one) or, failing that, the nearest ground-level terminal module. It goes straight if it can, or
- * round one corner, and never through a building, an apron or the airfield. Generated, never saved.
- */
-export function autoWalks(world: World, zones: Zone[], aprons: Rect[]): Way[] {
-  const out: Way[] = [];
-  const walks = world.ways.filter(w => w.kind === 'walk');
-  const near = (p: Pt, r: Rect, k: number) => p.x >= r.x - k && p.x <= r.x + r.w + k && p.y >= r.y - k && p.y <= r.y + r.h + k;
-  const clamp2 = (p: Pt, r: Rect): Pt => ({ x: Math.min(r.x + r.w, Math.max(r.x, p.x)), y: Math.min(r.y + r.h, Math.max(r.y, p.y)) });
-  const ctr = (r: Rect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
-  const blocked = (a: Pt, b: Pt, ends: Rect[]) => {
-    const segHits = (r: Rect) => { for (let i = 1; i < 20; i++) { const t = i / 20; const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; if (p.x > r.x + 1 && p.x < r.x + r.w - 1 && p.y > r.y + 1 && p.y < r.y + r.h - 1) return true; } return false; };
+/** Landside facilities that connect themselves: each wants a road (except stations) and a way in on foot. */
+export const SELF_CONNECT = new Set<ZoneType>(['parking', 'rideshare', 'rental', 'bus', 'hotel', 'train']);
+const NEEDS_ROAD = new Set<ZoneType>(['parking', 'rideshare', 'rental', 'bus', 'hotel']);
+const TERMINAL_SET = new Set<ZoneType>(['checkin', 'security', 'concourse', 'claim', 'passport']);
+
+const nearRect = (p: Pt, r: Rect, k: number) => p.x >= r.x - k && p.x <= r.x + r.w + k && p.y >= r.y - k && p.y <= r.y + r.h + k;
+const clamp2 = (p: Pt, r: Rect): Pt => ({ x: Math.min(r.x + r.w, Math.max(r.x, p.x)), y: Math.min(r.y + r.h, Math.max(r.y, p.y)) });
+const ctr = (r: Rect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+const rectGap = (a: Rect, b: Rect) => Math.hypot(Math.max(0, a.x - (b.x + b.w), b.x - (a.x + a.w)), Math.max(0, a.y - (b.y + b.h), b.y - (a.y + a.h)));
+function blocker(world: World, zones: Zone[], aprons: Rect[]) {
+  return (a: Pt, b: Pt, ends: Rect[]) => {
+    const segHits = (r: Rect) => { for (let i = 1; i < 24; i++) { const t = i / 24; const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; if (p.x > r.x + 1 && p.x < r.x + r.w - 1 && p.y > r.y + 1 && p.y < r.y + r.h - 1) return true; } return false; };
     if (zones.some(z => z.level === 0 && !ends.includes(z) && segHits(z))) return true;
     if (aprons.some(segHits)) return true;
     if (world.ways.some(w => w.kind === 'taxi' && segsCross(a, b, w.a, w.b))) return true;
     return world.runways.some(r => segsCross(a, b, r.a, r.b));
   };
-  for (const lot of zones.filter(z => z.type === 'parking')) {
-    if (walks.some(w => near(w.a, lot, 3) || near(w.b, lot, 3))) continue;
-    const cands = zones.filter(z => z.level === 0 && z.type === 'curb');
-    const pool = cands.some(c => c.auto?.deck !== 'dep') ? cands.filter(c => c.auto?.deck !== 'dep') : cands;
-    const targets = pool.length ? pool : zones.filter(z => z.level === 0 && (z.type === 'claim' || z.type === 'checkin'));
-    const tgt = [...targets].sort((p, q) => dist(ctr(p), ctr(lot)) - dist(ctr(q), ctr(lot)))[0];
-    if (!tgt || rectsOverlap(lot, tgt) || dist(ctr(tgt), ctr(lot)) > 900) continue;
-    const a = clamp2(ctr(tgt), lot), b = clamp2(a, tgt);
-    const id = -(500000 + lot.id);
-    const ends = [lot, tgt];
-    if (dist(a, b) < 2) continue;
-    if (!blocked(a, b, ends)) { out.push({ id, kind: 'walk', a, b, cls: 0, lanes: 0 }); continue; }
+}
+
+/**
+ * A landside facility that no sidewalk reaches lays its own (v0.9 for lots; v0.10 for rideshare, rental cars, bus
+ * stations, hotels and AirTrain stations). It goes to the nearest way in: a ground-level curb (the arrivals one if
+ * there is a choice), a ground-level terminal hall, or an AirTrain station. Straight if it can, or round one
+ * corner; never through a building, an apron or the airfield. Generated, never saved.
+ */
+export function autoWalks(world: World, zones: Zone[], aprons: Rect[]): Way[] {
+  const out: Way[] = [];
+  const walks = world.ways.filter(w => w.kind === 'walk');
+  const blocked = blocker(world, zones, aprons);
+  const curbs = zones.filter(z => z.level === 0 && z.type === 'curb');
+  const arr = curbs.some(c => c.auto?.deck !== 'dep') ? curbs.filter(c => c.auto?.deck !== 'dep') : curbs;
+  const halls = zones.filter(z => z.level === 0 && (z.type === 'claim' || z.type === 'checkin'));
+  const stations = zones.filter(z => z.type === 'train');
+  for (const fac of zones.filter(z => SELF_CONNECT.has(z.type))) {
+    if (walks.some(w => nearRect(w.a, fac, 3) || nearRect(w.b, fac, 3))) continue;
+    const targets = [...(arr.length ? arr : halls), ...stations.filter(s => s !== fac)];
+    // a station only reaches for the terminal if it is close; a far one serves whatever walks to it
+    const reach = fac.type === 'train' ? 260 : 900;
+    const tgt = targets.filter(t => !rectsOverlap(fac, t) && rectGap(fac, t) <= reach).sort((p, q) => rectGap(fac, p) - rectGap(fac, q) || p.id - q.id)[0];
+    if (!tgt) continue;
+    if (rectGap(fac, tgt) < 1.5) continue;   // already touching: doors do the job
+    const a = clamp2(ctr(tgt), fac), b = clamp2(a, tgt);
+    const id = -(500000 + fac.id);
+    const ends = [fac, tgt];
+    // square routes read as paths; a diagonal is the last resort
+    const straight = Math.abs(a.x - b.x) < 1 || Math.abs(a.y - b.y) < 1;
+    if (straight && !blocked(a, b, ends)) { out.push({ id, kind: 'walk', a, b, cls: 0, lanes: 0 }); continue; }
+    let done = false;
     for (const c of [{ x: a.x, y: b.y }, { x: b.x, y: a.y }]) if (!blocked(a, c, ends) && !blocked(c, b, ends)) {
-      out.push({ id, kind: 'walk', a, b: c, cls: 0, lanes: 0 }, { id: id - 250000, kind: 'walk', a: c, b, cls: 0, lanes: 0 }); break;
+      out.push({ id, kind: 'walk', a, b: c, cls: 0, lanes: 0 }, { id: id - 250000, kind: 'walk', a: c, b, cls: 0, lanes: 0 }); done = true; break;
     }
+    if (!done && !blocked(a, b, ends)) out.push({ id, kind: 'walk', a, b, cls: 0, lanes: 0 });
+  }
+  return out;
+}
+
+/**
+ * v0.10: a lot, garage, rideshare lot, rental centre, bus station or hotel with no road at its edge lays its own
+ * access drive to the nearest road (or the highway) within GROWTH.autoRoadReach. Generated, never saved.
+ */
+export function autoRoads(world: World, zones: Zone[], aprons: Rect[], highwayY: number, siteW: number, reach: number): Way[] {
+  const out: Way[] = [];
+  const roads = [...world.ways.filter(w => w.kind === 'road'), { id: -1, kind: 'road' as const, a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY }, cls: 0, lanes: 6 }];
+  const blocked = blocker(world, zones, aprons);
+  const onSeg = (p: Pt, a: Pt, b: Pt): Pt => { const dx = b.x - a.x, dy = b.y - a.y; const L2 = dx * dx + dy * dy || 1; const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2)); return { x: a.x + dx * t, y: a.y + dy * t }; };
+  for (const fac of zones.filter(z => NEEDS_ROAD.has(z.type))) {
+    if (roads.some(r => { const q = onSeg(ctr(fac), r.a, r.b); const q2 = onSeg(clamp2(q, fac), r.a, r.b); return nearRect(q2, fac, 3) || nearRect(r.a, fac, 3) || nearRect(r.b, fac, 3); })) continue;
+    let best: { p: Pt; q: Pt; d: number } | null = null;
+    for (const r of roads) {
+      let q = onSeg(ctr(fac), r.a, r.b); let p = clamp2(q, fac); q = onSeg(p, r.a, r.b); p = clamp2(q, fac);
+      // keep clear of the ends of the road so the junction is a clean T
+      const d = dist(p, q);
+      if (d > reach || d < 1 || blocked(p, q, [fac])) continue;
+      if (!best || d < best.d) best = { p, q, d };
+    }
+    if (best) out.push({ id: -(700000 + fac.id), kind: 'road', a: best.p, b: best.q, cls: 0, lanes: 2 });
+  }
+  return out;
+}
+
+/** AirTrain: stations link themselves into one line, the shortest that joins them all (a minimum spanning tree). */
+export function trainLinks(zones: Zone[]): { a: Zone; b: Zone }[] {
+  const st = zones.filter(z => z.type === 'train').sort((p, q) => p.id - q.id);
+  if (st.length < 2) return [];
+  const inTree = new Set<Zone>([st[0]]); const out: { a: Zone; b: Zone }[] = [];
+  while (inTree.size < st.length) {
+    let best: { a: Zone; b: Zone; d: number } | null = null;
+    for (const a of inTree) for (const b of st) if (!inTree.has(b)) { const d = dist(ctr(a), ctr(b)); if (!best || d < best.d) best = { a, b, d }; }
+    if (!best) break; inTree.add(best.b); out.push({ a: best.a, b: best.b });
   }
   return out;
 }

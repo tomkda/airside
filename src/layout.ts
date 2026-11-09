@@ -15,7 +15,8 @@ export interface LItem { k: LKind; pts: Pt[]; closed?: boolean; slot?: number; l
 
 const UPSTREAM: Record<ZoneType, ZoneType[]> = {
   checkin: ['curb'], security: ['checkin'], concourse: ['security', 'concourse'],
-  claim: ['curb'], curb: ['checkin', 'claim', 'security', 'concourse'], parking: ['curb'],
+  claim: ['passport', 'curb'], curb: ['checkin', 'claim', 'security', 'concourse'], parking: ['curb'],
+  passport: ['concourse'], rideshare: ['curb'], rental: ['curb'], bus: ['curb'], hotel: ['curb'], train: ['curb'],
 };
 
 /** Edges with inward normals. */
@@ -167,6 +168,23 @@ function claim(f: F, want: number | undefined, need: number) {
   return { items, slots, max, count };
 }
 
+/** Passport control: a line of booths across the hall, a queue maze in front, a clear run behind (v0.10). */
+function passport(f: F) {
+  const { P, R, L } = helpers(f); const W = f.edgeLen, D = f.depth;
+  const items: LItem[] = []; const slots: Pt[] = [];
+  doors(f, items);
+  const n = Math.max(1, Math.floor((W - 6) / 4.2)); const vB = D * 0.62; const u0 = (W - n * 4.2) / 2;
+  const order = centreOut(n);
+  order.forEach((i, slot) => {
+    const u = u0 + i * 4.2 + 2.1;
+    items.push({ k: 'counter', pts: R(u - 1.1, vB - 1, u + 1.1, vB + 1), closed: true, slot });
+    items.push({ k: 'lane', pts: L(u + 2.1, vB - 2.5, u + 2.1, vB + 2.5) });
+    slots[slot] = P(u, vB - 1.6);
+  });
+  for (let v = 5; v < vB - 5; v += 2.4) items.push({ k: 'stanchion', pts: L(W * 0.12, v, W * 0.88, v) });
+  return { items, slots, max: n };
+}
+
 // ---------------------------------------------------------------- entry point
 export function layoutZone(z: Zone, world: World, opts: { items?: LItem[]; claimNeed: number }): { frame: Frame; max: number; count?: number } {
   const f = orient(z, world);
@@ -174,6 +192,7 @@ export function layoutZone(z: Zone, world: World, opts: { items?: LItem[]; claim
   if (z.type === 'checkin') ({ items, slots, max } = checkin(f));
   else if (z.type === 'security') ({ items, slots, max } = security(f));
   else if (z.type === 'claim') ({ items, slots, max, count } = claim(f, z.units, opts.claimNeed));
+  else if (z.type === 'passport') ({ items, slots, max } = passport(f));
   else if (z.type === 'concourse') items = opts.items ?? [];
   else if (z.type === 'curb') {
     const n = Math.max(2, Math.floor(f.edgeLen / 9) * 2); const per = Math.ceil(n / 2); const { P } = helpers(f);
