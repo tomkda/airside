@@ -4,7 +4,8 @@ const { chromium } = require('playwright');
 const path = require('path');
 (async () => {
   const [,, out, x, y, zoom, extra] = process.argv;
-  const b = await chromium.launch();
+  // GL3D=1: software WebGL so the 3D view renders headless (slower for plan shots, so only when asked)
+  const b = await chromium.launch(process.env.GL3D ? { args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] } : {});
   const p = await b.newPage({ viewport: { width: 1500, height: 900 }, deviceScaleFactor: Number(process.env.DSF || 1) });
   p.on('pageerror', e => console.log('ERR', e.message));
   await p.goto('file://' + path.resolve(__dirname, '../dist/index.html'));

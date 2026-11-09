@@ -1,6 +1,6 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId } from './config';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GateSlot, slotAt, SIDE_NAMES, standDepth, sideReach } from './gates';
 import { holdDepth, spineWidth, depthClass } from './bands';
@@ -8,10 +8,12 @@ import { Renderer, Sel } from './render';
 import {
   World, Zone, Way, WayKind, canPlaceZone, canPlaceRunway, canPlaceWay, crosswind, windSamples, runwayUsable, segDistWay,
   designators, runwayCost, runwayWidth, wayWidth, wayCostPerM, wayName, autoConnectors, followRunwayEnd, WaySpec, Runway, rwyClassLabel,
+  Site, siteOf, fitSite, isTerminalModule, inBuildable, padRect,
 } from './world';
+import { rectsOverlap, rectSegDist } from './geom';
 
-export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish';
-type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | null;
+export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site';
+type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | null;
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 export const money = (n: number) => {
@@ -24,18 +26,20 @@ export const money = (n: number) => {
 const n0 = (n: number) => Math.round(n).toLocaleString('en-US');
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 
-const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: string }[] = [
+// Each tool belongs to the level of detail where it makes sense; picking it moves the map to that level.
+const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: string; lod?: Lod }[] = [
   { id: 'select', label: 'Select', key: 'V', icon: '<path d="M4 3l9 5-4 1-2 4z"/>' },
-  { id: 'runway', label: 'Runway', key: '1', group: 'Airfield', icon: '<path d="M2 13L14 3" stroke-width="3"/>' },
-  { id: 'taxi', label: 'Taxiway', key: '2', icon: '<path d="M2 12h7l5-8" stroke-width="2.2"/>' },
-  { id: 'checkin', label: 'Check-in', key: '3', group: 'Terminal', icon: '<rect x="2" y="5" width="12" height="7"/><path d="M4 8h8"/>' },
-  { id: 'security', label: 'Security', key: '4', icon: '<rect x="2" y="4" width="12" height="9"/><path d="M5 4v9M8 4v9M11 4v9"/>' },
-  { id: 'concourse', label: 'Concourse', key: '5', icon: '<rect x="2" y="6" width="12" height="7"/><path d="M2 9.5h12M4 6V3M8 6V3M12 6V3M6 9.5v3.5M10 9.5v3.5"/>' },
-  { id: 'claim', label: 'Bag claim', key: '6', icon: '<rect x="2" y="4" width="12" height="9"/><rect x="4" y="7" width="8" height="3" rx="1.5"/>' },
-  { id: 'curb', label: 'Curb', key: '7', group: 'Landside', icon: '<path d="M2 6h12M2 11h12"/><path d="M5 8.5h2M9 8.5h2"/>' },
-  { id: 'parking', label: 'Parking', key: '8', icon: '<rect x="2" y="3" width="12" height="10"/><path d="M6 11V6h2.5a1.5 1.5 0 010 3H6"/>' },
-  { id: 'road', label: 'Road', key: 'R', icon: '<path d="M2 5h12M2 11h12" stroke-width="1.6"/><path d="M3 8h2M7 8h2M11 8h2"/>' },
-  { id: 'walk', label: 'Sidewalk', key: 'S', icon: '<path d="M2 9h12" stroke-width="3.5" stroke-opacity=".35"/><path d="M2 7h12M2 11h12"/>' },
+  { id: 'runway', label: 'Runway', key: '1', group: 'Airfield', lod: 'airfield', icon: '<path d="M2 13L14 3" stroke-width="3"/>' },
+  { id: 'taxi', label: 'Taxiway', key: '2', lod: 'airfield', icon: '<path d="M2 12h7l5-8" stroke-width="2.2"/>' },
+  { id: 'site', label: 'New terminal', key: 'N', group: 'Terminal', icon: '<rect x="2" y="3" width="12" height="10" stroke-dasharray="2 1.5"/><path d="M8 5.5v5M5.5 8h5"/>' },
+  { id: 'checkin', label: 'Check-in', key: '3', lod: 'terminal', icon: '<rect x="2" y="5" width="12" height="7"/><path d="M4 8h8"/>' },
+  { id: 'security', label: 'Security', key: '4', lod: 'terminal', icon: '<rect x="2" y="4" width="12" height="9"/><path d="M5 4v9M8 4v9M11 4v9"/>' },
+  { id: 'concourse', label: 'Concourse', key: '5', lod: 'terminal', icon: '<rect x="2" y="6" width="12" height="7"/><path d="M2 9.5h12M4 6V3M8 6V3M12 6V3M6 9.5v3.5M10 9.5v3.5"/>' },
+  { id: 'claim', label: 'Bag claim', key: '6', lod: 'terminal', icon: '<rect x="2" y="4" width="12" height="9"/><rect x="4" y="7" width="8" height="3" rx="1.5"/>' },
+  { id: 'road', label: 'Road', key: 'R', group: 'Landside', lod: 'landside', icon: '<path d="M2 5h12M2 11h12" stroke-width="1.6"/><path d="M3 8h2M7 8h2M11 8h2"/>' },
+  { id: 'curb', label: 'Curb', key: '7', lod: 'landside', icon: '<path d="M2 6h12M2 11h12"/><path d="M5 8.5h2M9 8.5h2"/>' },
+  { id: 'parking', label: 'Parking', key: '8', lod: 'landside', icon: '<rect x="2" y="3" width="12" height="10"/><path d="M6 11V6h2.5a1.5 1.5 0 010 3H6"/>' },
+  { id: 'walk', label: 'Sidewalk', key: 'S', lod: 'landside', icon: '<path d="M2 9h12" stroke-width="3.5" stroke-opacity=".35"/><path d="M2 7h12M2 11h12"/>' },
   { id: 'demolish', label: 'Demolish', key: 'X', icon: '<path d="M4 4l8 8M12 4l-8 8"/>' },
 ];
 const isWay = (t: Tool): t is WayKind => t === 'taxi' || t === 'road' || t === 'walk';
@@ -47,7 +51,7 @@ export class UI {
   tab: 'inspect' | 'ops' | 'report' = 'ops';
   opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1 };
   private drag: null | {
-    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend'; sx: number; sy: number; start: Pt; snapStart?: boolean;
+    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site'; sx: number; sy: number; start: Pt; snapStart?: boolean;
     cam?: Pt; zone?: Zone; off?: Pt; moved?: boolean;
     rw?: Runway; end?: 'a' | 'b'; orig?: { a: Pt; b: Pt }; extras?: WaySpec[];
     pend?: { a: Pt; b: Pt; ok: boolean; cost: number; delta: number; follow: ReturnType<typeof followRunwayEnd> | null };
@@ -56,6 +60,7 @@ export class UI {
   private pinch: { d: number; zoom: number; mid: Pt; cam: Pt } | null = null;
   private lastPanel = 0;
   private confirmClear = 0;
+  private click3d: Pt | null = null;
 
   constructor(public sim: Sim, public ren: Renderer, public ctl: Controls) {
     this.buildChrome();
@@ -86,7 +91,8 @@ export class UI {
     $('#levels').addEventListener('click', e => {
       const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b) return;
       if (b.dataset.level) this.setLevel(Number(b.dataset.level) as Level);
-      if (b.id === 'view25') { this.ren.tiltTarget = this.ren.tiltTarget ? 0 : 1; b.setAttribute('aria-pressed', String(!!this.ren.tiltTarget)); }
+      if (b.id === 'view3d') this.set3d(!this.ren.mode3d);
+      if (b.dataset.lod) this.goLod(b.dataset.lod as Lod);
       if (b.id === 'heat') this.setHeat(this.ren.overlay ? null : 'queues');
       if (b.id === 'commerce') this.setHeat(this.ren.commerce ? null : 'commerce');
     });
@@ -100,6 +106,80 @@ export class UI {
     $('#panelToggle').addEventListener('click', () => document.body.classList.toggle('panel-open'));
     $('#checkToggle').addEventListener('click', () => document.body.classList.toggle('check-open'));
     this.syncSpeed();
+    this.ren.canvas.addEventListener('dblclick', e => {
+      const h = this.hitTest(this.wpt(e as unknown as PointerEvent), true);
+      const st = h?.kind === 'site' ? h.site : h?.kind === 'zone' ? siteOf(this.world, h.zone) : undefined;
+      if (st) this.openTerminal(st);
+    });
+  }
+
+  // ------------------------------------------------------------ levels of detail
+  /** Pick a level of detail directly (buttons, keys): the camera frames what that level is about. */
+  goLod(l: Lod) {
+    if (l === 'terminal') {
+      const st = this.pickSite();
+      if (st) this.openTerminal(st); else { this.setTool('site'); this.toast('No terminal yet: draw one with New terminal (N).', 'warn'); }
+      return;
+    }
+    if (!this.ren.mode3d) {
+      const cam = this.ren.cam;
+      if (l === 'airfield') { this.focusAirport(); this.ren.cam.zoom = Math.min(this.ren.cam.zoom, LOD.airfieldBelow - 0.02); }
+      else if (cam.zoom < LOD.airfieldBelow || cam.zoom > LOD.terminalAbove) cam.zoom = 0.6;
+    }
+    this.setLod(l, null);
+  }
+  setLod(l: Lod, focus: number | null) {
+    this.ren.lod = l; this.ren.focus = l === 'terminal' ? focus : null;
+    document.querySelectorAll<HTMLElement>('#levels [data-lod]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lod === l)));
+    document.querySelectorAll<HTMLElement>('.tool').forEach(b => {
+      const t = TOOLS.find(x => x.id === b.dataset.tool);
+      b.classList.toggle('other-lod', !!t?.lod && t.lod !== l);
+    });
+    const lv = document.querySelector('#levels .levels') as HTMLElement | null; if (lv) lv.hidden = l === 'airfield';
+    if (l === 'airfield' && this.ren.level !== 1) this.setLevel(1);
+    this.hint(this.toolHint());
+  }
+  /** The site to open: the selected one, else the one at the middle of the view, else the first. */
+  pickSite(): Site | undefined {
+    const sites = this.world.sites ?? [];
+    const sel = this.ren.selected;
+    if (sel?.kind === 'site') return sites.find(s => s.id === sel.id);
+    if (sel?.kind === 'zone') { const z = this.sim.d.zones.find(q => q.id === sel.id); const st = z && siteOf(this.world, z); if (st) return st; }
+    const c = { x: this.ren.cam.x, y: this.ren.cam.y };
+    return sites.find(s => inRect(c, s, 60)) ?? [...sites].sort((a, b) => dist(c, center4(a)) - dist(c, center4(b)))[0];
+  }
+  /** Open a terminal: frame its site and show its fit-out; everything else steps back. */
+  openTerminal(st: Site) {
+    this.setLod('terminal', st.id);
+    if (!this.ren.mode3d) {
+      const zoom = clamp(Math.min((this.ren.W * 0.6) / (st.w + 80), (this.ren.H * 0.75) / (st.h + 80)), LOD.terminalAbove + 0.05, 4);
+      this.ren.cam = { x: st.x + st.w / 2 + (this.ren.W > 820 ? 110 / zoom : 0), y: st.y + st.h / 2, zoom };
+    } else this.ren.r3?.frame(st);
+    this.select({ kind: 'site', site: st });
+  }
+  /** Zooming moves between levels of detail: out to the airfield, in through the landside to a terminal. */
+  autoLod() {
+    if (this.ren.mode3d) return;
+    const z = this.ren.cam.zoom; const l = this.ren.lod;
+    if (l === 'terminal') {
+      if (z < LOD.leaveTerminalBelow) this.setLod(z < LOD.airfieldBelow ? 'airfield' : 'landside', null);
+      return;
+    }
+    if (z < LOD.airfieldBelow) { if (l !== 'airfield') this.setLod('airfield', null); return; }
+    if (l !== 'landside') this.setLod('landside', null);
+    if (z > LOD.terminalAbove) {
+      const c = { x: this.ren.cam.x, y: this.ren.cam.y };
+      const st = (this.world.sites ?? []).find(s => inRect(c, s, 40));
+      if (st) this.setLod('terminal', st.id);
+    }
+  }
+
+  set3d(on: boolean) {
+    this.ren.set3d(on);
+    this.ren.setOrbitLeft(this.tool === 'select');
+    $('#view3d').setAttribute('aria-pressed', String(on));
+    if (!on) this.autoLod();
+    this.hint(this.toolHint());
   }
 
   syncSpeed() {
@@ -122,6 +202,13 @@ export class UI {
   }
 
   setTool(t: Tool) {
+    // terminal modules are laid out inside an open terminal; the other tools move the map to their level
+    const want = TOOLS.find(x => x.id === t)?.lod;
+    if (want === 'terminal' && this.ren.lod !== 'terminal') {
+      const st = this.pickSite();
+      if (!st) { t = 'site'; this.toast('Start with New terminal: allocate its site, then lay out its modules inside.', 'warn'); }
+      else this.openTerminal(st);
+    } else if (want && want !== 'terminal' && this.ren.lod !== want) this.setLod(want, null);
     this.tool = t;
     document.querySelectorAll<HTMLElement>('.tool').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
     const groundOnly = ZONES[t as ZoneType]?.groundOnly || t === 'road' || t === 'walk' || t === 'taxi' || t === 'runway';
@@ -129,6 +216,8 @@ export class UI {
     this.ren.ghost = null; this.ren.cursor = null;
     this.renderToolOpts();
     this.ren.showGuides = t === 'taxi' || t === 'concourse';
+    this.ren.showFront = t === 'road';
+    this.ren.setOrbitLeft(t === 'select');
     this.hint(this.toolHint());
     this.ren.canvas.style.cursor = t === 'select' ? 'default' : 'crosshair';
   }
@@ -148,10 +237,11 @@ export class UI {
 
   toolHint(): string {
     const t = this.tool;
-    if (t === 'select') { if (this.ren.selected?.kind === 'runway') return 'Drag either end of the runway to extend or shorten it'; return matchMedia('(pointer: coarse)').matches ? 'Drag to pan · pinch to zoom · tap to inspect' : 'Drag to pan · scroll to zoom · click to inspect · drag a module to move it'; }
+    if (t === 'select') { if (this.ren.selected?.kind === 'runway') return 'Drag either end of the runway to extend or shorten it'; if (this.ren.mode3d) return 'Drag to orbit · right-drag to pan · scroll to zoom · click to inspect · T for plan'; return matchMedia('(pointer: coarse)').matches ? 'Drag to pan · pinch to zoom · tap to inspect' : 'Drag to pan · scroll to zoom · click to inspect · drag a module to move it'; }
     if (t === 'runway') return 'Drag to draw a runway · 1,200 m turboprop · 1,600 m E175 · 2,100 m A320 · 3,000 m A380';
     if (t === 'taxi') return `Drag to draw a taxiway · snaps to runways, aprons and other taxiways${this.opt.auto ? ' · drawn beside a runway, it links itself with end stubs and rapid exits' : ''}`;
-    if (t === 'road') return 'Drag to draw a road (for cars) · snaps to State Route 12, curbs, lots and other roads';
+    if (t === 'road') return `Drag to draw a road (for cars) · run it along a terminal face, ${FRONTAGE.minGap}–${FRONTAGE.maxGap} m out, and a curb grows there; where departures sit over arrivals it becomes a two-level road · snaps to the dashed guides`;
+    if (t === 'site') return `Drag to allocate a terminal site (at least ${SITES.minW} × ${SITES.minH} m) · then lay out check-in, security, a concourse and bag claim inside it · the site grows to fit`;
     if (t === 'walk') return 'Drag to draw a sidewalk (for people) · links ground-level modules, curbs and lots · can cross roads';
     if (t === 'demolish') return 'Click anything to demolish it (40% refund)';
     if (t === 'concourse') return `Concourse on ${LEVELS[this.ren.level].short} · drag a rectangle · sides with a parallel taxiway ${standDepth(this.opt.conc)}–${sideReach(this.opt.conc)} m out grow gates (dashed guides); the rest of the width becomes shops, restaurants and lounges`;
@@ -171,7 +261,7 @@ export class UI {
   bindInput() {
     const c = this.ren.canvas;
     c.addEventListener('contextmenu', e => e.preventDefault());
-    c.addEventListener('wheel', e => { e.preventDefault(); this.zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
+    c.addEventListener('wheel', e => { e.preventDefault(); if (this.ren.mode3d) return; this.zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
     c.addEventListener('pointerdown', e => this.down(e));
     c.addEventListener('pointermove', e => this.move(e));
     c.addEventListener('pointerup', e => this.up(e));
@@ -186,15 +276,29 @@ export class UI {
     cam.zoom = clamp(cam.zoom * f, 0.06, 8);
     const after = this.ren.toWorld(sx, sy);
     cam.x += before.x - after.x; cam.y += before.y - after.y;
+    this.autoLod();
   }
 
-  floorZ() { return this.ren.tilt > 0.02 && !isWay(this.tool) && this.tool !== 'runway' ? LEVELS[this.ren.level].z1 : 0; }
+  floorZ() {
+    if (this.ren.mode3d) return (this.tool in ZONES && !ZONES[this.tool as ZoneType].groundOnly) || (this.tool === 'select' && this.ren.lod === 'terminal') ? LEVELS[this.ren.level].z0 : 0;
+    return this.ren.tilt > 0.02 && !isWay(this.tool) && this.tool !== 'runway' ? LEVELS[this.ren.level].z1 : 0;
+  }
   wpt(e: PointerEvent): Pt { return this.ren.toWorld(e.offsetX, e.offsetY, this.floorZ()); }
 
-  hitTest(p: Pt): Hit {
-    const L = this.ren.level;
-    const zs = this.world.zones;
-    const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inRect(p, z));
+  hitTest(p: Pt, sitesOnly = false): Hit {
+    const lod = this.ren.lod;
+    const L = lod === 'terminal' ? this.ren.level : 1;
+    const zs = this.sim.d.zones;
+    const site = (this.world.sites ?? []).find(s => inRect(p, s));
+    // away from the terminal level, a terminal reads as one thing: its site
+    if (sitesOnly || (lod !== 'terminal' && site && !zs.some(z => !ZONES[z.type].terminal && inRect(p, z)))) {
+      if (site) return { kind: 'site', site };
+      const z = [...zs].reverse().find(q => isTerminalModule(q) && inRect(p, q));
+      const st = z && siteOf(this.world, z); if (st) return { kind: 'site', site: st };
+      if (sitesOnly) return null;
+    }
+    const inFocus = (z: Zone) => lod !== 'terminal' || this.ren.focus === null || siteOf(this.world, z)?.id === this.ren.focus || this.sim.d.termOf.get(z.id)?.site?.id === this.ren.focus;
+    const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inRect(p, z) && inFocus(z));
     if (z1) {
       // inside a concourse, a click on a commercial lot picks that lot (its scores show in the inspector)
       const lot = z1.type === 'concourse' ? (this.sim.d.shops.get(z1.id) ?? []).find(sh => pointInPoly(p, sh.pts)) : undefined;
@@ -213,16 +317,16 @@ export class UI {
   }
   hitToSel(h: Hit): Sel | null {
     return !h ? null : h.kind === 'zone' ? { kind: 'zone', id: h.zone.id, key: h.lot } : h.kind === 'runway' ? { kind: 'runway', id: h.id }
-      : h.kind === 'gate' ? { kind: 'gate', id: h.slot.zone.id, key: h.slot.key } : { kind: 'way', id: h.way.id };
+      : h.kind === 'gate' ? { kind: 'gate', id: h.slot.zone.id, key: h.slot.key } : h.kind === 'site' ? { kind: 'site', id: h.site.id } : { kind: 'way', id: h.way.id };
   }
 
   /** Snap a point for drawing: existing endpoints first, then runways, aprons, the highway, zone edges; else the grid. */
   snapFor(kind: WayKind | 'runway', p: Pt): { p: Pt; snapped: boolean } {
     const tol = 14 / this.ren.cam.zoom;
     let best: { p: Pt; d: number; pri: number } | null = null;
-    const consider = (q: Pt, pri: number) => {
+    const consider = (q: Pt, pri: number, within = tol) => {
       const d = dist(p, q);
-      if (d <= tol && (!best || pri > best.pri || (pri === best.pri && d < best.d))) best = { p: { x: Math.round(q.x * 10) / 10, y: Math.round(q.y * 10) / 10 }, d, pri };
+      if (d <= within && (!best || pri > best.pri || (pri === best.pri && d < best.d))) best = { p: { x: Math.round(q.x * 10) / 10, y: Math.round(q.y * 10) / 10 }, d, pri };
     };
     const onSeg = (a: Pt, b: Pt) => lerpPt(a, b, clamp(projT(p, a, b), 0, 1));
     const edgePt = (r: Rect): Pt => {
@@ -245,6 +349,18 @@ export class UI {
     if (kind === 'road') {
       consider({ x: clamp(p.x, 0, SITE.width), y: SITE.highwayY }, 2);
       for (const z of this.world.zones) if (z.type === 'curb' || z.type === 'parking') consider(edgePt(z), 3);
+      // frontage guides: the line a road should follow to grow a curb along a terminal face
+      const off = FRONTAGE.ideal + (this.opt.lanes >= 4 ? 8 : 4.5);
+      for (const gd of this.sim.d.frontGuides) {
+        const a = { x: gd.a.x + gd.out.x * off, y: gd.a.y + gd.out.y * off }, b = { x: gd.b.x + gd.out.x * off, y: gd.b.y + gd.out.y * off };
+        const ext = (q: Pt, r: Pt, k: number) => ({ x: q.x + (q.x - r.x) / (dist(q, r) || 1) * k, y: q.y + (q.y - r.y) / (dist(q, r) || 1) * k });
+        const a2 = ext(a, b, FRONTAGE.ramp), b2 = ext(b, a, FRONTAGE.ramp);
+        if (segDistWay(p, { a: a2, b: b2 }) < FRONTAGE.snap + 200) {
+          // snap sideways onto the guide line, anywhere along it (roads usually run past the building)
+          const al = norm(sub(b, a)); const q = { x: a.x + al.x * dot(sub(p, a), al), y: a.y + al.y * dot(sub(p, a), al) };
+          consider({ x: q.x, y: q.y }, 3, FRONTAGE.snap / 2);
+        }
+      }
     }
     if (kind === 'walk') for (const z of this.world.zones) if (z.level === 0) consider(edgePt(z), 3);
     if (best) return { p: (best as { p: Pt }).p, snapped: true };
@@ -252,6 +368,11 @@ export class UI {
   }
 
   down(e: PointerEvent) {
+    // in 3D the orbit controls own drags with Select; build tools still draw on the ground plane
+    if (this.ren.mode3d && (this.tool === 'select' || e.button !== 0)) {
+      if (e.button === 0) this.click3d = { x: e.offsetX, y: e.offsetY };
+      return;
+    }
     this.ren.canvas.setPointerCapture(e.pointerId);
     this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
     if (this.pointers.size === 2) {
@@ -266,7 +387,8 @@ export class UI {
     const t = this.tool;
     if (t === 'runway') { const s = this.snapFor('runway', p); this.drag = { mode: 'runway', ...base, start: s.p }; return; }
     if (isWay(t)) { const s = this.snapFor(t, p); this.drag = { mode: 'way', ...base, start: s.p, snapStart: s.snapped }; return; }
-    if (t in ZONES) { this.drag = { mode: 'zone', ...base, start: { x: snap(p.x, 10), y: snap(p.y, 10) } }; return; }
+    if (t in ZONES) { this.drag = { mode: 'zone', ...base, start: this.magnet(p, ZONES[t as ZoneType].groundOnly ? 0 : this.ren.level) }; return; }
+    if (t === 'site') { this.drag = { mode: 'site', ...base, start: { x: snap(p.x, 10), y: snap(p.y, 10) } }; return; }
     if (t === 'select' && this.ren.selected?.kind === 'runway') {
       const rw = this.world.runways.find(r => r.id === this.ren.selected!.id);
       const end = rw && this.runwayEndAt(rw, e.offsetX, e.offsetY);
@@ -275,13 +397,17 @@ export class UI {
     const hit = this.hitTest(p);
     if (t === 'demolish') { if (hit) this.demolish(hit); return; }
     this.select(hit);
-    if (hit?.kind === 'zone') {
+    if (hit?.kind === 'zone' && !hit.zone.auto) {
       const z = hit.zone;
       this.drag = { mode: 'move', ...base, zone: z, off: sub(p, { x: z.x, y: z.y }), moved: false };
     } else this.drag = { mode: 'pan', ...base, cam: { x: this.ren.cam.x, y: this.ren.cam.y } };
   }
 
   move(e: PointerEvent) {
+    if (this.ren.mode3d && !this.drag) {
+      if (this.tool !== 'select') { const p = this.wpt(e); if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; } }
+      return;
+    }
     if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
     if (this.pinch && this.pointers.size === 2) {
       const [a, b] = [...this.pointers.values()];
@@ -308,6 +434,14 @@ export class UI {
       const cam = this.ren.cam;
       cam.x = dr.cam!.x - (e.offsetX - dr.sx) / cam.zoom;
       cam.y = dr.cam!.y - (e.offsetY - dr.sy) / (cam.zoom * this.ren.yScale);
+      return;
+    }
+    if (dr.mode === 'site') {
+      const q = { x: snap(p.x, 10), y: snap(p.y, 10) };
+      const r = { x: Math.min(dr.start.x, q.x), y: Math.min(dr.start.y, q.y), w: Math.abs(q.x - dr.start.x), h: Math.abs(q.y - dr.start.y) };
+      const chk = this.canPlaceSite(r);
+      this.ren.ghost = { kind: 'zone', rect: r, ok: chk.ok };
+      this.hint(chk.ok ? `New terminal site · ${n0(r.w)} × ${n0(r.h)} m · release to allocate (free) · then lay out its modules inside` : chk.reason!, !chk.ok);
       return;
     }
     if (dr.mode === 'extend' && dr.rw && dr.orig && dr.end) {
@@ -361,10 +495,11 @@ export class UI {
       return;
     }
     if (dr.mode === 'zone') {
-      const t = this.tool as ZoneType; const q = { x: snap(p.x, 10), y: snap(p.y, 10) };
-      const r = { x: Math.min(dr.start.x, q.x), y: Math.min(dr.start.y, q.y), w: Math.abs(q.x - dr.start.x), h: Math.abs(q.y - dr.start.y) };
+      const t = this.tool as ZoneType;
       const level = ZONES[t].groundOnly ? 0 : this.ren.level;
-      const chk = canPlaceZone(this.world, r, t, level, -1, this.sim.d.aprons);
+      const q = this.magnet(p, level);
+      const r = { x: Math.min(dr.start.x, q.x), y: Math.min(dr.start.y, q.y), w: Math.abs(q.x - dr.start.x), h: Math.abs(q.y - dr.start.y) };
+      const chk = this.placeModule(r, t, level, -1);
       const cost = area(r) * ZONES[t].costPerM2;
       const ok = chk.ok && this.sim.canAfford(cost);
       this.ren.ghost = { kind: 'zone', rect: r, ok };
@@ -375,14 +510,19 @@ export class UI {
       const z = dr.zone;
       if (!dr.moved && Math.hypot(e.offsetX - dr.sx, e.offsetY - dr.sy) < 5) return;
       dr.moved = true;
-      const r = { x: snap(p.x - dr.off!.x, 10), y: snap(p.y - dr.off!.y, 10), w: z.w, h: z.h };
-      const chk = canPlaceZone(this.world, r, z.type, z.level, z.id, this.sim.d.aprons);
+      const r = this.magnetMove({ x: p.x - dr.off!.x, y: p.y - dr.off!.y, w: z.w, h: z.h }, z.level, z.id);
+      const chk = this.placeModule(r, z.type, z.level, z.id);
       this.ren.ghost = { kind: 'zone', rect: r, ok: chk.ok };
       this.hint(chk.ok ? `Move ${ZONES[z.type].short} · release to place (free) · reconnect paths afterwards` : chk.reason!, !chk.ok);
     }
   }
 
   up(e: PointerEvent) {
+    if (this.click3d) {
+      const c = this.click3d; this.click3d = null;
+      if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }
+      return;
+    }
     this.pointers.delete(e.pointerId);
     if (this.pinch) { if (this.pointers.size < 2) this.pinch = null; return; }
     const dr = this.drag; this.drag = null;
@@ -408,10 +548,17 @@ export class UI {
     } else if (dr.mode === 'zone' && g?.rect) {
       const t = this.tool as ZoneType;
       if (g.ok) this.buildZone(t, g.rect);
-      else if (g.rect.w > 5 || g.rect.h > 5) this.toast(canPlaceZone(this.world, g.rect, t, ZONES[t].groundOnly ? 0 : this.ren.level, -1, this.sim.d.aprons).reason ?? 'Not enough money', 'bad');
+      else if (g.rect.w > 5 || g.rect.h > 5) this.toast(this.placeModule(g.rect, t, ZONES[t].groundOnly ? 0 : this.ren.level, -1).reason ?? 'Not enough money', 'bad');
+    } else if (dr.mode === 'site' && g?.rect) {
+      if (g.ok) this.buildSite(g.rect);
+      else if (g.rect.w > 5 || g.rect.h > 5) this.toast(this.canPlaceSite(g.rect).reason ?? '', 'bad');
     } else if (dr.mode === 'move' && dr.zone && dr.moved && g?.rect) {
-      if (g.ok) { dr.zone.x = g.rect.x; dr.zone.y = g.rect.y; this.changed(); }
-      else this.toast('Cannot move there: ' + (canPlaceZone(this.world, g.rect, dr.zone.type, dr.zone.level, dr.zone.id, this.sim.d.aprons).reason ?? ''), 'bad');
+      if (g.ok) {
+        dr.zone.x = g.rect.x; dr.zone.y = g.rect.y;
+        const st = siteOf(this.world, dr.zone); if (st && isTerminalModule(dr.zone)) { dr.zone.site = st.id; fitSite(this.world, st); }
+        this.changed();
+      }
+      else this.toast('Cannot move there: ' + (this.placeModule(g.rect, dr.zone.type, dr.zone.level, dr.zone.id).reason ?? ''), 'bad');
     }
     this.hint(this.toolHint());
   }
@@ -421,11 +568,17 @@ export class UI {
     const k = e.key;
     const t = TOOLS.find(x => x.key.toLowerCase() === k.toLowerCase());
     if (t) { this.setTool(t.id); return; }
-    if (k === 'Escape') { this.setTool('select'); this.select(null); }
+    if (k === 'Escape') {
+      if (this.ren.lod === 'terminal' && this.tool === 'select') { this.goLod('landside'); return; }
+      this.setTool('select'); this.select(null);
+    }
+    else if (k === 'Enter') this.goLod('terminal');
+    else if (k === 'a' || k === 'A') this.goLod('airfield');
+    else if (k === 'l' || k === 'L') this.goLod('landside');
     else if (k === ' ') { e.preventDefault(); this.ctl.paused = !this.ctl.paused; this.syncSpeed(); }
     else if (k === '[' || k === 'PageDown') this.setLevel(0);
     else if (k === ']' || k === 'PageUp') this.setLevel(1);
-    else if (k === 't' || k === 'T') { this.ren.tiltTarget = this.ren.tiltTarget ? 0 : 1; $('#view25').setAttribute('aria-pressed', String(!!this.ren.tiltTarget)); }
+    else if (k === 't' || k === 'T') this.set3d(!this.ren.mode3d);
     else if (k === 'h' || k === 'H') this.setHeat(this.ren.overlay ? null : 'queues');
     else if (k === 'c' || k === 'C') this.setHeat(this.ren.commerce ? null : 'commerce');
     else if (k === '+' || k === '=') this.zoomAt(this.ren.W / 2, this.ren.H / 2, 1.25);
@@ -434,7 +587,8 @@ export class UI {
   }
 
   selHit(s: Sel): Hit {
-    if (s.kind === 'zone') { const z = this.world.zones.find(q => q.id === s.id); return z ? { kind: 'zone', zone: z } : null; }
+    if (s.kind === 'zone') { const z = this.sim.d.zones.find(q => q.id === s.id); return z ? { kind: 'zone', zone: z } : null; }
+    if (s.kind === 'site') { const st = this.world.sites?.find(q => q.id === s.id); return st ? { kind: 'site', site: st } : null; }
     if (s.kind === 'way') { const w = this.world.ways.find(q => q.id === s.id); return w ? { kind: 'way', way: w } : null; }
     if (s.kind === 'gate') { const sl = this.sim.d.gateSlots.find(q => q.zone.id === s.id && q.key === s.key); return sl ? { kind: 'gate', slot: sl } : null; }
     return { kind: 'runway', id: s.id };
@@ -463,6 +617,61 @@ export class UI {
     }
     if (t === 'curb') return `${Math.floor(Math.max(r.w, r.h) / 9) * 2} car bays`;
     return `${Math.max(1, Math.floor(area(r) / d.m2PerUnit))} ${d.unit}`;
+  }
+
+  // ------------------------------------------------------------ forgiving placement
+  /** Snap a drawn corner to the edges of nearby modules (any level) so modules meet flush; otherwise to the 10 m grid. */
+  magnet(p: Pt, level: Level): Pt {
+    const tol = Math.max(6, 12 / this.ren.cam.zoom);
+    const xs: number[] = [], ys: number[] = [];
+    for (const z of this.world.zones) { if (z.level !== level && !isTerminalModule(z)) continue; xs.push(z.x, z.x + z.w); ys.push(z.y, z.y + z.h); }
+    for (const st of this.world.sites ?? []) { xs.push(st.x, st.x + st.w); ys.push(st.y, st.y + st.h); }
+    const near = (v: number, cs: number[]) => cs.reduce((m, c) => (Math.abs(c - v) < Math.abs(m - v) ? c : m), Infinity);
+    const nx = near(p.x, xs), ny = near(p.y, ys);
+    return { x: Math.abs(nx - p.x) <= tol ? nx : snap(p.x, 10), y: Math.abs(ny - p.y) <= tol ? ny : snap(p.y, 10) };
+  }
+  /** Moving a module: whichever of its edges is closest to a neighbour's edge snaps flush. */
+  magnetMove(r: Rect, level: Level, ignore: number): Rect {
+    const tol = Math.max(6, 12 / this.ren.cam.zoom);
+    let dx = snap(r.x, 10) - r.x, dy = snap(r.y, 10) - r.y, bx = tol + 1, by = tol + 1;
+    for (const z of this.world.zones) {
+      if (z.id === ignore || (z.level !== level && !isTerminalModule(z))) continue;
+      for (const [a, c] of [[r.x, z.x], [r.x, z.x + z.w], [r.x + r.w, z.x], [r.x + r.w, z.x + z.w]]) if (Math.abs(c - a) < bx) { bx = Math.abs(c - a); dx = c - a; }
+      for (const [a, c] of [[r.y, z.y], [r.y, z.y + z.h], [r.y + r.h, z.y], [r.y + r.h, z.y + z.h]]) if (Math.abs(c - a) < by) { by = Math.abs(c - a); dy = c - a; }
+    }
+    return { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h };
+  }
+  /** Placement for modules: the usual rules, plus terminal modules go in the open terminal (whose site then grows). */
+  placeModule(r: Rect, t: ZoneType, level: Level, ignore: number) {
+    const chk = canPlaceZone(this.world, r, t, level, ignore, this.sim.d.aprons);
+    if (!chk.ok || !TERMINAL_TOOLS.has(t)) return chk;
+    const mine = ignore >= 0 ? this.world.zones.find(z => z.id === ignore) : undefined;
+    const st = mine ? siteOf(this.world, mine) : this.world.sites?.find(s => s.id === this.ren.focus);
+    if (!st) return { ok: false, reason: 'Open a terminal first (double-click it), or allocate one with New terminal (N)' };
+    if (!rectsOverlap(r, padRect(st, SITES.reach))) return { ok: false, reason: `Too far from ${this.siteName(st)}: keep modules within ${SITES.reach} m of its site, or start a New terminal` };
+    const other = (this.world.sites ?? []).find(o => o.id !== st.id && rectsOverlap(r, o));
+    if (other) return { ok: false, reason: `That is ${this.siteName(other)}'s site` };
+    return chk;
+  }
+  canPlaceSite(r: Rect) {
+    if (r.w < SITES.minW || r.h < SITES.minH) return { ok: false, reason: `A terminal site needs at least ${SITES.minW} × ${SITES.minH} m` };
+    if (!inBuildable(r)) return { ok: false, reason: 'Outside the airport boundary or in the lake' };
+    for (const rw of this.world.runways) if (rectSegDist(r, rw.a, rw.b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip (150 m)' };
+    for (const o of this.world.sites ?? []) if (rectsOverlap(r, o)) return { ok: false, reason: `Overlaps ${this.siteName(o)}'s site` };
+    for (const w of this.world.ways) if (w.kind === 'taxi' && rectSegDist(r, w.a, w.b) === 0) return { ok: false, reason: 'Crosses a taxiway' };
+    return { ok: true };
+  }
+  siteName(st: Site) { return this.sim.d.terminals.find(t => t.site?.id === st.id)?.name ?? 'that terminal'; }
+
+  buildSite(r: Rect) {
+    const st: Site = { id: this.world.nextId++, ...r };
+    (this.world.sites ??= []).push(st);
+    // modules already standing on the land join it
+    for (const z of this.world.zones) if (isTerminalModule(z) && z.site === undefined && inRect(center4(z), st)) z.site = st.id;
+    this.changed();
+    this.openTerminal(st);
+    this.setTool('checkin');
+    this.toast(`${this.siteName(st)} allocated. Lay out check-in, security, a concourse and bag claim inside it; run a road along its face for a curb.`);
   }
 
   // ------------------------------------------------------------ edits
@@ -501,7 +710,10 @@ export class UI {
     this.sim.spend(cost);
     const z: Zone = { id: this.world.nextId++, type: t, level: ZONES[t].groundOnly ? 0 : this.ren.level, ...r, tier: 0 };
     if (t === 'concourse') z.cls = this.opt.conc;
-    this.world.zones.push(z);
+    if (TERMINAL_TOOLS.has(t)) {
+      const st = this.world.sites?.find(s => s.id === this.ren.focus) ?? siteOf(this.world, z);
+      if (st) { z.site = st.id; this.world.zones.push(z); fitSite(this.world, st); } else this.world.zones.push(z);
+    } else this.world.zones.push(z);
     this.changed();
     const u = this.sim.d.units.get(z.id);
     this.select({ kind: 'zone', zone: z });
@@ -511,8 +723,15 @@ export class UI {
   demolish(h: Hit) {
     if (!h) return;
     if (h.kind === 'gate') { this.toggleGate(h.slot, false); return; }
+    if (h.kind === 'zone' && h.zone.auto) { this.toast('This curb grows from the road beside the terminal. Move or remove the road to change it.', 'warn'); return; }
     let refund = 0, what = '';
-    if (h.kind === 'zone') {
+    if (h.kind === 'site') {
+      const st = h.site; const mine = this.world.zones.filter(z => z.site === st.id || (z.site === undefined && isTerminalModule(z) && inRect(center4(z), st)));
+      refund = mine.reduce((t, z) => t + area(z) * ZONES[z.type].costPerM2 * 0.4, 0); what = this.siteName(st);
+      this.world.zones = this.world.zones.filter(z => !mine.includes(z));
+      this.world.sites = (this.world.sites ?? []).filter(s => s !== st);
+      if (this.ren.focus === st.id) this.setLod('landside', null);
+    } else if (h.kind === 'zone') {
       const z = h.zone; refund = area(z) * ZONES[z.type].costPerM2 * 0.4; what = ZONES[z.type].label;
       this.world.zones = this.world.zones.filter(q => q !== z);
     } else if (h.kind === 'way') {
@@ -670,7 +889,8 @@ export class UI {
         <p class="muted">Sidewalks link ground-level modules, curbs and lots. Upper-level modules connect through cores.</p>
         <button class="btn danger" data-act="demolish">Demolish (${money(L * WALK.costPerM * 0.4)} back)</button>`;
     }
-    const z = s.world.zones.find(q => q.id === sel.id); if (!z) return '';
+    if (sel.kind === 'site') return this.siteHTML(sel.id);
+    const z = s.d.zones.find(q => q.id === sel.id); if (!z) return '';
     const def = ZONES[z.type]; const u = s.d.units.get(z.id) ?? { max: 0, count: 0 };
     const proc = s.procs.get(z.id);
     let stats = '';
@@ -687,7 +907,8 @@ export class UI {
       stats = `<dt>Carousels busy</dt><dd>${proc.carousels?.filter(Boolean).length ?? 0} of ${u.count}</dd><dt>Waiting for bags</dt><dd>${s.pax.filter(p => p.stage === 'waitBag' && p.proc === proc).length} people</dd>`;
     } else if (proc && z.type === 'curb') {
       const q = proc.cars?.filter(c => c.stage === 'queue').length ?? 0;
-      stats = `<dt>Bays in use</dt><dd>${proc.bays?.filter(Boolean).length ?? 0} of ${u.count}</dd><dt>Cars queuing</dt><dd class="${q > 8 ? 'bad' : ''}">${q}</dd>
+      const deck = z.auto ? { dep: 'Departures curb on the upper deck: drop-offs', arr: 'Arrivals curb under the upper deck: pickups', both: 'Drop-offs and pickups' }[z.auto.deck] : '';
+      stats = (z.auto ? `<dt>Grown by</dt><dd>the road ${n0(z.auto.gap)} m off the ${ZONES[this.sim.d.zones.find(m => m.id === z.auto!.module)?.type ?? 'checkin'].short.toLowerCase()} face · ${deck}</dd>` : '') + `<dt>Bays in use</dt><dd>${proc.bays?.filter(Boolean).length ?? 0} of ${u.count}</dd><dt>Cars queuing</dt><dd class="${q > 8 ? 'bad' : ''}">${q}</dd>
         <dt>Road access</dt><dd class="${s.d.roadOK.has(z.id) ? '' : 'bad'}">${s.d.roadOK.has(z.id) ? 'Connected' : 'None: draw a road to its edge'}</dd>`;
     } else if (z.type === 'parking') {
       stats = `<dt>Stalls used</dt><dd>${n0(s.lotUsed)} of ${n0(s.lotCapacity())} (all lots)</dd>
@@ -730,20 +951,20 @@ export class UI {
         <dt>Size</dt><dd>${n0(z.w)} × ${n0(z.h)} m · ${n0(area(z))} m²</dd>
         ${(() => { const T = s.d.termOf.get(z.id); return T ? `<dt>Terminal</dt><dd class="${T.active ? '' : 'bad'}">${T.name} · ${T.active ? 'open' : 'closed'}</dd>` : ''; })()}
         ${z.type === 'concourse' ? this.gateSidesHTML(z) : ''}
-        ${u.max && z.type !== 'concourse' ? `<dt>${z.type === 'claim' ? 'Carousels built' : def.unit[0].toUpperCase() + def.unit.slice(1)}</dt><dd>
+        ${u.max && z.type !== 'concourse' && !z.auto ? `<dt>${z.type === 'claim' ? 'Carousels built' : def.unit[0].toUpperCase() + def.unit.slice(1)}</dt><dd>
           <span class="stepper"><button class="step" data-act="units-" aria-label="Fewer">−</button><b>${u.count}</b><button class="step" data-act="units+" aria-label="More">+</button></span>
           <span class="muted">of ${u.max} that fit</span></dd>` : ''}
         ${stats}
       </dl>
       ${clsSeg}
-      <div class="tier">
+      ${z.auto ? `<p class="muted small">This curb belongs to the road beside the terminal: move the road or the building and it follows; remove the road and it goes.</p>` : `<div class="tier">
         <span class="label">Fit-out</span>
         <div class="seg">
           <button data-act="tier0" aria-pressed="${z.tier === 0}">${def.tierNames[0]}</button>
           <button data-act="tier1" aria-pressed="${z.tier === 1}">${def.tierNames[1]}${z.tier === 0 ? ` · ${money(upCost)}` : ''}</button>
         </div>
       </div>
-      <button class="btn danger" data-act="demolish">Demolish (${money(area(z) * def.costPerM2 * 0.4)} back)</button>`;
+      <button class="btn danger" data-act="demolish">Demolish (${money(area(z) * def.costPerM2 * 0.4)} back)</button>`}`;
   }
 
   /** Walk-through duty free: only where the concourse's entry wall is shared with security. */
@@ -778,6 +999,28 @@ export class UI {
       <dt>Revenue</dt><dd>${money(L.rev)} today (${n0(L.visits)} customers)${P ? ` · ${money(P.rev)} yesterday` : ''}</dd>`;
   }
 
+  /** A terminal as a whole: what it has, why it's closed, and the way in. */
+  siteHTML(id: number) {
+    const s = this.sim; const st = this.world.sites?.find(q => q.id === id); if (!st) return '';
+    const T = s.d.terminals.find(t => t.site?.id === id);
+    const zs = T?.zones ?? [];
+    const by = (t: ZoneType) => zs.filter(z => z.type === t);
+    const curbs = s.d.zones.filter(z => z.type === 'curb' && zs.some(m => z.auto?.module === m.id));
+    const decks = curbs.some(c => c.auto?.deck === 'dep');
+    const row = (t: ZoneType, label: string) => `<dt>${label}</dt><dd class="${by(t).length ? '' : 'muted'}">${by(t).length ? by(t).map(z => `${n0(z.w)} × ${n0(z.h)} m ${LEVELS[z.level].short}`).join(' · ') : 'none yet'}</dd>`;
+    return `<h2>${T?.name ?? 'Terminal'} <span class="lvl">${T?.active ? 'open' : 'closed'}</span></h2>
+      <dl class="kv">
+        <dt>Site</dt><dd>${n0(st.w)} × ${n0(st.h)} m · grows as you add modules</dd>
+        ${T && !T.active ? `<dt>Status</dt><dd class="bad">${esc(T.problems.join('; '))}</dd>` : ''}
+        ${row('checkin', 'Check-in')}${row('security', 'Security')}${row('concourse', 'Concourses')}${row('claim', 'Bag claim')}
+        <dt>Gates</dt><dd>${T?.gates ?? 0}</dd>
+        <dt>Curbs</dt><dd class="${curbs.length ? '' : 'muted'}">${curbs.length ? `${curbs.length} grown by roads${decks ? ' · two-level frontage road (departures above, arrivals below)' : ''}` : 'none: run a road along the landside face'}</dd>
+      </dl>
+      <button class="btn" data-act="open">Open terminal (Enter)</button>
+      <p class="muted small">Inside, lay out check-in, security, concourses and bag claim; modules snap flush to each other. Double-click any terminal on the map to open it; Esc steps back out.</p>
+      <button class="btn danger" data-act="demolish">Demolish terminal and its modules</button>`;
+  }
+
   gateSidesHTML(z: Zone) {
     const s = this.sim; const zc = z.cls ?? 2;
     const rows = s.d.gateGuides.filter(g => g.zone.id === z.id).map(g => {
@@ -806,7 +1049,7 @@ export class UI {
         <li><i class="sw miss"></i>Missing connection</li>
       </ul>
       <h3>Keys</h3>
-      <p class="muted keys"><kbd>Space</kbd> pause · <kbd>[</kbd> <kbd>]</kbd> level · <kbd>T</kbd> 2.5D · <kbd>H</kbd> queues and traffic · <kbd>Del</kbd> demolish · <kbd>Shift</kbd>-drag pan</p>`;
+      <p class="muted keys"><kbd>A</kbd> airfield · <kbd>L</kbd> landside · <kbd>Enter</kbd> open terminal · <kbd>Esc</kbd> step out · <kbd>N</kbd> new terminal · <kbd>Space</kbd> pause · <kbd>[</kbd> <kbd>]</kbd> level · <kbd>T</kbd> 3D · <kbd>H</kbd> queues and traffic · <kbd>C</kbd> commerce · <kbd>Del</kbd> demolish · <kbd>Shift</kbd>-drag pan</p>`;
   }
 
   opsHTML(): string {
@@ -949,6 +1192,7 @@ export class UI {
     const w = sel?.kind === 'way' ? s.world.ways.find(q => q.id === sel.id) : undefined;
     const pay = (cost: number) => { if (!s.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return false; } s.spend(cost); return true; };
     if (a === 'demolish' && sel) this.demolish(this.selHit(sel));
+    else if (a === 'open' && sel?.kind === 'site') { const st = this.world.sites?.find(q => q.id === sel.id); if (st) this.openTerminal(st); }
     else if ((a === 'units-' || a === 'units+') && z) {
       const u = s.d.units.get(z.id)!; z.units = clamp(u.count + (a === 'units+' ? 1 : -1), 1, u.max); this.changed();
     } else if (a === 'tier1' && z && z.tier === 0) {
@@ -990,7 +1234,11 @@ export class UI {
     const y0 = Math.min(...pts.map(p => p.y)), y1 = Math.max(...pts.map(p => p.y));
     const zoom = clamp(Math.min((this.ren.W * 0.62) / (x1 - x0 + 400), (this.ren.H * 0.7) / (y1 - y0 + 400)), 0.08, 2);
     this.ren.cam = { x: (x0 + x1) / 2 + (this.ren.W > 820 ? 120 / zoom : 0), y: (y0 + y1) / 2, zoom };
+    if (this.ren.mode3d) this.ren.r3?.enterFrom(this.ren.cam.x, this.ren.cam.y, zoom);
+    this.autoLod();
   }
 }
 
 const CLASS_EX = (c: number) => CLASSES[c].example;
+const TERMINAL_TOOLS = new Set<ZoneType>(['checkin', 'security', 'concourse', 'claim']);
+const center4 = (r: Rect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });

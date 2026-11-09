@@ -2,10 +2,11 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE } from './config';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod } from './config';
 import type { Sim, Flight } from './sim';
-import { Zone, Frame, WayKind, wayWidth, runwayWidth } from './world';
+import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
 import type { LItem } from './layout';
+import { Renderer3D } from './render3d';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -22,7 +23,7 @@ export interface Ghost {
   way?: { kind: WayKind; cls: number; lanes: number }; snapA?: boolean; snapB?: boolean;
   extras?: { a: Pt; b: Pt; cls: number }[];
 }
-export type Sel = { kind: 'zone' | 'runway' | 'way' | 'gate'; id: number; key?: string };
+export type Sel = { kind: 'zone' | 'runway' | 'way' | 'gate' | 'site'; id: number; key?: string };
 
 const HS = 3.4;            // vertical exaggeration for heights
 
@@ -32,6 +33,13 @@ export class Renderer {
   tilt = 0; tiltTarget = 0;
   level: Level = 1;
   overlay = false;             // queue and road-congestion heatmap (H)
+  /** Level of detail (v0.8): the airfield diagram, the landside and roads, or one terminal opened up. */
+  lod: Lod = 'landside';
+  focus: number | null = null;  // the terminal site opened at LOD 'terminal'
+  showFront = false;            // road tool: frontage guides where a road would grow a curb
+  /** v0.8: a true 3D view with an orbiting camera (render3d.ts), made on first use. */
+  mode3d = false;
+  r3?: Renderer3D;
   commerce = false;            // commercial heatmap: footfall and revenue per lot (C)
   W = 0; H = 0; dpr = 1;
   selected: Sel | null = null;
@@ -47,15 +55,39 @@ export class Renderer {
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
     this.W = r.width; this.H = r.height;
     this.canvas.width = Math.round(r.width * this.dpr); this.canvas.height = Math.round(r.height * this.dpr);
+    this.r3?.resize();
+  }
+
+  /** Switch between the plan and the 3D view, keeping the same place in view. */
+  set3d(on: boolean) {
+    if (on === this.mode3d) return;
+    if (on) {
+      if (!this.r3) this.r3 = new Renderer3D(this);
+      this.r3.resize();
+      this.r3.enterFrom(this.cam.x, this.cam.y, this.cam.zoom);
+      this.r3.canvas.style.display = 'block'; this.r3.controls.enabled = true;
+      this.tilt = this.tiltTarget = 0;
+    } else if (this.r3) {
+      const c = this.r3.planCamera(); this.cam = { x: c.x, y: c.y, zoom: c.zoom };
+      this.r3.canvas.style.display = 'none'; this.r3.controls.enabled = false;
+    }
+    this.mode3d = on;
+  }
+  /** In 3D, left-drag orbits only with Select; with a build tool it draws. */
+  setOrbitLeft(orbit: boolean) {
+    if (!this.r3) return;
+    (this.r3.controls.mouseButtons as Record<string, number | null>).LEFT = orbit ? 0 : null;
   }
 
   get yScale() { return 1 - 0.32 * this.tilt; }
 
   P(x: number, y: number, z = 0): [number, number] {
+    if (this.mode3d && this.r3) return this.r3.project(x, y, z);
     const c = this.cam;
     return [(x - c.x) * c.zoom + this.W / 2, (y - c.y) * c.zoom * this.yScale + this.H / 2 - z * HS * this.tilt * c.zoom];
   }
   toWorld(sx: number, sy: number, z = 0): Pt {
+    if (this.mode3d && this.r3) return this.r3.toWorld(sx, sy, z);
     const c = this.cam;
     return { x: (sx - this.W / 2) / c.zoom + c.x, y: (sy - this.H / 2 + z * HS * this.tilt * c.zoom) / (c.zoom * this.yScale) + c.y };
   }
@@ -93,23 +125,33 @@ export class Renderer {
   // ------------------------------------------------------------ frame
   draw(sim: Sim) {
     const g = this.ctx;
+    if (this.mode3d && this.r3) {
+      g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); g.clearRect(0, 0, this.W, this.H);
+      this.r3.draw(sim, this.nightness(sim.t));
+      return;
+    }
     this.tilt += (this.tiltTarget - this.tilt) * 0.18;
     if (Math.abs(this.tilt - this.tiltTarget) < 0.002) this.tilt = this.tiltTarget;
     g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     g.fillStyle = PAL.groundDeep; g.fillRect(0, 0, this.W, this.H);
 
+    const lod = this.lod;
     this.drawTerrain();
     this.drawRoads(sim);
     this.drawAirfield(sim);
     this.drawLots(sim);
-    this.drawWalks(sim);
+    if (lod !== 'airfield') this.drawWalks(sim);
+    this.drawDecks(sim);
     this.drawStands(sim);
-    this.drawGateSlots(sim);
+    if (lod !== 'landside') this.drawGateSlots(sim);
     this.drawGateGuides(sim, this.showGuides);
+    this.drawSites(sim);
     this.drawBuildings(sim);
-    this.drawCars(sim);
-    this.drawPax(sim);
+    this.drawFrontGuides(sim);
+    if (lod !== 'airfield') this.drawCars(sim);
+    if (lod === 'terminal') this.drawPax(sim);
     this.drawAircraft(sim);
+    this.drawFocus(sim);
     this.drawLinks(sim);
     this.drawGhost();
 
@@ -153,8 +195,10 @@ export class Renderer {
     const roads = [hwy, ...sim.world.ways.filter(w => w.kind === 'road').map(w => ({ a: w.a, b: w.b, w: wayWidth('road', 0, w.lanes), lanes: w.lanes, id: w.id }))];
     g.lineJoin = 'round';
     // kerb (darker, slightly wider) then asphalt
+    if (this.lod === 'airfield') g.globalAlpha = 0.55;
     for (const r of roads) this.line(r.a, r.b, r.w + 2, PAL.roadEdge, 0, 'round', 1.6);
     for (const r of roads) this.line(r.a, r.b, r.w, PAL.road, 0, 'round', 1);
+    g.globalAlpha = 1;
     // congestion overlay
     if (this.overlay) {
       for (const e of sim.d.road.edges) {
@@ -164,7 +208,7 @@ export class Renderer {
       }
     }
     // markings
-    if (z > 0.35) {
+    if (z > 0.35 && this.lod !== 'airfield') {
       for (const r of roads) {
         const n = norm({ x: -(r.b.y - r.a.y), y: r.b.x - r.a.x });
         if (r.lanes >= 4) {
@@ -335,7 +379,9 @@ export class Renderer {
 
   drawLots(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom;
-    for (const zn of sim.world.zones) {
+    // the curb on the level you are looking at draws last, over the one on the other deck
+    const order = [...sim.d.zones].sort((a, b) => Number(a.level === this.level) - Number(b.level === this.level));
+    for (const zn of order) {
       if (zn.type === 'parking') {
         this.poly(this.rectPts(zn), PAL.paveLight);
         const used = sim.lotUsed / (sim.lotCapacity() || 1);
@@ -347,7 +393,8 @@ export class Renderer {
         }
         this.zoneLabel(sim, zn, 0);
       } else if (zn.type === 'curb') {
-        this.poly(this.rectPts(zn), PAL.road);
+        if (zn.level !== this.level && order.some(o => o.type === 'curb' && o.level === this.level && rectsTouch(o, zn))) continue;
+        this.poly(this.rectPts(zn), zn.level === 1 ? '#B4AEA2' : PAL.road);
         const f = sim.d.frames.get(zn.id)!;
         if (z > 0.6) {
           g.setLineDash([6 * z, 6 * z]);
@@ -357,7 +404,7 @@ export class Renderer {
         // sidewalk strip on the building side
         this.line(add(f.a, mul(f.inward, 2)), add(f.b, mul(f.inward, 2)), 4, PAL.walk, 0, 'butt', 1.2);
         this.line(add(f.a, mul(f.inward, 4)), add(f.b, mul(f.inward, 4)), 0.3, PAL.walkEdge, 0, 'butt', 0.5);
-        if (this.level === 0 || this.cam.zoom < 0.7) this.zoneLabel(sim, zn, 0);
+        if (this.lod !== 'airfield' && (zn.level === this.level || this.cam.zoom < 0.7)) this.zoneLabel(sim, zn, 0);
       }
       if (zn.type === 'parking' || zn.type === 'curb') this.selectOutline(zn, 0);
     }
@@ -371,8 +418,10 @@ export class Renderer {
   // ------------------------------------------------------------ buildings
   drawBuildings(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom;
-    const zones = sim.world.zones.filter(q => ZONES[q.type].terminal);
-    const active = this.level;
+    const zones = sim.d.zones.filter(q => ZONES[q.type].terminal);
+    const active = this.lod === 'terminal' ? this.level : 1;
+    // fit-out and labels only where you are looking: the open terminal, or every terminal at landside zoom
+    const detail = (zn: Zone) => this.lod === 'terminal' ? (this.focus === null || siteOf(sim.world, zn)?.id === this.focus || sim.d.termOf.get(zn.id)?.site?.id === this.focus) : false;
     zones.sort((a, b) => a.level - b.level || (a.y + a.h) - (b.y + b.h));
     const tilted = this.tilt > 0.02;
     const labels: [Zone, number][] = [];
@@ -390,21 +439,24 @@ export class Renderer {
       }
       this.poly(this.rectPts(zn), isActive ? PAL.bldgTop : (tilted ? PAL.bldg : PAL.bldgGhost), top);
       if (isActive || tilted) { g.strokeStyle = 'rgba(40,36,30,0.35)'; g.lineWidth = 1; this.path(this.rectPts(zn), top); g.stroke(); }
-      if (isActive) {
+      if (isActive && detail(zn)) {
         if (this.overlay) this.heat(sim, zn, top);
         if (this.commerce && zn.type === 'concourse') this.flowBand(sim, zn, top);
         this.fitout(sim, zn, top);
         labels.push([zn, top]);
+      } else if (isActive && this.lod === 'landside') {
+        if (this.overlay) this.heat(sim, zn, top);
+        labels.push([zn, top]);
       }
       this.selectOutline(zn, top);
     }
-    for (const zn of zones) if (zn.level > active) {
+    for (const zn of zones) if (zn.level > active && this.lod === 'terminal') {
       const top = tilted ? LEVELS[zn.level].z1 : 0;
       g.setLineDash([5, 4]); g.strokeStyle = 'rgba(40,36,30,0.45)'; g.lineWidth = 1; this.path(this.rectPts(zn), top); g.stroke(); g.setLineDash([]);
       this.selectOutline(zn, top);
     }
     // Vertical cores (stairs, escalators, lifts); frontage cores sit on the curb edge
-    for (const c of sim.d.cores) {
+    if (this.lod !== 'airfield') for (const c of sim.d.cores) {
       const top = tilted ? LEVELS[active].z1 : 0;
       const s = c.frontage ? 5 : 7;
       const r = { x: c.x - s, y: c.y - s, w: s * 2, h: s * 2 };
@@ -421,8 +473,9 @@ export class Renderer {
     if (z < 0.12) return;
     const top = this.tilt > 0.02 ? LEVELS[1].z1 : 0;
     for (const T of sim.d.terminals) {
-      const b = T.bbox; const pad = 18;
+      const b = T.bbox; const pad = T.site ? 0 : 18;
       const r = { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+      if (this.lod === 'terminal' && this.focus !== null && T.site?.id !== this.focus) continue;
       if (!T.active) { g.setLineDash([7, 5]); g.strokeStyle = PAL.bad; g.lineWidth = 1.5; this.path(this.rectPts(r), top); g.stroke(); g.setLineDash([]); }
       const px = clamp(16 * z + 6, 10, 18);
       const at = { x: r.x - 10 / z, y: r.y + 4 / z };
@@ -565,6 +618,91 @@ export class Renderer {
     }
   }
 
+  /** Terminal sites: the land each terminal was given. An empty site reads as a hatched plot waiting for modules. */
+  drawSites(sim: Sim) {
+    const g = this.ctx; const z = this.cam.zoom;
+    for (const st of sim.world.sites ?? []) {
+      const T = sim.d.terminals.find(t => t.site?.id === st.id);
+      const empty = !T || !T.zones.length;
+      const sel = this.selected?.kind === 'site' && this.selected.id === st.id;
+      const hov = this.hover?.kind === 'site' && this.hover.id === st.id;
+      if (this.lod === 'airfield' || empty) this.poly(this.rectPts(st), empty ? 'rgba(149,138,118,0.10)' : 'rgba(149,138,118,0.22)');
+      if (empty && z > 0.2) {
+        g.save(); this.path(this.rectPts(st)); g.clip();
+        g.strokeStyle = 'rgba(40,36,30,0.12)'; g.lineWidth = 1;
+        for (let k = -st.h; k < st.w; k += 24) this.line({ x: st.x + k, y: st.y + st.h }, { x: st.x + k + st.h, y: st.y }, 0, 'rgba(40,36,30,0.12)', 0, 'butt', 1);
+        g.restore();
+        if (z > 0.25) this.label('NEW TERMINAL · DOUBLE-CLICK TO LAY IT OUT', center(st), 0, 9, PAL.ink2, { weight: 700, spacing: 1.2, bg: 'rgba(240,232,215,0.85)' });
+      }
+      g.setLineDash([10, 5]); g.strokeStyle = sel ? PAL.select : hov ? 'rgba(47,93,124,0.7)' : 'rgba(40,36,30,0.4)'; g.lineWidth = sel ? 2 : 1;
+      this.path(this.rectPts(st)); g.stroke(); g.setLineDash([]);
+      // corner ticks, like a site boundary on a survey
+      const t = 10 / Math.max(z, 0.2);
+      for (const [cx, cy, dx, dy] of [[st.x, st.y, 1, 1], [st.x + st.w, st.y, -1, 1], [st.x + st.w, st.y + st.h, -1, -1], [st.x, st.y + st.h, 1, -1]]) {
+        this.line({ x: cx, y: cy }, { x: cx + dx * t, y: cy }, 0, PAL.ink2, 0, 'butt', 1.6);
+        this.line({ x: cx, y: cy }, { x: cx, y: cy + dy * t }, 0, PAL.ink2, 0, 'butt', 1.6);
+      }
+    }
+  }
+
+  /** Two-level frontage roads: the upper deck over the road, on columns, with ramps at either end. */
+  drawDecks(sim: Sim) {
+    const z = this.cam.zoom; const g = this.ctx;
+    for (const dk of sim.d.decks) {
+      const n = norm({ x: -(dk.b.y - dk.a.y), y: dk.b.x - dk.a.x }); const d = norm(sub(dk.b, dk.a)); const L = dist(dk.a, dk.b);
+      const ramp = FRONTAGE.ramp;
+      const pts = [add(dk.a, mul(n, -dk.width / 2)), add(dk.b, mul(n, -dk.width / 2)), add(dk.b, mul(n, dk.width / 2)), add(dk.a, mul(n, dk.width / 2))];
+      g.save(); g.shadowColor = 'rgba(40,36,30,0.35)'; g.shadowBlur = 6; g.shadowOffsetY = 3;
+      this.poly(pts, '#B4AEA2'); g.restore();
+      g.strokeStyle = PAL.roadEdge; g.lineWidth = 1.2; this.path(pts); g.stroke();
+      if (z > 0.35) {
+        g.setLineDash([Math.max(2, 4 * z), Math.max(3, 7 * z)]);
+        this.line(dk.a, dk.b, 0.3, PAL.roadLine, 0, 'butt', 0.6);
+        g.setLineDash([]);
+        // ramps: where the deck meets the ground road
+        for (const [e, s] of [[dk.a, 1], [dk.b, -1]] as const) {
+          const r0 = e, r1 = add(e, mul(d, s * ramp));
+          for (const k of [0.25, 0.5, 0.75]) { const q = lerp2(r0, r1, k); this.line(add(q, mul(n, -dk.width / 2)), add(q, mul(n, dk.width / 2)), 0.2, 'rgba(40,36,30,0.25)', 0, 'butt', 0.5); }
+        }
+      }
+      if (z > 0.6) for (let s = ramp; s < L - ramp; s += 30) for (const side of [-1, 1]) {
+        const c = add(add(dk.a, mul(d, s)), mul(n, side * (dk.width / 2 - 1.5)));
+        const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3);
+      }
+      if (z > 0.45 && this.lod !== 'airfield') {
+        const rot = Math.atan2((dk.b.y - dk.a.y) * this.yScale, dk.b.x - dk.a.x); const up = Math.cos(rot) < 0;
+        this.label('UPPER DECK · DEPARTURES', lerp2(dk.a, dk.b, 0.5), 0, 8, '#F4EDDF', { weight: 800, spacing: 1.4, rot: up ? rot + Math.PI : rot });
+      }
+    }
+  }
+
+  /** Road tool: where a road would grow a curb along each terminal face (FRONTAGE.ideal out, plus half the road). */
+  drawFrontGuides(sim: Sim) {
+    if (!this.showFront) return;
+    const g = this.ctx; const z = this.cam.zoom;
+    for (const gd of sim.d.frontGuides) {
+      if (sim.d.zones.some(c => c.auto?.module === gd.zone.id)) continue;
+      const off = FRONTAGE.ideal + 8;
+      const a = add(gd.a, mul(gd.out, off)), b = add(gd.b, mul(gd.out, off));
+      this.poly([add(gd.a, mul(gd.out, FRONTAGE.minGap)), add(gd.b, mul(gd.out, FRONTAGE.minGap)), add(gd.b, mul(gd.out, FRONTAGE.maxGap)), add(gd.a, mul(gd.out, FRONTAGE.maxGap))], 'rgba(47,93,124,0.06)');
+      g.setLineDash([8, 6]); this.line(a, b, 0, PAL.select, 0, 'butt', 1.5); g.setLineDash([]);
+      if (z > 0.3) {
+        const rot = Math.atan2((b.y - a.y) * this.yScale, b.x - a.x); const up = Math.cos(rot) < 0;
+        this.label('ROAD HERE → CURB', add(lerp2(a, b, 0.5), mul(gd.out, 12 / z)), 0, 9, PAL.select, { weight: 700, spacing: 1.2, rot: up ? rot + Math.PI : rot, bg: 'rgba(230,219,195,0.85)' });
+      }
+    }
+  }
+
+  /** Terminal level of detail: everything outside the open terminal's site steps back. */
+  drawFocus(sim: Sim) {
+    if (this.lod !== 'terminal' || this.focus === null) return;
+    const st = sim.world.sites?.find(q => q.id === this.focus); if (!st) return;
+    const g = this.ctx; const r = padRect(st, 30);
+    const [x0, y0] = this.P(r.x, r.y), [x1, y1] = this.P(r.x + r.w, r.y + r.h);
+    g.save(); g.fillStyle = 'rgba(222,209,182,0.55)';
+    g.beginPath(); g.rect(0, 0, this.W, this.H); g.rect(x1, y0, x0 - x1, y1 - y0); g.fill('evenodd'); g.restore();
+  }
+
   /** Gate slots: removed gates show as dashed stands you can click to add back. */
   drawGateSlots(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom;
@@ -647,7 +785,7 @@ export class Renderer {
     const tilted = this.tilt > 0.02;
     const r = clamp(0.75 * z, 0.9, 3);
     const cols = ['rgba(40,36,30,0.78)', PAL.warn, PAL.bad];
-    const terminalZones = sim.world.zones.filter(q => ZONES[q.type].terminal);
+    const terminalZones = sim.d.zones.filter(q => ZONES[q.type].terminal);
     for (let m = 0; m < 3; m++) {
       g.fillStyle = cols[m];
       g.beginPath();
@@ -746,7 +884,7 @@ export class Renderer {
     }
     g.strokeStyle = 'rgba(244,205,140,0.8)'; g.lineWidth = 1.5;
     const tilted = this.tilt > 0.02;
-    for (const zn of sim.world.zones) if (ZONES[zn.type].terminal && zn.level <= this.level) { this.path(this.rectPts(zn), tilted ? LEVELS[zn.level].z1 : 0); g.stroke(); }
+    for (const zn of sim.d.zones) if (ZONES[zn.type].terminal && zn.level <= this.level) { this.path(this.rectPts(zn), tilted ? LEVELS[zn.level].z1 : 0); g.stroke(); }
     g.restore();
   }
 
@@ -795,3 +933,6 @@ export class Renderer {
     if (snapped) { g.fillStyle = PAL.select; g.beginPath(); g.arc(x, y, 2, 0, Math.PI * 2); g.fill(); }
   }
 }
+
+const rectsTouch = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
