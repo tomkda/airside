@@ -26,6 +26,11 @@
       <div><b id="windText" class="num">250° 13 kt</b><span id="rwyText">Landing 27</span></div>
     </div>
     <div class="chip"><b id="money" class="num">$420.0M</b><span id="live" class="sub">0 in terminal</span></div>
+    <button class="chip goal" id="goalChip" title="Goals: open the Report tab for the list">
+      <span class="stars" id="stars" aria-label="Airport rating">☆☆☆☆☆</span>
+      <span id="goalText" class="sub">Next: Open your first terminal</span>
+      <i class="goalbar"><i id="goalFill"></i></i>
+    </button>
     <button class="chip" id="panelToggle" aria-label="Show panel">Panel</button>
   </header>
 
@@ -74,5 +79,6 @@
   <div id="toolopts" hidden></div>
   <div id="hint" role="status"></div>
   <div id="toasts" aria-live="polite"></div>
+  <div id="stamp" aria-hidden="true"></div>
 </div>
 <script>/*__JS__*/</script>

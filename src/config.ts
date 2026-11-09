@@ -126,14 +126,14 @@ export const ROAD_LANES = [
 export const WALK = { width: 4, costPerM: 900 };
 
 export interface Airline {
-  id: string; name: string; iata: string; share: number; elasticity: number; model: string;
+  id: string; name: string; iata: string; share: number; elasticity: number; model: string; color: string;   // tail livery
   mix: Partial<Record<Cls, number>>; downgrade: boolean;
 }
 export const AIRLINES: Airline[] = [
-  { id: 'meridian', name: 'Meridian Air', iata: 'MR', share: 0.42, elasticity: 0.45, model: 'Network', mix: { 2: 0.8, 1: 0.2 }, downgrade: true },
-  { id: 'larkspur', name: 'Larkspur', iata: 'LK', share: 0.30, elasticity: 1.15, model: 'Low-cost', mix: { 2: 1 }, downgrade: false },
-  { id: 'northline', name: 'Northline Regional', iata: 'NL', share: 0.18, elasticity: 0.6, model: 'Regional', mix: { 0: 0.45, 1: 0.55 }, downgrade: true },
-  { id: 'polaris', name: 'Polaris Long-Haul', iata: 'PX', share: 0.10, elasticity: 0.5, model: 'Long-haul', mix: { 3: 1 }, downgrade: false },
+  { id: 'meridian', name: 'Meridian Air', iata: 'MR', share: 0.42, elasticity: 0.45, model: 'Network', mix: { 2: 0.8, 1: 0.2 }, downgrade: true, color: '#2F4E78' },
+  { id: 'larkspur', name: 'Larkspur', iata: 'LK', share: 0.30, elasticity: 1.15, model: 'Low-cost', mix: { 2: 1 }, downgrade: false, color: '#8A6BB0' },
+  { id: 'northline', name: 'Northline Regional', iata: 'NL', share: 0.18, elasticity: 0.6, model: 'Regional', mix: { 0: 0.45, 1: 0.55 }, downgrade: true, color: '#3E8A7A' },
+  { id: 'polaris', name: 'Polaris Long-Haul', iata: 'PX', share: 0.10, elasticity: 0.5, model: 'Long-haul', mix: { 3: 1 }, downgrade: false, color: '#C2852E' },
 ];
 
 // ---------------------------------------------------------------- Tuning

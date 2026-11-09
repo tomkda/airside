@@ -2,6 +2,7 @@
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
 import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
+import { GOALS, Goal, nextGoals, rating } from './goals';
 import { GateSlot, slotAt, SIDE_NAMES, standDepth, sideReach } from './gates';
 import { holdDepth, spineWidth, depthClass } from './bands';
 import { Renderer, Sel } from './render';
@@ -104,6 +105,7 @@ export class UI {
     });
     document.querySelectorAll<HTMLElement>('#tabs [data-tab]').forEach(b => b.addEventListener('click', () => { this.tab = b.dataset.tab as UI['tab']; this.refresh(true); }));
     $('#panelToggle').addEventListener('click', () => document.body.classList.toggle('panel-open'));
+    $('#goalChip').addEventListener('click', () => { this.tab = 'report'; document.body.classList.add('panel-open'); this.refresh(true); });
     $('#checkToggle').addEventListener('click', () => document.body.classList.toggle('check-open'));
     this.syncSpeed();
     this.ren.canvas.addEventListener('dblclick', e => {
@@ -683,17 +685,24 @@ export class UI {
     const id = this.world.nextId++;
     this.world.runways.push({ id, a, b });
     this.changed();
+    this.ren.float(`− ${money(cost)}`, lerpPt(a, b, 0.5), PAL_BAD);
     const r = this.sim.d.runways.find(x => x.rw.id === id)!;
     this.select({ kind: 'runway', id });
     this.toast(`Runway ${r.labels.join('/')} built · ${n0(r.length)} m · ${money(cost)}. Connect it with taxiways.`);
   }
 
   buildWay(kind: WayKind, a: Pt, b: Pt, cls: number, lanes: number, extras: WaySpec[] = []) {
+    const curbs0 = this.sim.d.zones.filter(z => z.auto).length, decks0 = this.sim.d.decks.length;
     let cost = dist(a, b) * wayCostPerM(kind, cls, lanes);
     this.world.ways.push({ id: this.world.nextId++, kind, a, b, cls, lanes });
     for (const x of extras) { this.world.ways.push({ id: this.world.nextId++, kind: 'taxi', a: x.a, b: x.b, cls: x.cls, lanes: 0 }); cost += dist(x.a, x.b) * wayCostPerM('taxi', x.cls, 0); }
     this.sim.spend(cost);
     this.changed();
+    this.ren.float(`− ${money(cost)}`, lerpPt(a, b, 0.5), PAL_BAD);
+    // the road adapting to the terminal is the point: say so
+    const dc = this.sim.d.zones.filter(z => z.auto).length - curbs0, dd = this.sim.d.decks.length - decks0;
+    if (dd > 0) { this.toast('Two-level frontage road: departures drop off on the upper deck, arrivals pick up below.'); this.ren.float('+ upper deck', lerpPt(a, b, 0.5), '#C2852E', 9); }
+    else if (dc > 0) { this.toast(`${dc} curb${dc > 1 ? 's' : ''} grown along the terminal face.`); this.ren.float(`+ ${dc} curb${dc > 1 ? 's' : ''}`, lerpPt(a, b, 0.5), '#C2852E'); }
     if (extras.length) this.toast(`Taxiway linked to the runway with ${extras.length} connector${extras.length > 1 ? 's' : ''} · ${money(cost)}`);
   }
 
@@ -716,6 +725,9 @@ export class UI {
     } else this.world.zones.push(z);
     this.changed();
     const u = this.sim.d.units.get(z.id);
+    this.ren.float(`− ${money(cost)}`, center4(z), PAL_BAD, LEVELS[z.level].z1);
+    const grown = this.sim.d.zones.filter(c => c.auto && c.auto.module === z.id).length;
+    if (grown) this.ren.float(`+ ${grown} curb${grown > 1 ? 's' : ''}`, { x: z.x + z.w / 2, y: z.y + z.h + 20 }, '#C2852E');
     this.select({ kind: 'zone', zone: z });
     this.toast(`${ZONES[t].label} built · ${u?.count ?? 0} ${ZONES[t].unit} · ${money(cost)}`);
   }
@@ -780,6 +792,15 @@ export class UI {
     const stuck = s.pax.filter(p => p.stage === 'stuck').length;
     $('#live').textContent = `${n0(live)} in terminal${stuck ? ` · ${n0(stuck)} stranded` : ''} · ${s.flights.filter(f => ['approach', 'roll', 'taxiIn', 'waitGate', 'stand', 'taxiOut', 'holdDep', 'takeoff'].includes(f.state)).length} aircraft`;
     $('#live').classList.toggle('bad', stuck > 0);
+    // next goal and the airport's rating
+    const ng = nextGoals(s, s.goalsDone, 1)[0];
+    const st = rating(s); const full = Math.floor(st), half = st - full >= 0.5;
+    $('#stars').textContent = s.history.length ? `${'★'.repeat(full)}${'☆'.repeat(5 - full)} ${full}${half ? '½' : ''}` : '☆☆☆☆☆ unrated';
+    if (ng) {
+      const [v, t] = ng.progress(s, s.history[s.history.length - 1]);
+      $('#goalText').textContent = `Next: ${ng.title}${t > 1 ? ` · ${t >= 1000 && v >= 1000 ? money(v).replace('$', '') : n0(v)} of ${t >= 1000 ? n0(t) : t}` : ''}`;
+      ($('#goalFill') as HTMLElement).style.width = `${clamp(v / t, 0, 1) * 100}%`;
+    } else { $('#goalText').textContent = 'Every goal reached'; ($('#goalFill') as HTMLElement).style.width = '100%'; }
     if (performance.now() - this.lastPanel > 400) { this.lastPanel = performance.now(); this.refresh(false); }
   }
 
@@ -1113,10 +1134,29 @@ export class UI {
       </div>`;
   }
 
+  /** A goal reached: a stamp across the map, a toast, and the grant in the bank. */
+  celebrate(g: Goal) {
+    const el = $('#stamp'); el.innerHTML = `<b>Goal reached</b><span>${esc(g.title)}</span><em>+ ${money(g.reward)}</em>`;
+    el.classList.remove('on'); void el.offsetWidth; el.classList.add('on');
+    this.toast(`Goal reached: ${g.title} · ${money(g.reward)} grant`);
+    if (this.tab === 'report') this.refresh(true);
+  }
+
+  goalsHTML() {
+    const s = this.sim; const r = s.history[s.history.length - 1];
+    const rows = GOALS.map(g => {
+      const done = s.goalsDone.has(g.id); const [v, t] = g.progress(s, r);
+      const pct = done ? 100 : clamp(v / t, 0, 1) * 100;
+      return `<li class="${done ? 'done' : ''}"><i class="tick">${done ? '✓' : ''}</i><div><b>${esc(g.title)}</b><span class="muted small">${done ? `Reached · ${money(g.reward)} grant` : esc(g.hint)}</span>
+        ${done ? '' : `<i class="goalbar"><i style="width:${pct}%"></i></i>`}</div><em class="small">${money(g.reward)}</em></li>`;
+    }).join('');
+    return `<h3>Goals <span class="muted small">${s.goalsDone.size} of ${GOALS.length}</span></h3><ul class="goals">${rows}</ul>`;
+  }
+
   reportHTML(): string {
     const s = this.sim; const r = s.history[s.history.length - 1];
     const log = s.log.slice(0, 14).map(l => `<li class="${l.kind}"><time>${l.t}</time>${esc(l.text)}</li>`).join('') || '<li class="muted">Nothing unusual yet today.</li>';
-    if (!r) return `<p class="muted">The first report arrives when today closes at midnight. Speed up time with the controls at the top.</p><h3>Today</h3><ul class="log">${log}</ul>`;
+    if (!r) return `${this.goalsHTML()}<p class="muted">The first report arrives when today closes at midnight. Speed up time with the controls at the top.</p><h3>Today</h3><ul class="log">${log}</ul>`;
     const st = r.stats;
     const bar = (k: 'curb' | 'checkin' | 'security' | 'claim', label: string) => {
       const w = st.waits[k]; const avg = w.n ? w.sum / w.n : 0; const tol = TUNE.tolerance[k];
@@ -1125,6 +1165,7 @@ export class UI {
     };
     const rev = st.rev; const revT = revTotal(rev); const cost = st.cost.staff + st.cost.upkeep;
     return `
+      ${this.goalsHTML()}
       <h2>${r.label}</h2>
       <div class="kpis">
         <div><b>${r.sat.toFixed(0)}</b><span>satisfaction</span></div>
@@ -1241,4 +1282,5 @@ export class UI {
 
 const CLASS_EX = (c: number) => CLASSES[c].example;
 const TERMINAL_TOOLS = new Set<ZoneType>(['checkin', 'security', 'concourse', 'claim']);
+const PAL_BAD = '#B0472B';
 const center4 = (r: Rect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });

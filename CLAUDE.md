@@ -1,6 +1,6 @@
 # Airside
 
-A sandbox/tycoon airport builder for PC, prototyped in the browser. The look is a top-down airport-diagram print, with an optional 2.5D massing view.
+A sandbox/tycoon airport builder for PC, prototyped in the browser. The look is a top-down airport-diagram print, with a 3D view styled like a presentation model.
 
 The player draws runways, taxiways, roads and sidewalks, and blocks out terminal modules on two levels: check-in, security, concourse, bag claim, curb and parking. The game fits each module out procedurally. Aircraft, passengers, bags and cars then flow through what was built. Every failure should be fixable with staff, space or layout.
 
@@ -23,13 +23,14 @@ node scripts/shot.cjs out.png <camX> <camY> <zoom> ["js using g = window.__game"
 Healthy results:
 - simtest shows Terminal 1 open, 0 missed passengers and leased lots growing week to week. Security in the sample runs close to capacity, so other seeds can miss some passengers in week 3; that predates v0.7.
 - terminals.mjs shows 0 stranded passengers, and its frontage check shows curbs at 20 m and 42 m, none at 82 m (Terminal 1 closes), and curbs again when the road comes back.
-- stress.mjs strands passengers on purpose on the days it cuts walkways or moves check-in. That is expected.
+- stress.mjs strands passengers on purpose on the day it moves check-in, and on the days it cuts the road or the taxiway. Cutting the walkways no longer strands anyone, because the lot lays its own sidewalk (v0.9). That is expected.
 
 ## Architecture
 
 - **One file out.** scripts/build.mjs bundles src/ with esbuild into a single HTML page. There is no server. three.js (pinned 0.170.0) is the only runtime dependency and is bundled in; it is used by render3d.ts alone.
-- **The sim never touches the DOM.** config, geom, net, world, gates, bands, commerce, frontage, layout and sim are pure logic.
-  - render.ts (plan) and render3d.ts (3D, three.js) read sim state and never write it.
+- **The sim never touches the DOM.** config, geom, net, world, gates, bands, commerce, frontage, scenery, goals, layout and sim are pure logic.
+  - render.ts (plan) and render3d.ts (3D, three.js, with models3d.ts) read sim state and never write it.
+  - scenery.ts places trees, lamps, floodlight masts and the control tower from the layout (cached per derive); both renderers draw from it.
   - ui.ts owns input and panels.
   - Keep this split: sim and world may be ported to Godot/C# later.
 - **World vs derived.** `World` (world.ts) is the saved, player-built state: zones, runways, ways and terminal sites. `derive(world)` rebuilds everything else after any edit:
@@ -55,6 +56,8 @@ Healthy results:
   - The curb is a Zone with a negative id and an `auto` tag, rebuilt on every derive and never saved.
   - L1 departures over L0 arrivals on the same road make a `dep` curb at L1, an `arr` curb at L0 and a `DeckSpan`.
   - Roads are split at curb ends so cars can pull in. The sim prefers `dep` curbs for drop-off and `arr` for pickup.
+  - v0.9: `autoWalks()` lays a sidewalk from any lot no sidewalk reaches to the nearest ground-level curb (`d.autoWalks`, negative ids, never saved).
+- **Goals** (goals.ts, v0.9): milestones with grants, checked on every relayout (which also runs at day end); `sim.goalsDone` is saved in the save (not the World). `rating()` gives the header's star rating.
 - **Concourse commerce** (commerce.ts, v0.7):
   - bands.ts carves lots and scores what the plan decides: visibility from the spine, closeness to the security exit, the gate cluster nearby.
   - The sim counts departing passengers along each concourse's long axis in 4 m bins, weighted by spare minutes (`sim.flowDay`). At day end the count folds into `zone.flow`, so it is saved.
@@ -85,7 +88,7 @@ Healthy results:
 
 ## Roadmap
 
-Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. Next in that direction: parking lots that lay their own sidewalk to the curb, gates and holdrooms that respond to the taxiway and apron as you drag them, curbs on angled frontages, and moving modules in 3D.
+Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. Next in that direction: gates and holdrooms that respond to the taxiway and apron as you drag them, curbs on angled frontages, moving modules in 3D, and sound.
 
 The concourse interiors plan has four phases.
 

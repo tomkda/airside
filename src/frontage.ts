@@ -109,3 +109,44 @@ export function curbCuts(curbs: Zone[], roads: Way[]): Map<number, Pt[]> {
   }
   return out;
 }
+
+/**
+ * v0.9: a parking lot that no sidewalk reaches lays its own, to the nearest ground-level curb (an arrivals curb
+ * if there is one) or, failing that, the nearest ground-level terminal module. It goes straight if it can, or
+ * round one corner, and never through a building, an apron or the airfield. Generated, never saved.
+ */
+export function autoWalks(world: World, zones: Zone[], aprons: Rect[]): Way[] {
+  const out: Way[] = [];
+  const walks = world.ways.filter(w => w.kind === 'walk');
+  const near = (p: Pt, r: Rect, k: number) => p.x >= r.x - k && p.x <= r.x + r.w + k && p.y >= r.y - k && p.y <= r.y + r.h + k;
+  const clamp2 = (p: Pt, r: Rect): Pt => ({ x: Math.min(r.x + r.w, Math.max(r.x, p.x)), y: Math.min(r.y + r.h, Math.max(r.y, p.y)) });
+  const ctr = (r: Rect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+  const blocked = (a: Pt, b: Pt, ends: Rect[]) => {
+    const segHits = (r: Rect) => { for (let i = 1; i < 20; i++) { const t = i / 20; const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; if (p.x > r.x + 1 && p.x < r.x + r.w - 1 && p.y > r.y + 1 && p.y < r.y + r.h - 1) return true; } return false; };
+    if (zones.some(z => z.level === 0 && !ends.includes(z) && segHits(z))) return true;
+    if (aprons.some(segHits)) return true;
+    if (world.ways.some(w => w.kind === 'taxi' && segsCross(a, b, w.a, w.b))) return true;
+    return world.runways.some(r => segsCross(a, b, r.a, r.b));
+  };
+  for (const lot of zones.filter(z => z.type === 'parking')) {
+    if (walks.some(w => near(w.a, lot, 3) || near(w.b, lot, 3))) continue;
+    const cands = zones.filter(z => z.level === 0 && z.type === 'curb');
+    const pool = cands.some(c => c.auto?.deck !== 'dep') ? cands.filter(c => c.auto?.deck !== 'dep') : cands;
+    const targets = pool.length ? pool : zones.filter(z => z.level === 0 && (z.type === 'claim' || z.type === 'checkin'));
+    const tgt = [...targets].sort((p, q) => dist(ctr(p), ctr(lot)) - dist(ctr(q), ctr(lot)))[0];
+    if (!tgt || rectsOverlap(lot, tgt) || dist(ctr(tgt), ctr(lot)) > 900) continue;
+    const a = clamp2(ctr(tgt), lot), b = clamp2(a, tgt);
+    const id = -(500000 + lot.id);
+    const ends = [lot, tgt];
+    if (dist(a, b) < 2) continue;
+    if (!blocked(a, b, ends)) { out.push({ id, kind: 'walk', a, b, cls: 0, lanes: 0 }); continue; }
+    for (const c of [{ x: a.x, y: b.y }, { x: b.x, y: a.y }]) if (!blocked(a, c, ends) && !blocked(c, b, ends)) {
+      out.push({ id, kind: 'walk', a, b: c, cls: 0, lanes: 0 }, { id: id - 250000, kind: 'walk', a: c, b, cls: 0, lanes: 0 }); break;
+    }
+  }
+  return out;
+}
+const segsCross = (a: Pt, b: Pt, c: Pt, d: Pt) => {
+  const o = (p: Pt, q: Pt, r: Pt) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+  return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+};

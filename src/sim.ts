@@ -5,6 +5,7 @@ import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
 import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { flowBins, newFlow, tenantsOf } from './commerce';
+import { Goal, checkGoals } from './goals';
 import { DJ, dijkstra, trace, nearestNode } from './net';
 
 // ------------------------------------------------------------------ entities
@@ -102,6 +103,9 @@ export class Sim {
   stats = emptyStats();
   plan!: PlanInfo;
   history: Report[] = [];
+  /** v0.9: goals reached (saved), and a hook so the UI can celebrate one. */
+  goalsDone = new Set<string>();
+  onGoal?: (g: Goal) => void;
   log: { t: string; text: string; kind: 'info' | 'warn' | 'bad' }[] = [];
   wind: Wind = { from: SITE.windFrom, kt: SITE.windSpeed };
   dayWind = { shift: 0, gust: 1 };
@@ -191,6 +195,17 @@ export class Sim {
     }
     this.allocateStaff();
     this.lotUsed = Math.min(this.lotUsed, this.lotCapacity());
+    this.checkGoals();
+  }
+
+  /** Pay out any goal just reached. Runs after every layout change and when a day closes. */
+  checkGoals() {
+    for (const g of checkGoals(this, this.goalsDone)) {
+      this.goalsDone.add(g.id);
+      if (this.moneyOn) this.money += g.reward;
+      this.note(`Goal reached: ${g.title}`);
+      this.onGoal?.(g);
+    }
   }
 
   lotCapacity() { return this.d.zones.filter(z => z.type === 'parking').reduce((s, z) => s + unitsOf(this.d, z), 0); }
