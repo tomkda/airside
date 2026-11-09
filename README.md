@@ -11,26 +11,58 @@ npm run dev          # rebuilds on every save
 npm run check        # TypeScript type-check
 npm run simtest      # headless: runs 3 sim days and prints the daily report
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
-npm test                  # all three sims
+node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
+npm test                  # all four sims
 ```
 
-CI runs the type-check, build and all three sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
+CI runs the type-check, build and all four sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
-There is no server. The build is one self-contained HTML file (~800 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
+There is no server. The build is one self-contained HTML file (~840 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
 ## Controls
 
 | Action | Input |
 | --- | --- |
-| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` check-in · `4` security · `5` concourse · `6` bag claim · `R` road · `7` curb · `8` parking · `S` sidewalk · `X` demolish |
+| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` check-in · `4` security · `5` concourse · `6` bag claim · `I` passport control · `R` road · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
 | Pan / zoom | drag empty space (or Shift-drag, right-drag) · scroll wheel · pinch on touch · in 3D: drag to orbit, right-drag to pan, scroll to zoom |
 | Detail | `A` airfield · `L` landside · `Enter` (or double-click a terminal) open a terminal · `Esc` step back out · zooming moves between them too |
 | Levels | `[` Ground · `]` Level 1 |
 | View | `T` 3D view · `H` queue and road-congestion heatmap · `C` commercial heatmap (footfall and revenue per lot) |
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
-| Edit | drag a selected module to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
+| Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.9)
+## What's in the alpha (v0.10)
+
+- **The airport grows, and growth unlocks what it needs (v0.10):** eight facilities unlock by the best day's departures, each with the reason it is needed. The Report tab lists them with progress, locked tools are greyed with their threshold, and an unlock stamps across the map. Sandbox mode (money off) has everything from the start.
+
+  | Departures in a day | Unlocks | What it does |
+  | --- | --- | --- |
+  | 3,000 | Bus station | 8% of passengers come and go by bus, with no car at the curb; +5% demand |
+  | 3,300 | Rideshare pickup | 20% of arriving parties meet their ride here instead of at the curb; $4 a pickup; +2% demand |
+  | 3,500 | Parking decks | stack up to 6 decks on any lot to make a garage; +2% demand |
+  | 3,700 | Rental car centre | 7% of arriving parties rent a car; $46 concession each; +3% demand |
+  | 3,900 | Concourse mezzanine | a floor over the spine: one more lounge, double lounge capacity |
+  | 4,100 | Airport hotel | eight floors of rooms; $60 to the airport per room night; +4% demand |
+  | 4,300 | International flights | Aurora International asks for routes; passport control takes them |
+  | 4,600 | AirTrain | stations link into a line; people ride at 8× walking pace; +6% demand |
+
+- **Everything on the landside connects itself (v0.10, `src/frontage.ts`):** place a lot, garage, rideshare lot, rental centre, bus station, hotel or AirTrain station and it lays what it needs.
+  - **An access drive** to the nearest road within 300 m, turning one corner if the road isn't straight ahead. Car parks, garages and rental centres get separate IN and OUT drives with a gate plaza.
+  - **A sidewalk** to the nearest way in: the arrivals curb, a ground-floor hall, or an AirTrain station. Routes are square, not diagonal.
+  - **AirTrain stations** join into the shortest line that links them all, on an elevated guideway with trains shuttling. A garage too far to walk works once it has a station.
+  - A facility that can't connect is outlined in red, and the design check says why.
+- **Roads worth looking at (v0.10, `src/roads.ts`):**
+  - **Junctions** have curved kerbs, stop bars and turn arrows, and markings stop short of the crossing.
+  - **Four-lane roads** carry a planted median with trees; every road has a grass verge and edge lines.
+  - **State Route 12** is a six-lane highway with a centre barrier, and each road that meets it gets a pair of slip ramps.
+  - **The curbside** is a proper cross-section: sidewalk, two pull-in lanes with bay marks, a planted island with zebra crossings, then the through lanes, painted DEPARTURES or ARRIVALS.
+  - **Car parks** show every parked car in its bay; garages show a ramp helix and their deck count.
+- **International flights and passport control (v0.10):** a terminal with passport control between a concourse and bag claim takes Aurora International. Arriving international passengers queue at the booths (staffed by passport officers, a new slider in Operations) before bag claim. International departures pay a higher passenger charge and spend half as much again in the shops.
+- **Undo and redo (v0.10):** `Ctrl`+`Z` takes back any build, move or demolition, with its money; `Ctrl`+`Shift`+`Z` redoes it. Fifty steps.
+- **Weather (v0.10):** most days are clear; some bring rain, fog or snow. Each cuts how many movements an hour the runways take (85%, 60%, 70%), shows in the header, and falls across the map in both views.
+- **Airline offers (v0.10):** now and then an airline that is happy here proposes a deal in Operations: more flights for a lower slot fee, or a crew base with a signing bonus and a punctuality clause. Accept or decline.
+- **The plan reads like a drawing (v0.10):** buildings, garages and hotels cast soft shadows; aprons show slab joints; the countryside has field parcels and the lake has depth rings; a scale bar and north arrow sit bottom left.
+- **3D (v0.10):** garages as stacked decks with cars on the roof, a striped hotel tower, rental and bus canopies, the AirTrain on pylons with a moving train, the mezzanine storey, junction curves, medians, gate booths, and the curbside island and sidewalk.
 
 - **A detailed 3D model (v0.9, `src/render3d.ts`, `src/models3d.ts`):** the 3D view now reads as a presentation model rather than blocks.
   - **Buildings:** each module has a dark plinth, a glazed band with mullions every 7.5 m and a white roof slab with a slight overhang. A glazed clerestory runs down each concourse's spine, and plant enclosures sit on the other roofs. Departures and arrivals curbs get canopies on slender columns.
@@ -119,7 +151,8 @@ There is no server. The build is one self-contained HTML file (~800 KB), with th
 | `src/geom.ts` | Geometry helpers and seeded RNG |
 | `src/net.ts` | Generic line networks: split drawn segments into graphs; Dijkstra, all-pairs routing |
 | `src/gates.ts` | Gate slots on each side of a concourse, sized by taxiway clearance |
-| `src/frontage.ts` | Roads meeting terminals: curbs grown in the gap, two-level frontage roads, road guides |
+| `src/frontage.ts` | Roads meeting terminals: curbs grown in the gap, two-level frontage roads, road guides; access drives, sidewalks and the AirTrain line that facilities lay for themselves |
+| `src/roads.ts` | Road geometry from the road graph: junction curves, slip ramps, stop bars, arrows, medians, gate plazas |
 | `src/render3d.ts` | 3D view (three.js): orbit camera, massing, decks, opened terminal, moving aircraft, cars and people |
 | `src/bands.ts` | Concourse interiors: holdroom bands, spine, commercial lots and their visibility, restroom cores, the duty-free store |
 | `src/commerce.ts` | Lot scores (footfall, visibility, dwell) and tenant bidding, rent, re-letting |
@@ -136,6 +169,11 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
+- Roads are still straight segments joined at junctions; there are no drawn curves, roundabouts or one-way loops. Cars follow the centreline, not the painted lanes, and the IN and OUT drives are both two-way to the sim.
+- The AirTrain is a people mover inside the airport. It does not run to the city, and trains are drawn on a timetable rather than carrying the riders you see.
+- Hotels, rental centres and rideshare lots work by numbers: guests and rental staff aren't simulated as people.
+- Unlocks depend on the best day's departures only. Weather and offers are light: no de-icing, diversions or negotiation yet.
+- Adding a second terminal splits the same check-in agents and screeners across both, so queues grow until you hire more in Operations.
 - Terminal sites are rectangles. A pier that reaches far out grows its site's bounding box rather than an L or T shape.
 - Curbs grow only where a road is parallel to a straight building face. Curved or angled frontages still need a hand-drawn curb. Cars reach the upper deck by its ramps, but drive under it in the plan until they pull in.
 - In 3D, modules are drawn and selected, but not moved by dragging (switch to plan with `T` to move one). Labels in 3D are terminal names only.

@@ -16,19 +16,21 @@ npm run dev          # rebuild on save
 npm run simtest      # 3 sim days on the sample airport, prints the daily report
 node scripts/terminals.mjs   # multi-terminal scenarios
 node scripts/stress.mjs      # 14 days with deliberate cuts and an A380 build-out
-npm test             # all three sims
+node scripts/growth.mjs      # every growth facility, international flights, the AirTrain
+npm test             # all four sims
 node scripts/shot.cjs out.png <camX> <camY> <zoom> ["js using g = window.__game"]   # needs playwright; GL3D=1 for shots of the 3D view
 ```
 
 Healthy results:
 - simtest shows Terminal 1 open, 0 missed passengers and leased lots growing week to week. Security in the sample runs close to capacity, so other seeds can miss some passengers in week 3; that predates v0.7.
 - terminals.mjs shows 0 stranded passengers, and its frontage check shows curbs at 20 m and 42 m, none at 82 m (Terminal 1 closes), and curbs again when the road comes back.
+- growth.mjs shows 8 facilities served, the far garage served by AirTrain, 0 missed and 0 stranded, international flights scheduled, and several hundred AirTrain riders a day.
 - stress.mjs strands passengers on purpose on the day it moves check-in, and on the days it cuts the road or the taxiway. Cutting the walkways no longer strands anyone, because the lot lays its own sidewalk (v0.9). That is expected.
 
 ## Architecture
 
 - **One file out.** scripts/build.mjs bundles src/ with esbuild into a single HTML page. There is no server. three.js (pinned 0.170.0) is the only runtime dependency and is bundled in; it is used by render3d.ts alone.
-- **The sim never touches the DOM.** config, geom, net, world, gates, bands, commerce, frontage, scenery, goals, layout and sim are pure logic.
+- **The sim never touches the DOM.** config, geom, net, world, gates, bands, commerce, frontage, roads, scenery, goals, layout and sim are pure logic.
   - render.ts (plan) and render3d.ts (3D, three.js, with models3d.ts) read sim state and never write it.
   - scenery.ts places trees, lamps, floodlight masts and the control tower from the layout (cached per derive); both renderers draw from it.
   - ui.ts owns input and panels.
@@ -57,6 +59,14 @@ Healthy results:
   - L1 departures over L0 arrivals on the same road make a `dep` curb at L1, an `arr` curb at L0 and a `DeckSpan`.
   - Roads are split at curb ends so cars can pull in. The sim prefers `dep` curbs for drop-off and `arr` for pickup.
   - v0.9: `autoWalks()` lays a sidewalk from any lot no sidewalk reaches to the nearest ground-level curb (`d.autoWalks`, negative ids, never saved).
+- **Growth** (v0.10): `UNLOCKS` and `GROWTH` in config.ts. `sim.unlocked` and `sim.bestPax` are saved; `sim.has(id)` is true in sandbox.
+  - New zone types: `passport` (a terminal module with a queue, like security), and `rideshare`, `rental`, `bus`, `hotel`, `train` on the landside. A garage is a `parking` zone with `floors`; a mezzanine is `mezz` on a concourse.
+  - `autoRoads()`, `autoWalks()` and `trainLinks()` (frontage.ts) connect facilities; `d.served` lists the ones that work. All generated, never saved.
+  - Arriving parties can leave by rideshare lot, rental centre or bus (the `lot` step with a different zone); departing ones can arrive by bus. AirTrain rides are fast pedestrian edges between station nodes (`p.ride`).
+  - International: `Airline.intl`, `Terminal.intl`, a `passport` step before claim, `staff.officers`.
+  - Weather and airline offers draw from their own seeded streams, so they never shift the main one.
+- **Roads** (roads.ts, v0.10): `roadPlan(d)` turns the road graph into junction curves, ramps, stop bars, arrows, medians and gate plazas, cached per derive. Both renderers draw roads from it.
+- **Undo** (ui.ts): a JSON snapshot of the World and money per edit, 50 deep.
 - **Goals** (goals.ts, v0.9): milestones with grants, checked on every relayout (which also runs at day end); `sim.goalsDone` is saved in the save (not the World). `rating()` gives the header's star rating.
 - **Concourse commerce** (commerce.ts, v0.7):
   - bands.ts carves lots and scores what the plan decides: visibility from the spine, closeness to the security exit, the gate cluster nearby.
@@ -88,7 +98,7 @@ Healthy results:
 
 ## Roadmap
 
-Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. Next in that direction: gates and holdrooms that respond to the taxiway and apron as you drag them, curbs on angled frontages, moving modules in 3D, and sound.
+Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. v0.10: growth unlocks, self-connecting landside facilities, international flights, the AirTrain, proper road junctions and curbside, undo, weather and airline offers. Next in that direction: drawn curves, roundabouts and one-way loops for roads; gates and holdrooms that respond to the taxiway and apron as you drag them, curbs on angled frontages, moving modules in 3D, and sound.
 
 The concourse interiors plan has four phases.
 

@@ -2,17 +2,17 @@
 // Time unit: minutes of the day. One sim "day" stands in for several calendar days.
 // Everything moves on networks: aircraft on taxiways, cars on roads, people through doors, cores and sidewalks.
 import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
-import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE } from './config';
+import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { flowBins, newFlow, tenantsOf } from './commerce';
 import { Goal, checkGoals } from './goals';
 import { DJ, dijkstra, trace, nearestNode } from './net';
 
 // ------------------------------------------------------------------ entities
-export type Step = 'checkin' | 'security' | 'dutyfree' | 'shop' | 'gate' | 'claim' | 'curb' | 'lot';
+export type Step = 'checkin' | 'security' | 'dutyfree' | 'shop' | 'gate' | 'passport' | 'claim' | 'curb' | 'lot';
 
 export interface Party {
-  id: number; dep: boolean; mode: 'curb' | 'park'; pax: Pax[]; atCurb: number; car?: Car; flight: Flight;
+  id: number; dep: boolean; mode: 'curb' | 'park' | 'bus' | 'ride' | 'rental'; pax: Pax[]; atCurb: number; car?: Car; flight: Flight;
   curb?: Zone; lot?: Zone; stall?: Pt;
 }
 
@@ -24,6 +24,7 @@ export interface Pax {
   proc?: Proc; since: number; serviceEnd: number; bagNo: number;
   walked: number; sat: number; mood: 0 | 1 | 2; why?: string; stranded: boolean; premium: boolean; shop?: Shop;
   browse?: boolean;            // in duty free: stopped to shop (true) or just walking the serpentine (false)
+  ride?: boolean;              // on the AirTrain between two stations
   fz?: number; fb?: number; fe?: number;   // footfall: concourse, and the bins already counted there
 }
 
@@ -50,31 +51,31 @@ export interface Flight {
   boarded: number; deplaned: number; spawnedDep: boolean;
 }
 
-type WaitKey = 'curb' | 'checkin' | 'security' | 'claim';
+type WaitKey = 'curb' | 'checkin' | 'security' | 'claim' | 'passport';
 export interface DayStats {
   paxDep: number; paxArr: number; missed: number; stranded: number; satSum: number; satN: number;
   waits: Record<WaitKey, { sum: number; n: number; max: number }>;
   walkSum: number; walkN: number; flights: number; delayed: number; cancelled: number; delaySum: number;
-  rev: { slots: number; pax: number; shops: number; food: number; lounges: number; dutyfree: number; rent: number; parking: number; curb: number };
+  rev: { slots: number; pax: number; shops: number; food: number; lounges: number; dutyfree: number; rent: number; parking: number; curb: number; hotel: number; rental: number; rideshare: number };
   cost: { staff: number; upkeep: number };
   lotFull: number;
 }
 export interface PlanInfo {
   demand: number; byAirline: { airline: Airline; requested: number; scheduled: number }[];
-  rejectedGates: number; rejectedRunway: number; rejectedAircraft: number; wantsSJ: number; scheduled: number;
+  rejectedGates: number; rejectedRunway: number; rejectedAircraft: number; rejectedIntl: number; wantsSJ: number; scheduled: number;
   limit: string; loadFactor: number;
 }
 export interface Report { label: string; day: number; stats: DayStats; plan: PlanInfo; profit: number; sat: number; onTime: number; money: number; periodDays: number }
 
 const emptyStats = (): DayStats => ({
   paxDep: 0, paxArr: 0, missed: 0, stranded: 0, satSum: 0, satN: 0,
-  waits: { curb: { sum: 0, n: 0, max: 0 }, checkin: { sum: 0, n: 0, max: 0 }, security: { sum: 0, n: 0, max: 0 }, claim: { sum: 0, n: 0, max: 0 } },
+  waits: { curb: { sum: 0, n: 0, max: 0 }, checkin: { sum: 0, n: 0, max: 0 }, security: { sum: 0, n: 0, max: 0 }, claim: { sum: 0, n: 0, max: 0 }, passport: { sum: 0, n: 0, max: 0 } },
   walkSum: 0, walkN: 0, flights: 0, delayed: 0, cancelled: 0, delaySum: 0,
-  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, dutyfree: 0, rent: 0, parking: 0, curb: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0,
+  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, dutyfree: 0, rent: 0, parking: 0, curb: 0, hotel: 0, rental: 0, rideshare: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0,
 });
 
 /** All revenue lines for a day. rent is the top-up when a lot's sales share falls short of its minimum guarantee. */
-export const revTotal = (r: DayStats['rev']) => r.slots + r.pax + r.shops + r.food + r.lounges + r.dutyfree + r.rent + r.parking + r.curb;
+export const revTotal = (r: DayStats['rev']) => r.slots + r.pax + r.shops + r.food + r.lounges + r.dutyfree + r.rent + r.parking + r.curb + r.hotel + r.rental + r.rideshare;
 
 export const DAY_START = 4 * 60;
 export const DAY_END = 24 * 60;
@@ -90,7 +91,7 @@ export class Sim {
   money = TUNE.startMoney;
   moneyOn = true;
   slotPrice = TUNE.refSlotPrice;
-  staff = { agents: 14, screeners: 18, handlers: 16 };
+  staff: { agents: number; screeners: number; handlers: number; officers?: number } = { agents: 14, screeners: 18, handlers: 16, officers: 0 };
   rep = 1.0;
   flights: Flight[] = [];
   pax: Pax[] = [];
@@ -106,6 +107,53 @@ export class Sim {
   /** v0.9: goals reached (saved), and a hook so the UI can celebrate one. */
   goalsDone = new Set<string>();
   onGoal?: (g: Goal) => void;
+  /** v0.10: facilities unlock as traffic grows (best day's departures). Saved. Sandbox mode has everything. */
+  unlocked = new Set<UnlockId>(); bestPax = 0;
+  onUnlock?: (u: Unlock) => void;
+  /** v0.10: today's weather; an airline's open offer and the deals in force (saved). */
+  weather: WeatherKind = 'clear';
+  offer: Offer | null = null; deals: Record<string, Deal> = {};
+  onOffer?: (o: Offer) => void;
+  dealOf(a: Airline) { const d = this.deals[a.id]; return d && d.until > this.day ? d : undefined; }
+  acceptOffer() {
+    const o = this.offer; if (!o) return; this.offer = null;
+    this.deals[o.airline] = { mult: o.mult, feeMult: o.feeMult, until: this.day + o.days, kind: o.kind };
+    if (this.moneyOn) this.money += o.bonus;
+    this.note(`Deal signed: ${o.title}`);
+  }
+  declineOffer() { if (this.offer) this.note(`Declined: ${this.offer.title}`); this.offer = null; }
+  /** Now and then an airline that is happy here proposes something. Its own random stream, so the sim stays reproducible. */
+  makeOffer(sat: number) {
+    if (this.offer || sat < 78) return;
+    const rr = rng(this.day * 104729 + 5); if (rr() > 0.4) return;
+    const pool = AIRLINES.filter(a => !this.dealOf(a) && (!a.intl || (this.has('intl') && this.d.terminals.some(T => T.intl))) && a.id !== 'polaris');
+    if (!pool.length) return;
+    const a = pool[Math.floor(rr() * pool.length)];
+    const volume = rr() < 0.55;
+    const bonus = Math.round((2 + rr() * 4)) * 1e6;
+    this.offer = volume
+      ? { airline: a.id, kind: 'volume', title: `${a.name}: more flights for a lower fee`, mult: 1.4, feeMult: 0.75, bonus: 0, days: 10,
+          text: `${a.name} will schedule 40% more flights here for the next 10 days if its slot fee drops 25%. More passengers through the terminal and the shops, less from each landing. Worth it if you have gates and lanes to spare.` }
+      : { airline: a.id, kind: 'base', title: `${a.name}: a crew base`, mult: 1.2, feeMult: 1, bonus, days: 14,
+          text: `${a.name} will base crews here: 20% more flights for 14 days and ${(bonus / 1e6).toFixed(0)} million dollars on signing. In return it expects 90% of flights on time; each day that falls short costs 1 million dollars.` };
+    this.note(`Offer: ${this.offer.title}`); this.onOffer?.(this.offer);
+  }
+  has(id: UnlockId) { return !this.moneyOn || this.unlocked.has(id); }
+  checkUnlocks() {
+    for (const u of UNLOCKS) if (!this.unlocked.has(u.id) && this.bestPax >= u.at) {
+      this.unlocked.add(u.id); this.note(`Unlocked: ${u.title}`); this.onUnlock?.(u);
+    }
+  }
+  /** The first working facility of a kind (road where needed, and a way on foot to an open terminal). */
+  facility(t: ZoneType): Zone | undefined { return this.d.zones.find(z => z.type === t && this.d.served.has(z.id)); }
+  /** How much better access widens the catchment: buses, the AirTrain, a hotel, rental cars, rideshare, a garage. */
+  accessBoost() {
+    const B = GROWTH.boost; let b = 0;
+    for (const t of ['bus', 'rideshare', 'rental', 'hotel', 'train'] as const) if (this.facility(t)) b += B[t];
+    if (this.d.zones.some(z => z.type === 'parking' && (z.floors ?? 1) > 1 && this.d.roadOK.has(z.id))) b += B.garage;
+    return 1 + b;
+  }
+  baseDemand() { return (this.population * TUNE.tripsPerCapita) / 365 * this.rep * this.accessBoost(); }
   log: { t: string; text: string; kind: 'info' | 'warn' | 'bad' }[] = [];
   wind: Wind = { from: SITE.windFrom, kt: SITE.windSpeed };
   dayWind = { shift: 0, gust: 1 };
@@ -151,7 +199,7 @@ export class Sim {
     const keep = new Map(this.procs);
     this.procs.clear();
     for (const z of this.d.zones) {
-      if (!['checkin', 'security', 'claim', 'curb'].includes(z.type)) continue;
+      if (!['checkin', 'security', 'claim', 'curb', 'passport'].includes(z.type)) continue;
       const old = keep.get(z.id);
       const frame = this.d.frames.get(z.id)!;
       const n = unitsOf(this.d, z);
@@ -230,6 +278,7 @@ export class Sim {
     };
     share('checkin', this.staff.agents);
     share('security', Math.floor(this.staff.screeners / TUNE.screenersPerLane));
+    share('passport', this.staff.officers ?? 0);
     for (const p of this.procs.values()) if (p.type === 'curb' || p.type === 'claim') p.servers = p.maxServers;
   }
 
@@ -247,6 +296,10 @@ export class Sim {
     }
     this.stats = emptyStats();
     this.dayWind = { shift: (this.r() - 0.5) * 50, gust: 0.65 + this.r() * 0.9 };
+    // weather draws from its own stream, so it never shifts the rest of the day's dice
+    { const x = rng(this.day * 7919 + 13)(); let c = 0; this.weather = 'clear';
+      if (this.day > 0) for (const k of ['clear', 'rain', 'fog', 'snow'] as const) { c += WEATHER[k].p; if (x < c) { this.weather = k; break; } }
+      if (WEATHER[this.weather].note) this.note(WEATHER[this.weather].note, 'warn'); }
     this.lotUsed = Math.round(this.lotCapacity() * 0.55);
     this.plan = this.schedule();
     this.allocateStaff();
@@ -254,36 +307,41 @@ export class Sim {
 
   /** Flights per day each airline wants at a given slot fee (before capacity limits). */
   demandAt(price: number) {
-    const D = (this.population * TUNE.tripsPerCapita) / 365 * this.rep;
+    const D = this.baseDemand();
     const lf = 0.8;
-    return AIRLINES.map(a => {
+    return AIRLINES.filter(a => !a.intl || this.has('intl')).map(a => {
       let n = 0;
       for (const [c, share] of Object.entries(a.mix)) n += (a.share * D * (share as number)) / (CLASSES[Number(c)].seats * lf);
-      return { airline: a, n: n * Math.pow(price / TUNE.refSlotPrice, -a.elasticity) };
+      const deal = this.dealOf(a);
+      return { airline: a, n: n * Math.pow((price * (deal?.feeMult ?? 1)) / TUNE.refSlotPrice, -a.elasticity) * (deal?.mult ?? 1) };
     });
   }
 
   schedule(): PlanInfo {
     const d = this.d;
-    const D = (this.population * TUNE.tripsPerCapita) / 365 * this.rep;
+    const D = this.baseDemand();
     const lfRef = clamp(0.66 + 0.18 * this.rep, 0.6, 0.93);
     const plan: PlanInfo = {
-      demand: 0, byAirline: [], rejectedGates: 0, rejectedRunway: 0, rejectedAircraft: 0, wantsSJ: 0,
+      demand: 0, byAirline: [], rejectedGates: 0, rejectedRunway: 0, rejectedAircraft: 0, rejectedIntl: 0, wantsSJ: 0,
       scheduled: 0, limit: '', loadFactor: lfRef,
     };
     const operable = [0, 1, 2, 3].map(c => d.gates.some(g => d.gateUsable(g, c)));
     type Cand = { airline: Airline; cls: Cls; arr: number };
     const cands: Cand[] = [];
+    const intlOK = d.terminals.some(T => T.intl);
     for (const a of AIRLINES) {
+      if (a.intl && !this.has('intl')) continue;   // not asking yet
       const row = { airline: a, requested: 0, scheduled: 0 };
       plan.byAirline.push(row);
-      const priceF = Math.pow(this.slotPrice / TUNE.refSlotPrice, -a.elasticity);
+      const deal = this.dealOf(a);
+      const priceF = Math.pow((this.slotPrice * (deal?.feeMult ?? 1)) / TUNE.refSlotPrice, -a.elasticity) * (deal?.mult ?? 1);
       for (const [cs, share] of Object.entries(a.mix)) {
         const c = Number(cs) as Cls;
         const x = (a.share * D * (share as number) * priceF) / (CLASSES[c].seats * 0.8);
         const n = Math.floor(x) + (this.r() < x - Math.floor(x) ? 1 : 0);
         row.requested += n;
         for (let i = 0; i < n; i++) {
+          if (a.intl && !intlOK) { plan.rejectedIntl++; continue; }
           let use: number = operable[c] ? c : -1;
           if (use < 0 && a.downgrade) for (let k = c - 1; k >= 0; k--) if (a.mix[k as Cls] !== undefined && operable[k]) { use = k; break; }
           if (use < 0) { plan.rejectedAircraft++; if (c === 3) plan.wantsSJ++; continue; }
@@ -298,7 +356,7 @@ export class Sim {
     cands.sort((a, b) => a.arr - b.arr);
     const prevailing: Wind = { from: SITE.windFrom, kt: SITE.windSpeed };
     const usable = d.runways.filter(r => r.cls >= 0 && runwayUsable(r, prevailing));
-    const capHr = this.capacityPerHour(usable.length ? usable : d.runways.filter(r => r.cls >= 0).slice(0, 1));
+    const capHr = this.capacityPerHour(usable.length ? usable : d.runways.filter(r => r.cls >= 0).slice(0, 1)) * WEATHER[this.weather].cap;
     const perHour = new Map<number, number>();
     const gateFree = new Map<string, number>();
     const flightNo = new Map<string, number>();
@@ -310,7 +368,7 @@ export class Sim {
       const open = d.terminals.filter(T => T.active);
       const home = open.length ? open[AIRLINES.indexOf(c.airline) % open.length] : undefined;
       const rank = (g: Gate) => g.cls * 10 + (d.termOf.get(g.zone.id) === home ? 0 : 1);
-      const gate = d.gates.filter(g => d.gateUsable(g, c.cls)).sort((p, q) => rank(p) - rank(q)).find(g => (gateFree.get(g.id) ?? 0) + 8 <= c.arr);
+      const gate = d.gates.filter(g => d.gateUsable(g, c.cls) && (!c.airline.intl || d.termOf.get(g.zone.id)?.intl)).sort((p, q) => rank(p) - rank(q)).find(g => (gateFree.get(g.id) ?? 0) + 8 <= c.arr);
       if (!gate) { plan.rejectedGates++; continue; }
       gateFree.set(gate.id, dep);
       perHour.set(hA, (perHour.get(hA) ?? 0) + 1); perHour.set(hD, (perHour.get(hD) ?? 0) + 1);
@@ -327,9 +385,9 @@ export class Sim {
     }
     for (const f of this.flights) f.bagsArr = Math.round(f.paxArr * 0.62);
     plan.scheduled = this.flights.length;
-    const lost = plan.rejectedGates + plan.rejectedRunway + plan.rejectedAircraft;
+    const lost = plan.rejectedGates + plan.rejectedRunway + plan.rejectedAircraft + plan.rejectedIntl;
     plan.limit = !d.runways.length ? 'No runway' : !d.gates.length ? 'No gates' : !operable.some(Boolean) ? 'No connected gates'
-      : lost === 0 ? 'Demand' : plan.rejectedAircraft >= Math.max(plan.rejectedGates, plan.rejectedRunway) ? 'Aircraft size'
+      : lost === 0 ? 'Demand' : plan.rejectedIntl > Math.max(plan.rejectedGates, plan.rejectedRunway, plan.rejectedAircraft) ? 'Passport control' : plan.rejectedAircraft >= Math.max(plan.rejectedGates, plan.rejectedRunway) ? 'Aircraft size'
       : plan.rejectedGates >= plan.rejectedRunway ? 'Gates' : 'Runway capacity';
     return plan;
   }
@@ -532,7 +590,7 @@ export class Sim {
       const delay = t - f.schedDep;
       this.stats.flights++;
       if (delay > 15) { this.stats.delayed++; this.stats.delaySum += delay; }
-      this.stats.rev.slots += this.slotPrice * 2;
+      this.stats.rev.slots += this.slotPrice * 2 * (this.dealOf(f.airline)?.feeMult ?? 1);
       const ok = this.rwyOK(f);
       const cands = this.d.runways.filter(ok);
       const reach = this.d.runways.filter(r => r.cls >= f.cls && f.gate.rwys[f.cls].has(r.rw.id));
@@ -581,13 +639,15 @@ export class Sim {
       if (p.type !== type || !this.inTerm(p.zone, T)) continue;
       const route = this.d.pedRoute(from, lv, clampIn(this.queueSlot(p, p.queue.length), p.zone), p.zone.level);
       if (!route) continue;
-      const svc = type === 'checkin' ? TUNE.checkinTime[p.zone.tier] : TUNE.securityTime[p.zone.tier];
+      const svc = this.svcTime(p);
       const q = p.servers > 0 ? (p.queue.length * svc) / p.servers : 999;
       const s = route.len / TUNE.walkSpeed + q;
       if (s < bs) { bs = s; best = { proc: p, route }; }
     }
     return best;
   }
+
+  svcTime(p: Proc) { return p.type === 'checkin' ? TUNE.checkinTime[p.zone.tier] : p.type === 'passport' ? GROWTH.passportTime[p.zone.tier] : TUNE.securityTime[p.zone.tier]; }
 
   stuck(p: Pax, why: string) {
     if (p.stage !== 'stuck') { p.stage = 'stuck'; p.since = this.t; }
@@ -618,6 +678,7 @@ export class Sim {
       if (this.lotUsed < lotCap) { party.mode = 'park'; this.lotUsed++; }
       else this.stats.lotFull++;
     }
+    if (party.mode === 'curb' && this.facility('bus') && this.r() < GROWTH.busShare) party.mode = 'bus';
     for (let i = 0; i < size; i++) party.pax.push(this.newPax(f, party, true));
     this.pending.push({ at, party });
   }
@@ -626,7 +687,7 @@ export class Sim {
     const bags = this.r() < 0.62;
     return {
       id: this.ids++, dep, flight: f, party, bags, x: 0, y: 0, level: 0, path: [], pathLv: [],
-      steps: dep ? [...(bags ? ['checkin' as Step] : []), 'security', 'gate'] : [...(bags ? ['claim' as Step] : []), party.mode === 'park' ? 'lot' : 'curb'],
+      steps: dep ? [...(bags ? ['checkin' as Step] : []), 'security', 'gate'] : [...(f.airline.intl ? ['passport' as Step] : []), ...(bags ? ['claim' as Step] : []), party.mode === 'curb' ? 'curb' : 'lot'],
       stage: 'walk', since: this.t, serviceEnd: 0, bagNo: 0, walked: 0, sat: 86, mood: 0, stranded: false, premium: this.r() < TUNE.premiumShare,
     };
   }
@@ -636,8 +697,18 @@ export class Sim {
     if (!party || party.pax.length >= party.atCurb) {
       const size = this.r() < 0.55 ? 1 : this.r() < 0.67 ? 2 : 3;
       party = { id: this.ids++, dep: false, mode: 'curb', pax: [], atCurb: size, flight: f };
-      const lot = this.lotsByRoad()[0];
+      const lot = this.pickLot(this.lotsByRoad());
       if (lot && this.lotUsed > 0 && this.r() < 0.35) { party.mode = 'park'; party.lot = lot; this.lotUsed--; }
+      else {
+        // other ways out, where they exist: an app-hailed ride from the rideshare lot, a rental car, the bus
+        const ride = this.facility('rideshare'), rental = this.facility('rental'), bus = this.facility('bus');
+        if (ride || rental || bus) {
+          const x = this.r(); let c = 0;
+          if (ride && x < (c += GROWTH.rideShare)) { party.mode = 'ride'; party.lot = ride; }
+          else if (rental && x < (c += GROWTH.rentalShare)) { party.mode = 'rental'; party.lot = rental; }
+          else if (bus && x < (c += GROWTH.busShare)) { party.mode = 'bus'; party.lot = bus; }
+        }
+      }
       this.openArr.set(f.id, party);
     }
     const p = this.newPax(f, party, false);
@@ -658,7 +729,7 @@ export class Sim {
     const delay = p.flight.readyT - p.flight.schedDep;
     if (delay > 15) p.sat -= (delay - 15) * 0.35;
     this.stats.paxDep++;
-    this.stats.rev.pax += TUNE.paxFee;
+    this.stats.rev.pax += TUNE.paxFee + (p.flight.airline.intl ? GROWTH.intlPaxFee : 0);
     this.finishPax(p);
   }
 
@@ -681,7 +752,7 @@ export class Sim {
     const go = (q: Pt, l: Level) => this.d.pedRoute(here, p.level, q, l);
     let route: Route | null = null;
     switch (step) {
-      case 'checkin': case 'security': {
+      case 'checkin': case 'security': case 'passport': {
         const best = this.chooseProc(step, here, p.level, this.termOf(p.flight));
         if (!best) { this.stuck(p, this.hasType(step) ? `No walking route to ${ZONES[step].short.toLowerCase()}` : `No ${ZONES[step].short.toLowerCase()} built`); return; }
         p.proc = best.proc; route = best.route; break;
@@ -763,7 +834,7 @@ export class Sim {
       }
       case 'lot': {
         const party = p.party;
-        const lot = party.lot && this.world.zones.includes(party.lot) ? party.lot : undefined;
+        const lot = party.lot && this.d.zones.includes(party.lot) ? party.lot : undefined;
         if (lot) { party.stall = party.stall ?? this.stall(lot); route = go(party.stall, 0); }
         if (!route) { p.steps = ['curb']; this.advance(p); return; }
         break;
@@ -817,7 +888,7 @@ export class Sim {
     const sh = p.shop; if (!sh) return;
     if (sh.tenant === 'dutyfree') {
       if (p.browse) {
-        const take = COMMERCE.dfTake * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15);
+        const take = COMMERCE.dfTake * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15) * (p.flight.airline.intl ? GROWTH.intlSpend : 1);
         this.stats.rev.dutyfree += take;
         const L = this.lotLedger(sh); L.visits++; L.rev += take;
         const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; day.rev += take; this.shopDay.set(sh.zone.id, day);
@@ -828,7 +899,7 @@ export class Sim {
     }
     const S = TUNE.shops[sh.type]; const m = S.min;
     const frac = clamp((this.t - p.since) / ((m[0] + m[1]) / 2), 0.3, 1);
-    const take = S.take * frac * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15);
+    const take = S.take * frac * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15) * (p.flight.airline.intl ? GROWTH.intlSpend : 1);
     const key: Record<ShopType, 'shops' | 'food' | 'lounges'> = { shop: 'shops', food: 'food', lounge: 'lounges' };
     this.stats.rev[key[sh.type]] += take;
     const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; day.rev += take; this.shopDay.set(sh.zone.id, day);
@@ -866,11 +937,16 @@ export class Sim {
     for (const p of this.pax) {
       if (p.stage === 'done') continue;
       if (p.stage === 'walk') {
-        let step = TUNE.walkSpeed * dt;
+        let step = TUNE.walkSpeed * dt * (p.ride ? GROWTH.trainSpeed : 1);
         while (step > 0 && p.path.length) {
           const tgt = p.path[0]; const dd = dist(p, tgt);
-          if (dd <= step) { p.x = tgt.x; p.y = tgt.y; p.level = p.pathLv[0]; p.path.shift(); p.pathLv.shift(); step -= dd; p.walked += dd; }
-          else { p.x += ((tgt.x - p.x) / dd) * step; p.y += ((tgt.y - p.y) / dd) * step; p.walked += step; step = 0; }
+          if (dd <= step) {
+            p.x = tgt.x; p.y = tgt.y; p.level = p.pathLv[0]; p.path.shift(); p.pathLv.shift(); step -= dd; if (!p.ride) p.walked += dd;
+            // station to station is a ride on the AirTrain
+            const was = p.ride; p.ride = !!p.path.length && this.d.isTrainNode(tgt) && this.d.isTrainNode(p.path[0]);
+            if (was !== p.ride) step = p.ride ? step * GROWTH.trainSpeed : step / GROWTH.trainSpeed;
+          }
+          else { p.x += ((tgt.x - p.x) / dd) * step; p.y += ((tgt.y - p.y) / dd) * step; if (!p.ride) p.walked += step; step = 0; }
         }
         if (p.dep && (p.steps[0] === 'gate' || p.steps[0] === 'shop' || p.steps[0] === 'dutyfree')) this.countFootfall(p);
         if (!p.path.length) this.arrive(p);
@@ -903,7 +979,7 @@ export class Sim {
   arrive(p: Pax) {
     const step = p.steps[0];
     switch (step) {
-      case 'checkin': case 'security':
+      case 'checkin': case 'security': case 'passport':
         if (!p.proc || !this.procs.has(p.proc.zone.id)) { this.advance(p); return; }
         p.stage = 'queue'; p.since = this.t; p.proc.queue.push(p); return;
       case 'dutyfree': {
@@ -933,9 +1009,12 @@ export class Sim {
       case 'curb': p.stage = 'curbWait'; p.since = this.t; this.tryPickup(p.party); return;
       case 'lot': {
         const party = p.party;
-        this.stats.rev.parking += TUNE.parkingPerStay / party.pax.length;
+        const n = party.pax.length; const kind = party.lot?.type;
+        if (kind === 'rideshare') this.stats.rev.rideshare += GROWTH.rideFee / n;
+        else if (kind === 'rental') this.stats.rev.rental += GROWTH.rentalFee * (party.lot!.tier ? 1.2 : 1) / n;
+        else if (kind !== 'bus') this.stats.rev.parking += TUNE.parkingPerStay / n;
         this.finishPax(p);
-        if (party.pax.every(q => q.stage === 'done') && party.lot && party.stall) this.leaveLot(party, party.lot, party.stall);
+        if (kind !== 'bus' && party.pax.every(q => q.stage === 'done') && party.lot && party.stall) this.leaveLot(party, party.lot, party.stall);
         return;
       }
     }
@@ -959,8 +1038,8 @@ export class Sim {
   updateProcs() {
     const t = this.t;
     for (const proc of this.procs.values()) {
-      if (proc.type !== 'checkin' && proc.type !== 'security') continue;
-      const svc = proc.type === 'checkin' ? TUNE.checkinTime[proc.zone.tier] : TUNE.securityTime[proc.zone.tier];
+      if (proc.type !== 'checkin' && proc.type !== 'security' && proc.type !== 'passport') continue;
+      const svc = this.svcTime(proc);
       for (let i = 0; i < proc.busy.length; i++) {
         const b = proc.busy[i];
         if (b && t >= b.serviceEnd) {
@@ -1028,14 +1107,26 @@ export class Sim {
   }
   hwyEnd() { const [w, e] = this.d.hwyEnds; return this.r() < 0.8 ? (e >= 0 ? e : w) : (w >= 0 ? w : e); }
 
+  /** Drivers spread over the lots and garages by size. */
+  pickLot(lots: Zone[]): Zone | undefined {
+    if (lots.length < 2) return lots[0];
+    const tot = lots.reduce((n, l) => n + unitsOf(this.d, l), 0); let x = this.r() * tot;
+    for (const l of lots) { x -= unitsOf(this.d, l); if (x <= 0) return l; }
+    return lots[lots.length - 1];
+  }
   lotsByRoad() { return this.d.zones.filter(z => z.type === 'parking' && this.d.roadOK.has(z.id)); }
 
   /** Departing party arrives: park if they planned to and a lot works, otherwise get dropped at a curb. */
   arriveByCar(party: Party) {
+    if (party.mode === 'bus') {
+      const bus = this.facility('bus');
+      if (bus) { for (const p of party.pax) { const st = this.stall(bus); p.x = st.x; p.y = st.y; p.level = 0; p.since = this.t; this.pax.push(p); this.advance(p); } return; }
+      party.mode = 'curb';
+    }
     if (party.mode === 'park') {
       const PT = this.termOf(party.flight);
       const entry = this.d.zones.filter(z => (z.type === 'checkin' || z.type === 'security') && this.inTerm(z, PT));
-      const lot = this.lotsByRoad().find(l => entry.some(z => this.d.zoneReach(l.id, z.id)));
+      const lot = this.pickLot(this.lotsByRoad().filter(l => entry.some(z => this.d.zoneReach(l.id, z.id))));
       if (lot && this.driveToLot(party, lot)) return;
       party.mode = 'curb'; this.lotUsed = Math.max(0, this.lotUsed - 1);
     }
@@ -1186,11 +1277,21 @@ export class Sim {
   endDay() {
     for (const p of this.pax) if (p.stage !== 'done') { if (p.dep) this.miss(p); else this.finishPax(p); }
     const s = this.stats;
-    const staffN = this.staff.agents + this.staff.screeners + this.staff.handlers;
+    const staffN = this.staff.agents + this.staff.screeners + this.staff.handlers + (this.staff.officers ?? 0);
     s.cost.staff = staffN * TUNE.wagePerDay;
-    s.cost.upkeep = this.world.zones.reduce((u, z) => u + z.w * z.h * ZONES[z.type].upkeepPerM2, 0)
+    s.cost.upkeep = this.world.zones.reduce((u, z) => u + z.w * z.h * ZONES[z.type].upkeepPerM2 * (z.type === 'parking' ? 1 + 0.6 * ((z.floors ?? 1) - 1) : z.type === 'hotel' ? 0 : 1), 0)
       + this.d.runways.reduce((u, r) => u + r.length * 4, 0)
       + this.world.ways.reduce((u, w) => u + dist(w.a, w.b) * (w.kind === 'taxi' ? 1.2 : w.kind === 'road' ? 0.8 : 0.2), 0);
+    // Hotels: early departures and late arrivals fill rooms; the airport takes a ground-lease share per room night.
+    let nights = s.paxDep * GROWTH.hotelGuests;
+    for (const h of this.d.zones) if (h.type === 'hotel' && this.d.served.has(h.id)) {
+      const n = Math.min(nights, unitsOf(this.d, h) * 0.92); nights -= n;
+      s.rev.hotel += n * GROWTH.hotelTake * (h.tier ? 1.3 : 1);
+    }
+    // crew-base deals expect punctuality
+    for (const a of AIRLINES) { const dl = this.dealOf(a); if (dl?.kind === 'base' && s.flights && 1 - s.delayed / s.flights < 0.9) { const fine = 1e6; if (this.moneyOn) this.money -= fine; this.note(`${a.name}: under 90% on time today. Penalty $1.0M under its crew-base deal.`, 'warn'); } }
+    this.bestPax = Math.max(this.bestPax, s.paxDep);
+    this.checkUnlocks();
     // Rent: each leased lot pays the greater of its sales share and its minimum guarantee (ACRP Report 54).
     for (const list of this.d.shops.values()) for (const sh of list) if (this.leased(sh)) {
       const L = this.lotLedger(sh); const short = sh.rent - L.rev;
@@ -1230,6 +1331,7 @@ export class Sim {
     if (this.history.length > 120) this.history.shift();
     this.calDays += period; this.day++;
     this.onDayEnd?.(rep);
+    this.makeOffer(sat);
     this.relayout();
     // Re-let: with the new scores, tenants bid again. Save who holds what, and say what moved.
     for (const z of this.world.zones) if (z.type === 'concourse') {

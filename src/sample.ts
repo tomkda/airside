@@ -30,12 +30,11 @@ export function sampleWorld(): World {
   z('parking', 0, 2880, 3010, 340, 180, undefined, undefined, false);
   w.sites!.push({ id: site, ...padRect(bboxOf(w.zones.filter(q => q.site === site)), SITES.pad) });
 
-  // Roads: a loop from State Route 12 along the terminal face (4 lanes, 20 m off the building), with a lot access road.
+  // Roads: a loop from State Route 12 along the terminal face (4 lanes, 20 m off the building), The lot lays its own access drive (v0.10).
   way('road', 2780, 5700, 2780, 2898, 0, 4);
   way('road', 2780, 2898, 3320, 2898, 0, 4);
   way('road', 3320, 2898, 3320, 5700, 0, 4);
   way('road', 2780, 2955, 3320, 2955, 0, 2);
-  way('road', 2950, 2955, 2950, 3010, 0, 2);
 
   // No sidewalk is drawn: the lot lays its own to the arrivals curb (v0.9), with crosswalks over both roads.
   return w;

@@ -17,3 +17,4 @@ jobs:
       - run: npm run simtest
       - run: node scripts/terminals.mjs
       - run: node scripts/stress.mjs
+      - run: node scripts/growth.mjs
