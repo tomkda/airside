@@ -26,14 +26,14 @@ Healthy results:
 - simtest shows Terminal 1 open, 0 missed passengers and leased lots growing week to week. Security in the sample runs close to capacity, so other seeds can miss some passengers in week 3; that predates v0.7.
 - terminals.mjs shows 0 stranded passengers, and its frontage check shows curbs at 20 m and 42 m, none at 82 m (Terminal 1 closes), and curbs again when the road comes back.
 - growth.mjs shows 8 facilities served, the far garage served by AirTrain, 0 missed and 0 stranded, international flights scheduled, and several hundred AirTrain riders a day.
-- roads.mjs shows Terminal 1 open with 0 missed, 0 stranded and 0 wrong-way cars in every scenario except the reversed loop, which must close the terminal and raise the one-way warning. Cars go round the ring wherever there is a roundabout.
+- roads.mjs shows Terminal 1 open with 0 missed, 0 stranded and 0 wrong-way cars in every scenario except the reversed loop, which must close the terminal and raise the one-way warning. Cars go round the ring wherever there is a roundabout, and far fewer cars overlap as drawn than on the centreline.
 - stress.mjs strands passengers on purpose on the day it moves check-in, and on the days it cuts the road or the taxiway. Cutting the walkways no longer strands anyone, because the lot lays its own sidewalk (v0.9). That is expected.
 
 ## Architecture
 
 - **One file out.** scripts/build.mjs bundles src/ with esbuild into a single HTML page. There is no server. three.js (pinned 0.170.0) is the only runtime dependency and is bundled in; it is used by render3d.ts alone.
 - **The sim never touches the DOM.** config, geom, net, ways, world, gates, bands, commerce, frontage, roads, scenery, goals, layout and sim are pure logic.
-  - render.ts (plan) and render3d.ts (3D, three.js, with models3d.ts) read sim state and never write it.
+  - render.ts (plan) and render3d.ts (3D, three.js, with models3d.ts) read sim state and never write it. traffic.ts is pure too.
   - scenery.ts places trees, lamps, floodlight masts and the control tower from the layout (cached per derive); both renderers draw from it.
   - ui.ts owns input and panels.
   - Keep this split: sim and world may be ported to Godot/C# later.
@@ -74,6 +74,8 @@ Healthy results:
   - Anything that walks a road's geometry uses `wayPts()` / `waySegs()` / `wayLen()`, never `a` and `b` alone. Curbs grow along straight roads only.
   - `roadPlan` chains edges into `paths` (one polyline per run of road), and adds roundabout entries, splitter islands and yield lines. Both renderers draw from paths.
   - `sim.roadCap`: an edge that ends at a crossroads or T holds `ROADS.junctionDelay` of its length in cars; ring edges and roundabout approaches hold all of it.
+- **Traffic as drawn** (traffic.ts, v0.12): `carPoses(sim)` gives each car's drawn position: offset into its lane, corners rounded, held `CAR_GAP` behind the car ahead on the same edge, with a brake flag. Pure and read-only; both renderers use it. The sim's cars still move on the centreline.
+- **Sound** (sound.ts, v0.12): Web Audio synthesis, no files. Only ui.ts and main.ts call it. The preference is saved under `airside-sound`, apart from the game save.
 - **Undo** (ui.ts): a JSON snapshot of the World and money per edit, 50 deep.
 - **Goals** (goals.ts, v0.9): milestones with grants, checked on every relayout (which also runs at day end); `sim.goalsDone` is saved in the save (not the World). `rating()` gives the header's star rating.
 - **Concourse commerce** (commerce.ts, v0.7):
@@ -106,7 +108,7 @@ Healthy results:
 
 ## Roadmap
 
-Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. v0.10: growth unlocks, self-connecting landside facilities, international flights, the AirTrain, proper road junctions and curbside, undo, weather and airline offers. v0.11: curved roads with bend handles, roundabouts that roads join by themselves, and one-way roads and loops. Next in that direction: curved taxiways and sidewalks, curbs along curved and angled frontages, cars that keep to their lanes and yield; gates and holdrooms that respond to the taxiway and apron as you drag them, moving modules in 3D, and sound.
+Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. v0.10: growth unlocks, self-connecting landside facilities, international flights, the AirTrain, proper road junctions and curbside, undo, weather and airline offers. v0.11: curved roads with bend handles, roundabouts that roads join by themselves, and one-way roads and loops. v0.12: cars drawn in lanes with gaps and brake lights, and sound. Next in that direction: curved taxiways and sidewalks, curbs along curved and angled frontages, cars that yield turn by turn in the sim; gates and holdrooms that respond to the taxiway and apron as you drag them, and moving modules in 3D.
 
 The concourse interiors plan has four phases.
 

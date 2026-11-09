@@ -16,6 +16,7 @@ import type { Renderer } from './render';
 import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
+import { carPoses, CAR_COLS } from './traffic';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -30,7 +31,6 @@ const MOD_COL: Record<ZoneType, string> = {
 };
 const LOT_COL: Record<string, string> = { shop: '#6E6252', food: '#B07A3E', lounge: '#4D7390' };
 const ITEM_H: Record<string, number> = { counter: 1.1, xray: 1.6, body: 2.2, divest: 0.9, recompose: 0.9, kiosk: 1.4, wc: 3, office: 3, table: 0.75, belt: 0.5, carousel: 0.6 };
-const CAR_COLS = ['#3A352D', '#8C8576', '#E9E4DA', '#B0472B', '#2F4E78', '#6E7F86', '#CFC6B4', '#5E7A55', '#1F1C18'];
 const YELLOW = '#D6A43C', WHITE = '#F0ECE2';
 const RISE_MS = 1400;
 
@@ -573,13 +573,14 @@ export class Renderer3D {
 
     // cars, with headlights after dark
     let c = 0, hl = 0;
-    if (this.ren.lod !== 'airfield') for (const car of sim.cars) {
-      if (car.stage === 'gone' || c >= 3000) continue;
+    const poses = this.ren.lod !== 'airfield' ? carPoses(sim) : null;
+    if (poses) for (const car of sim.cars) {
+      const ps = poses.get(car); if (!ps || c >= 3000) continue;
       const up = car.curb?.zone.level === 1 && (car.stage === 'queue' || car.stage === 'bay') ? LEVELS[1].z0 : 0;
-      o.position.set(car.x, up + 0.65, car.y); o.rotation.set(0, -car.ang, 0); o.scale.set(1, 1, 1); o.updateMatrix();
+      o.position.set(ps.x, up + 0.65, ps.y); o.rotation.set(0, -ps.ang, 0); o.scale.set(1, 1, 1); o.updateMatrix();
       this.cars.setMatrixAt(c, o.matrix); this.cars.setColorAt(c, this.col.set(CAR_COLS[car.id % CAR_COLS.length]));
-      o.position.set(car.x - Math.cos(car.ang) * 0.3, up + 1.4, car.y - Math.sin(car.ang) * 0.3); o.updateMatrix(); this.cabs.setMatrixAt(c, o.matrix);
-      if (night > 0.1 && hl < 3000 && car.stage !== 'bay') { const k = hl * 3; this.headPos[k] = car.x + Math.cos(car.ang) * 2.6; this.headPos[k + 1] = up + 0.8; this.headPos[k + 2] = car.y + Math.sin(car.ang) * 2.6; hl++; }
+      o.position.set(ps.x - Math.cos(ps.ang) * 0.3, up + 1.4, ps.y - Math.sin(ps.ang) * 0.3); o.updateMatrix(); this.cabs.setMatrixAt(c, o.matrix);
+      if (night > 0.1 && hl < 3000 && car.stage !== 'bay') { const k = hl * 3; this.headPos[k] = ps.x + Math.cos(ps.ang) * 2.6; this.headPos[k + 1] = up + 0.8; this.headPos[k + 2] = ps.y + Math.sin(ps.ang) * 2.6; hl++; }
       c++;
     }
     this.cars.count = this.cabs.count = c;

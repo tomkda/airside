@@ -16,6 +16,7 @@ import { ROUNDS } from './config';
 import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
 import { roadPlan } from './roads';
+import { Sound } from './sound';
 
 export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round';
 type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | { kind: 'round'; round: Round } | null;
@@ -75,6 +76,8 @@ export class UI {
   private confirmClear = 0;
   private click3d: Pt | null = null;
 
+  /** v0.12: sound. `nextSound` lets an edit say what it sounded like before `changed()` plays it. */
+  snd = new Sound(); nextSound: 'place' | 'demolish' | 'none' = 'place';
   constructor(public sim: Sim, public ren: Renderer, public ctl: Controls) {
     this.buildChrome();
     this.bindInput();
@@ -109,7 +112,9 @@ export class UI {
       if (b.dataset.lod) this.goLod(b.dataset.lod as Lod);
       if (b.id === 'heat') this.setHeat(this.ren.overlay ? null : 'queues');
       if (b.id === 'commerce') this.setHeat(this.ren.commerce ? null : 'commerce');
+      if (b.id === 'sound') { this.snd.toggle(); b.setAttribute('aria-pressed', String(this.snd.on)); }
     });
+    $('#sound')?.setAttribute('aria-pressed', String(this.snd.on));
     $('#speed').addEventListener('click', e => {
       const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b) return;
       if (b.dataset.speed === '0') this.ctl.paused = !this.ctl.paused;
@@ -229,6 +234,7 @@ export class UI {
   }
   /** Growth unlocked something: say what and why, and show where it is. */
   unlockedNow(u: Unlock) {
+    this.snd.chime();
     const el = $('#stamp'); el.innerHTML = `<b>Unlocked</b><span>${esc(u.title)}</span><em>${esc(u.why)}</em>`;
     el.classList.remove('on'); void el.offsetWidth; el.classList.add('on', 'wide');
     this.toast(`Unlocked: ${u.title}. ${u.why}`);
@@ -248,6 +254,7 @@ export class UI {
       if (!st) { t = 'site'; this.toast('Start with New terminal: allocate its site, then lay out its modules inside.', 'warn'); }
       else this.openTerminal(st);
     } else if (want && want !== 'terminal' && this.ren.lod !== want) this.setLod(want, null);
+    if (t !== this.tool) this.snd.tick();
     this.tool = t;
     document.querySelectorAll<HTMLElement>('.tool').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
     const groundOnly = ZONES[t as ZoneType]?.groundOnly || t === 'road' || t === 'walk' || t === 'taxi' || t === 'runway' || t === 'round';
@@ -294,6 +301,7 @@ export class UI {
 
   toast(text: string, kind: 'info' | 'warn' | 'bad' = 'info') {
     const el = document.createElement('div'); el.className = `toast ${kind}`; el.textContent = text;
+    if (kind === 'bad') this.snd.deny();
     $('#toasts').prepend(el);
     setTimeout(() => el.classList.add('out'), 4200); setTimeout(() => el.remove(), 4800);
   }
@@ -763,6 +771,8 @@ export class UI {
     if (this.snap) { this.undoStack.push(this.snap); if (this.undoStack.length > 50) this.undoStack.shift(); this.redoStack = []; }
     this.sim.relayout(); this.refresh(true); this.ctl.save();
     this.snap = this.snapshot();
+    if (this.nextSound === 'place') this.snd.place(); else if (this.nextSound === 'demolish') this.snd.demolish();
+    this.nextSound = 'place';
   }
 
   // ------------------------------------------------------------ undo (v0.10): every edit can be taken back
@@ -920,6 +930,7 @@ export class UI {
     if (this.sim.moneyOn) this.sim.money += refund;
     if (h.kind !== 'way') this.toast(`${what} demolished · ${money(refund)} back`, 'warn');
     this.ren.selected = null; this.ren.hover = null;
+    this.nextSound = 'demolish';
     this.changed();
   }
 
@@ -1357,6 +1368,7 @@ export class UI {
     const el = $('#stamp'); el.innerHTML = `<b>Goal reached</b><span>${esc(g.title)}</span><em>+ ${money(g.reward)}</em>`;
     el.classList.remove('on'); void el.offsetWidth; el.classList.add('on');
     this.toast(`Goal reached: ${g.title} · ${money(g.reward)} grant`);
+    this.snd.chime();
     if (this.tab === 'report') this.refresh(true);
   }
 
