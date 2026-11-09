@@ -30,8 +30,8 @@ const roadWidth = (lanes: number) => (lanes >= 4 ? 16 : 9);
 interface Cand { m: Zone; road: Way; level: Level; a: Pt; b: Pt; out: Pt; gap: number; t0: number; t1: number; line: number }
 
 /** Curbs and decks for every road that runs along a terminal's landside face. */
-export function autoFrontage(world: World): { curbs: Zone[]; decks: DeckSpan[]; guides: FrontGuide[] } {
-  const roads = world.ways.filter(w => w.kind === 'road' && !w.c);   // curbs grow along straight roads
+export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; decks: DeckSpan[]; guides: FrontGuide[] } {
+  const roads = [...world.ways.filter(w => w.kind === 'road' && !w.c), ...extra.filter(w => w.fore === 'face')];   // curbs grow along straight roads
   const mods = world.zones.filter(z => FRONT_TYPES.has(z.type));
   const cands: Cand[] = [];
   const guides: FrontGuide[] = [];
@@ -43,13 +43,8 @@ export function autoFrontage(world: World): { curbs: Zone[]; decks: DeckSpan[]; 
     if (inner || L < FRONTAGE.minLen) continue;
     guides.push({ zone: m, a: sd.a, b: sd.b, out: sd.out });
     for (const r of roads) {
-      if (Math.abs(dot(norm(sub(r.b, r.a)), al)) < 0.985) continue;
-      const d = (dot(sub(r.a, sd.a), sd.out) + dot(sub(r.b, sd.a), sd.out)) / 2;
-      const gap = d - roadWidth(r.lanes) / 2;
-      if (gap < FRONTAGE.minGap || gap > FRONTAGE.maxGap) continue;
-      const s0 = dot(sub(r.a, sd.a), al), s1 = dot(sub(r.b, sd.a), al);
-      const t0 = Math.max(0, Math.min(s0, s1)), t1 = Math.min(L, Math.max(s0, s1));
-      if (t1 - t0 < FRONTAGE.minLen) continue;
+      const f = fronts(r, sd, L, al); if (!f) continue;
+      const { gap, t0, t1 } = f;
       const line = Math.round(dot(sd.a, sd.out));   // which building line this face sits on
       cands.push({ m, road: r, level: m.level, a: sd.a, b: sd.b, out: sd.out, gap, t0, t1, line });
     }
@@ -85,6 +80,84 @@ export function autoFrontage(world: World): { curbs: Zone[]; decks: DeckSpan[]; 
     }
   }
   return { curbs, decks, guides };
+}
+
+/** Does this straight road run along this building face closely enough to grow a curb? */
+function fronts(r: Way, sd: { a: Pt; b: Pt; out: Pt }, L: number, al: Pt): { gap: number; t0: number; t1: number } | null {
+  if (Math.abs(dot(norm(sub(r.b, r.a)), al)) < 0.985) return null;
+  const d = (dot(sub(r.a, sd.a), sd.out) + dot(sub(r.b, sd.a), sd.out)) / 2;
+  const gap = d - roadWidth(r.lanes) / 2;
+  if (gap < FRONTAGE.minGap || gap > FRONTAGE.maxGap) return null;
+  const s0 = dot(sub(r.a, sd.a), al), s1 = dot(sub(r.b, sd.a), al);
+  const t0 = Math.max(0, Math.min(s0, s1)), t1 = Math.min(L, Math.max(s0, s1));
+  return t1 - t0 < FRONTAGE.minLen ? null : { gap, t0, t1 };
+}
+
+/**
+ * v0.12: a terminal hall lays its own forecourt. If no road the player drew already runs along one of its faces,
+ * and some road (or the highway) is within FRONTAGE.reach, the hall generates a four-lane frontage road at the
+ * ideal distance from its best landside face, and a link from each end of it to that road. autoFrontage then grows
+ * the curbs on it like on any other road, and splits it into an upper departures deck and a lower arrivals road
+ * where check-in sits over baggage claim. Generated, never saved; ids are above FORE.
+ */
+export const FORE = 800000;
+export function autoForecourt(world: World, aprons: Rect[], highwayY: number, siteW: number): Way[] {
+  const out: Way[] = [];
+  const drawn = world.ways.filter(w => w.kind === 'road');
+  const chords = [...drawn.flatMap(w => waySegs(w).map(([a, b]) => ({ a, b }))), { a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY } }];
+  const straight = drawn.filter(w => !w.c);
+  const blocked = blocker(world, world.zones, aprons);
+  const over = (a: Zone, b: Zone) => rectsOverlap(shrink(a, 1), b);
+  const halls = world.zones.filter(z => z.type === 'checkin' || (z.type === 'claim' && !world.zones.some(o => o.type === 'checkin' && over(z, o)))).sort((p, q) => p.id - q.id);
+  const half = roadWidth(4) / 2; const off = FRONTAGE.ideal + half; const ext = FRONTAGE.ramp + 24;
+  for (const m of halls) {
+    // the hall and whatever is stacked with it (claim under check-in) count as one building
+    const fam = world.zones.filter(z => z === m || ((z.type === 'checkin' || z.type === 'claim') && over(z, m)));
+    const sides = fam.flatMap(z => sidesOf(z).map(sd => ({ z, sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) })));
+    if (sides.some(q => q.L >= FRONTAGE.minLen && straight.some(r => fronts(r, q.sd, q.L, q.al)))) continue;   // the player drew its frontage
+    if (out.some(w => w.fore === 'face' && sides.some(q => q.L >= FRONTAGE.minLen && fronts(w, q.sd, q.L, q.al)))) continue;   // a neighbour's forecourt already serves it
+    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number } | null = null;
+    for (const { sd, L, al } of sidesOf(m).map(sd => ({ sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) }))) {
+      if (L < FRONTAGE.minLen) continue;
+      const probe: Rect = boxOf(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
+      if (world.zones.some(o => !fam.includes(o) && TERMINAL_SET.has(o.type) && rectsOverlap(probe, o))) continue;   // an interior face
+      const at = (t: number, k: number): Pt => ({ x: sd.a.x + al.x * t + sd.out.x * k, y: sd.a.y + al.y * t + sd.out.y * k });
+      const a = at(-ext, off), b = at(L + ext, off);
+      if (blocked(a, b, fam) || blocked(at(-ext, off - half), at(L + ext, off - half), fam)) continue;
+      // the curb's own ground must be clear too
+      const lot = boxOf(sd.a, sd.b, sd.out, off + half);
+      if (world.zones.some(o => o.level === 0 && !fam.includes(o) && rectsOverlap(shrink(lot, 1), o))) continue;
+      const legs: { a: Pt; b: Pt }[] = []; let cost = 0;
+      for (const [E, away] of [[a, { x: -al.x, y: -al.y }], [b, al]] as const) {
+        // straight out from the building first, else straight on along the frontage
+        let leg: { a: Pt; b: Pt; d: number } | null = null;
+        for (const [dir, pen] of [[sd.out, 0], [away, 40]] as const) {
+          const q = rayHit(E, dir, FRONTAGE.reach, chords); if (!q) continue;
+          const d = dist(E, q) + pen;
+          if (d - pen < 6 || blocked(E, q, fam)) continue;
+          if (!leg || d < leg.d) leg = { a: E, b: q, d };
+        }
+        if (leg) { legs.push(leg); cost += leg.d; } else cost += 700;
+      }
+      if (!legs.length) continue;
+      if (!best || cost < best.cost) best = { a, b, legs, cost };
+    }
+    if (!best) continue;
+    const id = FORE + m.id * 4;
+    out.push({ id, kind: 'road', a: best.a, b: best.b, cls: 0, lanes: 4, fore: 'face' });
+    best.legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
+  }
+  return out;
+}
+/** First point where a ray from p meets a road. */
+function rayHit(p: Pt, dir: Pt, reach: number, chords: { a: Pt; b: Pt }[]): Pt | null {
+  let best: Pt | null = null, bd = reach;
+  for (const c of chords) {
+    const sx = c.b.x - c.a.x, sy = c.b.y - c.a.y; const den = dir.x * sy - dir.y * sx; if (Math.abs(den) < 1e-9) continue;
+    const t = ((c.a.x - p.x) * sy - (c.a.y - p.y) * sx) / den, u = ((c.a.x - p.x) * dir.y - (c.a.y - p.y) * dir.x) / den;
+    if (t > 0 && t < bd && u >= 0 && u <= 1) { bd = t; best = { x: p.x + dir.x * t, y: p.y + dir.y * t }; }
+  }
+  return best;
 }
 
 /** Rectangle spanning p0–p1 and reaching `depth` outward (`from` metres off the face). */
@@ -171,10 +244,10 @@ export function autoWalks(world: World, zones: Zone[], aprons: Rect[]): Way[] {
  * v0.10: a lot, garage, rideshare lot, rental centre, bus station or hotel with no road at its edge lays its own
  * access drive to the nearest road (or the highway) within GROWTH.autoRoadReach. Generated, never saved.
  */
-export function autoRoads(world: World, zones: Zone[], aprons: Rect[], highwayY: number, siteW: number, reach: number): Way[] {
+export function autoRoads(world: World, zones: Zone[], aprons: Rect[], highwayY: number, siteW: number, reach: number, extra: Way[] = []): Way[] {
   const out: Way[] = [];
   // a curved road is a run of straight chords here: a drive can meet any of them
-  const roads = [...world.ways.filter(w => w.kind === 'road').flatMap(w => waySegs(w).map(([a, b]) => ({ ...w, a, b, c: undefined }))), { id: -1, kind: 'road' as const, a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY }, cls: 0, lanes: 6 }];
+  const roads = [...[...world.ways.filter(w => w.kind === 'road'), ...extra].flatMap(w => waySegs(w).map(([a, b]) => ({ ...w, a, b, c: undefined }))), { id: -1, kind: 'road' as const, a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY }, cls: 0, lanes: 6 }];
   const blocked = blocker(world, zones, aprons);
   const onSeg = (p: Pt, a: Pt, b: Pt): Pt => { const dx = b.x - a.x, dy = b.y - a.y; const L2 = dx * dx + dy * dy || 1; const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2)); return { x: a.x + dx * t, y: a.y + dy * t }; };
   for (const fac of zones.filter(z => NEEDS_ROAD.has(z.type))) {

@@ -9,6 +9,7 @@ import type { LItem } from './layout';
 import { Renderer3D } from './render3d';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
+import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
@@ -1125,13 +1126,23 @@ export class Renderer {
   drawCars(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom;
     if (z < 0.25) return;
+    const poses = carPoses(sim); const night = this.nightness(sim.t); const fine = z > 1.6;
     for (const c of sim.cars) {
-      if (c.stage === 'gone') continue;
-      const [x, y] = this.P(c.x, c.y);
-      g.save(); g.translate(x, y); g.scale(1, this.yScale); g.rotate(c.ang);
+      const ps = poses.get(c); if (!ps) continue;
+      const [x, y] = this.P(ps.x, ps.y);
+      if (x < -30 || y < -30 || x > this.W + 30 || y > this.H + 30) continue;
+      g.save(); g.translate(x, y); g.scale(1, this.yScale); g.rotate(ps.ang);
       const L = Math.max(3, 4.6 * z), W = Math.max(1.6, 2 * z);
-      g.fillStyle = c.pick ? PAL.ink : PAL.ink2;
-      g.fillRect(-L / 2, -W / 2 + (c.stage === 'queue' || c.stage === 'bay' ? 0 : W * 0.6), L, W); g.restore();
+      if (!fine) { g.fillStyle = c.pick ? PAL.ink : PAL.ink2; g.fillRect(-L / 2, -W / 2, L, W); }
+      else {
+        // a small car in plan: body, glass, and lights that mean something
+        g.fillStyle = 'rgba(40,36,30,0.18)'; g.fillRect(-L / 2 + 0.3 * z, -W / 2 + 0.3 * z, L, W);
+        g.fillStyle = CAR_COLS[c.id % CAR_COLS.length]; g.beginPath(); (g as CanvasRenderingContext2D & { roundRect: (...a: number[]) => void }).roundRect(-L / 2, -W / 2, L, W, 0.5 * z); g.fill();
+        g.fillStyle = 'rgba(30,34,40,0.75)'; g.fillRect(L * 0.05, -W * 0.4, L * 0.2, W * 0.8); g.fillRect(-L * 0.36, -W * 0.38, L * 0.14, W * 0.76);
+        if (ps.brake) { g.fillStyle = '#D2452F'; g.fillRect(-L / 2, -W / 2, 0.35 * z, W * 0.3); g.fillRect(-L / 2, W / 2 - W * 0.3, 0.35 * z, W * 0.3); }
+        if (night > 0.3 && ps.moving) { g.fillStyle = `rgba(255,236,170,${0.16 * night})`; g.beginPath(); g.moveTo(L / 2, -W / 2); g.lineTo(L / 2 + 9 * z, -W * 1.4); g.lineTo(L / 2 + 9 * z, W * 1.4); g.lineTo(L / 2, W / 2); g.closePath(); g.fill(); }
+      }
+      g.restore();
     }
   }
 

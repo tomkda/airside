@@ -57,6 +57,22 @@ function start(restored: Save | null) {
     if (sim.moneyOn && sim.money < 0) ui.toast('The airport is in debt. Cut costs or raise slot fees.', 'bad');
     ctl.save();
     if (ui.tab === 'report') ui.refresh(true);
+    ui.snd.dayEnd();
+  };
+
+  // v0.12 sound: a jet's roar as it starts its takeoff roll or touches down, by how near the view is
+  const jetState = new Map<number, string>();
+  const listen = () => {
+    const cam = ren.cam; const span = 900 / cam.zoom;
+    for (const f of sim.flights) {
+      const was = jetState.get(f.id); if (was === f.state) continue;
+      jetState.set(f.id, f.state);
+      if (was === undefined || ctl.speed > 16 || (f.state !== 'takeoff' && f.state !== 'roll')) continue;
+      const far = Math.hypot(f.x - cam.x, f.y - cam.y) / span;
+      ui.snd.jet(Math.max(0, Math.min(1, 1.3 - far * 0.6)) * Math.max(0.3, Math.min(1, cam.zoom / 0.6)), f.state === 'roll');
+    }
+    if (jetState.size > 400) for (const id of jetState.keys()) if (!sim.flights.some(f => f.id === id)) jetState.delete(id);
+    ui.snd.ambience(Math.min(1, sim.pax.length / 1500), Math.max(0, Math.min(1, (cam.zoom - 0.3) / 2)), ctl.paused);
   };
 
   let last = performance.now();
@@ -68,6 +84,7 @@ function start(restored: Save | null) {
     }
     ren.draw(sim);
     ui.hud();
+    listen();
     requestAnimationFrame(frame);
   };
   window.addEventListener('resize', () => ren.resize());

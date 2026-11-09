@@ -5,8 +5,8 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, ShopType, TenantId, SITES, GROWTH } from './config';
-import { autoFrontage, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
+import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
+import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
@@ -25,6 +25,8 @@ export interface Zone {
   site?: number;
   /** Generated, never saved: a curb grown by a road running along this terminal face (frontage.ts). */
   auto?: AutoTag;
+  /** v0.12: the id of the module stacked with this one (check-in over baggage claim): they move and go together. */
+  pair?: number;
 }
 /** A terminal site (v0.8): land allocated with New Terminal before its modules are laid out inside it. */
 export interface Site { id: number; x: number; y: number; w: number; h: number }
@@ -33,7 +35,9 @@ export interface Flow { w: number[]; n: number[]; s: number[] }
 export interface Runway { id: number; a: Pt; b: Pt }
 export type WayKind = 'taxi' | 'road' | 'walk';
 /** v0.11: a road may curve (`c` is the control point of a quadratic curve) and may be one-way, from a to b. */
-export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lanes: number; c?: Pt; oneway?: boolean }
+export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lanes: number; c?: Pt; oneway?: boolean;
+  /** Generated, never saved (v0.12): part of a hall's own forecourt, along its face or linking it to a road. */
+  fore?: 'face' | 'link' }
 export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[] }
 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [] });
@@ -51,6 +55,8 @@ export function migrateWorld(w: World): World {
     const f = z.flow;
     if (f && !(Array.isArray(f.w) && Array.isArray(f.n) && Array.isArray(f.s) && f.w.length === f.n.length && f.n.length === f.s.length)) delete z.flow;
   }
+  // v0.12: a hall's two halves point at each other; drop a pointer whose other half is gone.
+  for (const z of w.zones) if (z.pair !== undefined && !w.zones.some(q => q.id === z.pair && q.pair === z.id)) delete z.pair;
   // v0.11: roundabouts, and roads that may curve or run one way. Drop anything malformed.
   w.rounds = (Array.isArray(w.rounds) ? w.rounds : []).filter(r => r && isFinite(r.x) && isFinite(r.y) && (r.size === 0 || r.size === 1));
   for (const y of w.ways) {
@@ -361,9 +367,11 @@ export const runwayUsable = (r: RunwayInfo, w: Wind) => crosswind(r.heading, w) 
 // ------------------------------------------------------------ derive the generated layout
 export function derive(source: World): Derived {
   // Curbs grow where roads run along terminal faces (frontage.ts). Everything below sees them as ordinary zones.
-  const FR = autoFrontage(source);
+  // v0.12: first, a hall with no road along its face lays its own forecourt to the nearest road.
+  const runways = runwayInfos(source);
+  const fore = autoForecourt(source, buildGateAreas(source, runways, runwayWidth).aprons.map(a => a.rect), SITE.highwayY, SITE.width);
+  const FR = autoFrontage(source, fore);
   const world: World = { ...source, zones: [...source.zones, ...FR.curbs] };
-  const runways = runwayInfos(world);
   const units = new Map<number, Units>();
   const issues: Issue[] = [];
   const links: MissingLink[] = [];
@@ -571,7 +579,7 @@ export function derive(source: World): Derived {
   // ---- Road network: the highway plus player roads; curbs and lots attach where a road ends.
   const HY = SITE.highwayY;
   // v0.10: facilities with no road at their edge lay their own access drive
-  const laidRoads = autoRoads(world, zs, aprons.map(a => a.rect), HY, SITE.width, GROWTH.autoRoadReach);
+  const laidRoads = [...fore, ...autoRoads(world, zs, aprons.map(a => a.rect), HY, SITE.width, GROWTH.autoRoadReach, fore)];
   const roads = [...world.ways.filter(w => w.kind === 'road'), ...laidRoads];
   const roadSegs: NSeg[] = [{ a: { x: 0, y: HY }, b: { x: SITE.width, y: HY }, kind: 'hwy', cls: 0, ref: -1, lanes: 6 }];
   // v0.11: curves become chords, straight roads split where generated curbs begin and end (so cars can pull in
@@ -731,7 +739,7 @@ export function derive(source: World): Derived {
     }
   }
   for (const T of terminals) if (!T.active) issues.push({ level: 'error', text: `${T.name} is closed: ${T.problems.join('; ')}.` });
-  if (!has('curb')) issues.push({ level: 'error', text: 'No curb: run a road along the landside face of a terminal, 8–45 m out, and a curb grows there.' });
+  if (!has('curb')) issues.push({ level: 'error', text: `No curb: draw any road within ${FRONTAGE.reach} m of the hall and it lays its own forecourt, or run a road along its face yourself.` });
   const entry = [...byType('curb'), ...byType('checkin')];
   for (const lot of byType('parking')) if (entry.length && !entry.some(z => zoneReach(lot.id, z.id))) {
     issues.push({ level: 'warn', text: 'A parking lot has no sidewalk to the curb or terminal. Drivers will use the curb instead.', zoneId: lot.id });

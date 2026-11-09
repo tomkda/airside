@@ -8,6 +8,7 @@ import { Sim } from './src/sim';
 import { sampleWorld } from './src/sample';
 import { roadPlan } from './src/roads';
 import { isRingRef, wayLen } from './src/ways';
+import { carPoses } from './src/traffic';
 const run = (name, edit, days = 2) => {
   const sim = new Sim(sampleWorld(), 7); const w = sim.world;
   edit(w); sim.relayout(); sim.startDay();
@@ -15,10 +16,15 @@ const run = (name, edit, days = 2) => {
   const T = sim.d.terminals[0];
   console.log(name + ':', T.active ? 'Terminal 1 open' : 'Terminal 1 CLOSED (' + T.problems.join('; ') + ')', '| roundabouts', RP.rounds.map(r => r.entries.length + ' roads').join(', ') || 'none',
     '| curved', w.ways.filter(q => q.c).length, 'one-way', w.ways.filter(q => q.oneway).length, '| issues:', sim.d.issues.filter(i => i.level !== 'info').map(i => i.text));
-  let ring = 0, wrong = 0; const seen = new Set();
-  sim.onDayEnd = r => { const s = r.stats; console.log('  ' + r.label, '| flights', s.flights, 'pax', s.paxDep, 'missed', s.missed, 'stranded', s.stranded, '| cars round the ring', ring, '| wrong-way', wrong, '| sat', r.sat.toFixed(0)); ring = 0; };
+  let ring = 0, wrong = 0; const seen = new Set(); let pairsRaw = 0, pairsLane = 0, samples = 0;
+  sim.onDayEnd = r => { const s = r.stats; console.log('  ' + r.label, '| flights', s.flights, 'pax', s.paxDep, 'missed', s.missed, 'stranded', s.stranded, '| cars round the ring', ring, '| wrong-way', wrong, '| sat', r.sat.toFixed(0), r.stats && pairsRaw ? '| overlapping cars: ' + pairsRaw + ' on the centreline, ' + pairsLane + ' as drawn' : ''); ring = 0; pairsRaw = 0; };
+  const close = pts => { let n = 0; for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) if (Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y) < 3) n++; return n; };
   while (sim.day < days) {
     sim.step(0.25);
+    if (sim.day === 0) {   // v0.12: cars as drawn keep to lanes and hold a gap, so far fewer sit on top of each other
+      const mv = sim.cars.filter(c => c.stage === 'in' || c.stage === 'out' || c.stage === 'park'); const ps = carPoses(sim);
+      pairsRaw += close(mv); pairsLane += close(mv.map(c => ps.get(c)).filter(Boolean)); samples += mv.length;
+    }
     for (const c of sim.cars) if (!seen.has(c.id)) {
       seen.add(c.id);
       if (c.eids.some(e => e >= 0 && E[e] && isRingRef(E[e].ref))) ring++;
