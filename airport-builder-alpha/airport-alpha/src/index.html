@@ -1,0 +1,70 @@
+<title>Airport Builder</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>/*__CSS__*/</style>
+
+<div id="app">
+  <canvas id="view" aria-label="Airport map. Use the tools on the left to build."></canvas>
+
+  <header id="top">
+    <div class="chip brand"><b>LKS</b><span>Lakeshore Regional</span></div>
+    <div class="chip time">
+      <div><span id="date">Year 1 · Week 1</span><b id="clock" class="num">04:00</b></div>
+      <div class="day" aria-hidden="true"><i id="dayfill"></i></div>
+    </div>
+    <div class="chip seg" id="speed" role="group" aria-label="Simulation speed">
+      <button data-speed="0" aria-label="Pause" title="Pause (Space)"><svg viewBox="0 0 12 12"><rect x="2.5" y="2" width="2.4" height="8"/><rect x="7.1" y="2" width="2.4" height="8"/></svg></button>
+      <button data-speed="1" title="1 game minute per second">1×</button>
+      <button data-speed="4">4×</button>
+      <button data-speed="16">16×</button>
+      <button data-speed="60">60×</button>
+    </div>
+    <div class="chip wind" title="Wind. Aircraft land into the wind; runways close above 20 kt crosswind.">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><g id="windArrow"><path d="M10 3v13M10 16l-3.5-4M10 16l3.5-4" /></g></svg>
+      <div><b id="windText" class="num">250° 13 kt</b><span id="rwyText">Landing 27</span></div>
+    </div>
+    <div class="chip"><b id="money" class="num">$420.0M</b><span id="live" class="sub">0 in terminal</span></div>
+    <button class="chip" id="panelToggle" aria-label="Show panel">Panel</button>
+  </header>
+
+  <div id="left">
+  <nav id="tools" aria-label="Build tools"></nav>
+
+  <div id="levels" role="group" aria-label="Levels and view">
+    <span class="label">Level</span>
+    <button data-level="1" title="Level 1 · Departures (])"><b>L1</b><span>Departures</span></button>
+    <button data-level="0" title="Ground · Arrivals and apron ([)"><b>G</b><span>Arrivals · apron</span></button>
+    <hr>
+    <button id="view25" aria-pressed="false" title="Toggle 2.5D (T)"><b>2.5D</b><span>Massing</span></button>
+    <button id="heat" aria-pressed="false" title="Queue heatmap (H)"><b>Q</b><span>Queues · traffic</span></button>
+  </div>
+  </div>
+
+  <aside id="panel">
+    <div id="tabs" role="tablist">
+      <button data-tab="inspect" role="tab">Inspect</button>
+      <button data-tab="ops" role="tab">Operations</button>
+      <button data-tab="report" role="tab">Report</button>
+    </div>
+    <div id="panelBody"></div>
+  </aside>
+
+  <section id="check" aria-label="Design check">
+    <ul id="checkList"></ul>
+    <button id="checkToggle" class="ok"><span class="label">Design check</span> <b id="checkCount">OK</b></button>
+  </section>
+
+  <div id="titleblock" aria-hidden="true">
+    <b>LKS</b>
+    <span>LAKESHORE, LAKE COUNTY</span>
+    <span>43.1172° N 89.4486° W</span>
+    <span>ELEV 862 FT</span>
+  </div>
+
+  <div id="toolopts" hidden></div>
+  <div id="hint" role="status"></div>
+  <div id="toasts" aria-live="polite"></div>
+</div>
+<script>/*__JS__*/</script>
