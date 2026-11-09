@@ -178,6 +178,31 @@ export const TUNE = {
   curbFeePerCar: 3,
 };
 
+// ---------------------------------------------------------------- Frontage and terminal sites (v0.8)
+// Curbs grow wherever a road runs along a terminal face. ACRP Report 40 (Airport Curbside and Terminal Area
+// Roadway Operations, 2010) puts a curbside sidewalk plus loading lane at roughly 20–25 m from building face to the
+// first through lane; anything from minGap to maxGap is accepted so roads don't have to be drawn exactly.
+export const FRONTAGE = {
+  minGap: 8,               // m, building face to road edge: below this there's no room for a curb
+  maxGap: 45,              // m: beyond this the road isn't fronting the building any more
+  ideal: 20,               // m: the road tool's guide line sits this far out (plus half the road)
+  minLen: 30,              // m of shared frontage before a curb appears
+  ramp: 60,                // m of ramp either end of an upper deck
+  snap: 40,                // m: the road tool snaps to a frontage guide within this distance
+};
+export const SITES = {
+  minW: 80, minH: 60,      // smallest terminal site, m
+  reach: 120,              // m: a module can be placed this far outside its terminal's site; the site then grows
+  pad: 20,                 // m of site margin kept around a terminal's modules
+};
+/** Three levels of detail. The map switches between them with zoom; buttons and keys pick one directly. */
+export type Lod = 'airfield' | 'landside' | 'terminal';
+export const LOD = {
+  airfieldBelow: 0.3,      // zoom below which the map reads as the airfield diagram
+  terminalAbove: 1.1,      // zoom above which, over a terminal, the map opens that terminal
+  leaveTerminalBelow: 0.55,
+};
+
 // ---------------------------------------------------------------- Concourse commerce (v0.7)
 // Footfall, visibility and dwell scores per lot, tenants bidding for lots, walk-through duty free.
 export const COMMERCE = {

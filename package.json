@@ -1,6 +1,6 @@
 {
   "name": "airside",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Airside: airport builder / simulator, browser alpha",
   "type": "module",
@@ -13,7 +13,11 @@
     "shot": "node scripts/shot.cjs"
   },
   "devDependencies": {
+    "@types/three": "0.170.0",
     "esbuild": "0.25.0",
     "typescript": "5.6.3"
+  },
+  "dependencies": {
+    "three": "0.170.0"
   }
 }

@@ -16,20 +16,38 @@ npm test                  # all three sims
 
 CI runs the type-check, build and all three sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
-There is no server and no runtime dependency. The build is one self-contained HTML file (~185 KB).
+There is no server. The build is one self-contained HTML file (~750 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
 ## Controls
 
 | Action | Input |
 | --- | --- |
-| Tools | `V` select · `1` runway · `2` taxiway · `3` check-in · `4` security · `5` concourse · `6` bag claim · `7` curb · `8` parking · `R` road · `S` sidewalk · `X` demolish |
-| Pan / zoom | drag empty space (or Shift-drag, right-drag) · scroll wheel · pinch on touch |
+| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` check-in · `4` security · `5` concourse · `6` bag claim · `R` road · `7` curb · `8` parking · `S` sidewalk · `X` demolish |
+| Pan / zoom | drag empty space (or Shift-drag, right-drag) · scroll wheel · pinch on touch · in 3D: drag to orbit, right-drag to pan, scroll to zoom |
+| Detail | `A` airfield · `L` landside · `Enter` (or double-click a terminal) open a terminal · `Esc` step back out · zooming moves between them too |
 | Levels | `[` Ground · `]` Level 1 |
-| View | `T` 2.5D massing · `H` queue and road-congestion heatmap · `C` commercial heatmap (footfall and revenue per lot) |
+| View | `T` 3D view · `H` queue and road-congestion heatmap · `C` commercial heatmap (footfall and revenue per lot) |
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | drag a selected module to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.7)
+## What's in the alpha (v0.8)
+
+- **Three levels of detail (v0.8):** the map has three readings, and zooming moves between them.
+  - **Airfield:** runways, taxiways, aprons and aircraft, with each terminal as one block on its site. Zoom out past 0.3, or press `A`.
+  - **Landside:** roads, curbs, decks, parking and cars, with terminals as labelled modules. This is the middle zoom, or `L`.
+  - **Terminal:** one terminal opened up, with its fit-out, lots and passengers; everything outside its site steps back. Double-click a terminal, press `Enter`, or zoom in over it. `Esc` steps back out.
+  - Each tool belongs to a level. Picking it moves the map there: terminal modules open the nearest terminal, roads go to landside, runways to the airfield.
+- **New terminal first (v0.8):** a terminal starts as a site. Draw it with New terminal (`N`), which is free and just allocates the land. The map then opens it and hands you check-in. Modules placed in an open terminal belong to it, and its site grows to fit them (up to 120 m beyond its edge); a module can't go on another terminal's site. Demolishing a terminal removes its site and modules together. Old saves get a site around each existing terminal.
+- **Roads and terminals adapt to each other (v0.8, `src/frontage.ts`):**
+  - **Curbs grow by themselves.** Run a road along a terminal's landside face, anywhere from 8 to 45 m out, and a curb fills the gap. Move the road or the building and the curb follows; take the road away and the curb goes. The road tool shows a dashed "ROAD HERE → CURB" guide 20 m out (the curb depth ACRP Report 40 suggests) and snaps to it from up to 20 m away, so roads don't need to be drawn exactly.
+  - **Two-level frontage roads.** Where check-in on Level 1 sits over baggage claim on Ground along the same road, that stretch becomes an upper deck with ramps at each end. The departures curb is on the deck beside check-in and the arrivals curb is underneath beside claim. Drop-offs use the deck and pickups the lower curb, so departing passengers step straight into check-in.
+  - **Modules snap flush.** Drawing or moving a module snaps its edges to nearby modules on any level (within ~12 px), so check-in can stack exactly over claim and a concourse can butt against security without pixel-hunting.
+  - Hand-drawn curbs still work, for frontages a road can't reach.
+- **3D view (v0.8, `src/render3d.ts`):** `T` toggles a true 3D view of the same sim, built with three.js.
+  - Drag to orbit, right-drag to pan, scroll to zoom. Click to inspect; build tools draw on the ground or the current floor.
+  - Terminals are massing blocks. The open terminal shows glass walls with its floor plate, counters, lanes and lots inside.
+  - The upper deck stands on columns with ramps down to the road. Aircraft, cars and passengers move live, with sun shadows and night falling.
+- **Starting staff (v0.8):** 18 screeners (six lanes) instead of 15. With upstairs drop-off, departing passengers reach security sooner, and five lanes left the sample's peak with missed flights.
 
 - **Concourse commerce (v0.7, `src/commerce.ts`):** Phase 2 of the concourse interiors plan. Tenants now choose lots by what the plan and the passengers give them.
   - **Footfall:** the sim counts every departing passenger who walks past each lot's frontage, weighted by their spare time before boarding (45 spare minutes counts as one shopper; someone running for the gate counts for a tenth). Counts carry over from day to day, so a lot's footfall settles over two or three days. Until a concourse has been counted, lots use an estimate from the plan: the seats of the gates whose way from security runs past them.
@@ -71,6 +89,8 @@ There is no server and no runtime dependency. The build is one self-contained HT
 | `src/geom.ts` | Geometry helpers and seeded RNG |
 | `src/net.ts` | Generic line networks: split drawn segments into graphs; Dijkstra, all-pairs routing |
 | `src/gates.ts` | Gate slots on each side of a concourse, sized by taxiway clearance |
+| `src/frontage.ts` | Roads meeting terminals: curbs grown in the gap, two-level frontage roads, road guides |
+| `src/render3d.ts` | 3D view (three.js): orbit camera, massing, decks, opened terminal, moving aircraft, cars and people |
 | `src/bands.ts` | Concourse interiors: holdroom bands, spine, commercial lots and their visibility, restroom cores, the duty-free store |
 | `src/commerce.ts` | Lot scores (footfall, visibility, dwell) and tenant bidding, rent, re-letting |
 | `src/layout.ts` | Fit-out plans for check-in, security, claim and curbs |
@@ -86,7 +106,10 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
-- Roads are two-way with no one-way loops or signal timing; sidewalks are ground-level only (no elevated walkways yet).
+- Terminal sites are rectangles. A pier that reaches far out grows its site's bounding box rather than an L or T shape.
+- Curbs grow only where a road is parallel to a straight building face. Curved or angled frontages still need a hand-drawn curb. Cars reach the upper deck by its ramps, but drive under it in the plan until they pull in.
+- In 3D, modules are drawn and selected, but not moved by dragging (switch to plan with `T` to move one). Labels in 3D are terminal names only.
+- Roads are two-way with no one-way loops or signal timing; sidewalks are ground-level only (no elevated walkways yet). Parking lots don't lay their own sidewalk to the curb yet.
 - Departing bags are not simulated (arriving bags are).
 - Staff is a flat level all day; no shift curves.
 - One region and site; no international, transfer, rail, garages, rideshare lots or rental cars yet.

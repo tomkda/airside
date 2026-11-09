@@ -5,7 +5,8 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ShopType, TenantId } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ShopType, TenantId, SITES } from './config';
+import { autoFrontage, curbCuts, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES } from './gates';
 import { layoutZone, LItem } from './layout';
@@ -16,15 +17,21 @@ export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
   /** Concourses (v0.7): walk-through duty free at the security exit, who holds each lot, and the running footfall count. */
   dutyFree?: boolean; tenants?: Record<string, TenantId>; flow?: Flow;
+  /** v0.8: the terminal site this module belongs to. */
+  site?: number;
+  /** Generated, never saved: a curb grown by a road running along this terminal face (frontage.ts). */
+  auto?: AutoTag;
 }
+/** A terminal site (v0.8): land allocated with New Terminal before its modules are laid out inside it. */
+export interface Site { id: number; x: number; y: number; w: number; h: number }
 /** Footfall along a concourse's long axis, one entry per COMMERCE.binM: weighted passers, raw passers, and spare minutes summed. */
 export interface Flow { w: number[]; n: number[]; s: number[] }
 export interface Runway { id: number; a: Pt; b: Pt }
 export type WayKind = 'taxi' | 'road' | 'walk';
 export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lanes: number }
-export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number }
+export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[] }
 
-export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1 });
+export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [] });
 
 /** Bring older saves up to date. */
 export function migrateWorld(w: World): World {
@@ -39,7 +46,54 @@ export function migrateWorld(w: World): World {
     const f = z.flow;
     if (f && !(Array.isArray(f.w) && Array.isArray(f.n) && Array.isArray(f.s) && f.w.length === f.n.length && f.n.length === f.s.length)) delete z.flow;
   }
+  // v0.8: terminals live on sites. Older saves get one site around each group of touching terminal modules.
+  w.zones = w.zones.filter(z => z.id > 0);
+  for (const z of w.zones) delete z.auto;
+  if (!Array.isArray(w.sites)) {
+    w.sites = [];
+    for (const g of groupModules(w.zones)) {
+      const id = w.nextId++;
+      w.sites.push({ id, ...padRect(bboxOf(g), SITES.pad) });
+      for (const z of g) z.site = id;
+    }
+  }
+  w.sites = w.sites.filter(st => st && isFinite(st.x) && isFinite(st.w) && st.w > 0 && st.h > 0);
+  for (const z of w.zones) if (z.site !== undefined && !w.sites.some(st => st.id === z.site)) delete z.site;
   return w;
+}
+
+const TERMINAL_TYPES = new Set<ZoneType>(['checkin', 'security', 'concourse', 'claim']);
+export const isTerminalModule = (z: Zone) => TERMINAL_TYPES.has(z.type);
+export const bboxOf = (zs: Rect[]): Rect => {
+  const x0 = Math.min(...zs.map(z => z.x)), y0 = Math.min(...zs.map(z => z.y));
+  return { x: x0, y: y0, w: Math.max(...zs.map(z => z.x + z.w)) - x0, h: Math.max(...zs.map(z => z.y + z.h)) - y0 };
+};
+export const padRect = (r: Rect, k: number): Rect => ({ x: r.x - k, y: r.y - k, w: r.w + 2 * k, h: r.h + 2 * k });
+/** Terminal modules that touch or overlap (on any level) form one building. */
+function groupModules(zones: Zone[]): Zone[][] {
+  const ms = zones.filter(isTerminalModule);
+  const par = ms.map((_, i) => i);
+  const root = (i: number): number => (par[i] === i ? i : (par[i] = root(par[i])));
+  for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++)
+    if (rectsOverlap(padRect(ms[i], 1.5), ms[j])) par[root(i)] = root(j);
+  const g = new Map<number, Zone[]>();
+  ms.forEach((z, i) => g.set(root(i), [...(g.get(root(i)) ?? []), z]));
+  return [...g.values()];
+}
+
+/** The site a module belongs to: its own, else the one it sits in. */
+export function siteOf(world: World, z: Rect & { site?: number }): Site | undefined {
+  const own = z.site !== undefined ? world.sites?.find(st => st.id === z.site) : undefined;
+  if (own) return own;
+  const c = center(z);
+  return world.sites?.find(st => inRect(c, st));
+}
+/** Grow a site so it keeps SITES.pad of margin around everything assigned to it. */
+export function fitSite(world: World, st: Site) {
+  const mine = world.zones.filter(z => z.site === st.id);
+  if (!mine.length) return;
+  const r = padRect(bboxOf([st, ...mine.map(z => padRect(z, SITES.pad))]), 0);
+  st.x = r.x; st.y = r.y; st.w = r.w; st.h = r.h;
 }
 
 export interface RunwayInfo {
@@ -84,6 +138,7 @@ export interface Shop {
 export interface Terminal {
   id: number; name: string; zones: Zone[]; active: boolean; problems: string[]; bbox: Rect;
   gateAreas: number; gates: number; shops: number;
+  site?: Site;
 }
 
 export interface Derived {
@@ -96,6 +151,8 @@ export interface Derived {
   gateSlots: GateSlot[]; gateGuides: SideGuide[];
   lease: Map<number, Units>; budgets: Map<number, Budget>;
   longest: number; maxCls: number; coverage: number;
+  /** v0.8: every zone, including curbs grown along roads; upper road decks; road guides along terminal faces. */
+  zones: Zone[]; decks: DeckSpan[]; frontGuides: FrontGuide[];
   zoneAt(p: Pt, lv: Level): Zone | undefined;
   pedRoute(p: Pt, lv: Level, q: Pt, lvq: Level): Route | null;
   zoneReach(a: number, b: number): boolean;
@@ -254,7 +311,10 @@ export function windSamples(): Wind[] {
 export const runwayUsable = (r: RunwayInfo, w: Wind) => crosswind(r.heading, w) <= TUNE.crosswindLimit;
 
 // ------------------------------------------------------------ derive the generated layout
-export function derive(world: World): Derived {
+export function derive(source: World): Derived {
+  // Curbs grow where roads run along terminal faces (frontage.ts). Everything below sees them as ordinary zones.
+  const FR = autoFrontage(source);
+  const world: World = { ...source, zones: [...source.zones, ...FR.curbs] };
   const runways = runwayInfos(world);
   const units = new Map<number, Units>();
   const issues: Issue[] = [];
@@ -285,7 +345,7 @@ export function derive(world: World): Derived {
     shops.set(z.id, C.shops); budgets.set(z.id, C.budget); bandItems.set(z.id, C.items);
   }
   // ---- Tenants bid for the lots by footfall, visibility, dwell and position (see commerce.ts); best lots lease first.
-  letLots(world, shops, budgets);
+  letLots(source, shops, budgets);
   for (const [id, list] of shops) {
     const z = world.zones.find(q => q.id === id)!; const n = list.length;
     lease.set(id, { max: n, count: n ? clamp(z.leased ?? Math.ceil(n * 0.4), 1, n) : 0 });
@@ -456,7 +516,13 @@ export function derive(world: World): Derived {
   const HY = SITE.highwayY;
   const roads = world.ways.filter(w => w.kind === 'road');
   const roadSegs: NSeg[] = [{ a: { x: 0, y: HY }, b: { x: SITE.width, y: HY }, kind: 'hwy', cls: 0, ref: -1, lanes: 6 }];
-  for (const w of roads) roadSegs.push({ a: w.a, b: w.b, kind: 'road', cls: 0, ref: w.id, lanes: w.lanes });
+  const cuts = curbCuts(FR.curbs, roads);
+  for (const w of roads) {
+    // split where generated curbs begin and end, so cars can pull in along the frontage
+    const al = norm(sub(w.b, w.a));
+    const pts = [w.a, ...(cuts.get(w.id) ?? []).sort((p, q) => dot(sub(p, w.a), al) - dot(sub(q, w.a), al)), w.b];
+    for (let i = 0; i + 1 < pts.length; i++) if (dist(pts[i], pts[i + 1]) > 1) roadSegs.push({ a: pts[i], b: pts[i + 1], kind: 'road', cls: 0, ref: w.id, lanes: w.lanes });
+  }
   for (const w of roads) for (const e of [w.a, w.b]) {
     const dy = Math.abs(e.y - HY);
     if (dy > 4 && dy <= 20) roadSegs.push({ a: e, b: { x: e.x, y: HY }, kind: 'road', cls: 0, ref: w.id, lanes: w.lanes });
@@ -465,7 +531,9 @@ export function derive(world: World): Derived {
   const hwyEnds = [nearestNode(road, { x: 0, y: HY }, 5), nearestNode(road, { x: SITE.width, y: HY }, 5)];
   const attach = new Map<number, number[]>();
   for (const z of zs) if (z.type === 'curb' || z.type === 'parking') {
-    const ns: number[] = []; road.nodes.forEach((p, i) => { if (inRect(p, z, 3)) ns.push(i); });
+    // generated curbs attach to the road nodes along their outer edge; drawn ones to roads that end at them
+    const reach = z.auto ? z.auto.gap + 12 : 3;
+    const ns: number[] = []; road.nodes.forEach((p, i) => { if (inRect(p, z, reach) && (!z.auto || road.adj[i].some(e => road.edges[e].ref === z.auto!.road))) ns.push(i); });
     attach.set(z.id, ns);
   }
   const djH = dijkstra(road, hwyEnds.filter(n => n >= 0).map(n => ({ n, c: 0 })));
@@ -486,13 +554,23 @@ export function derive(world: World): Derived {
   const unite = (ids: number[]) => { const t = ids.filter(id => tParent.has(id)); for (let k = 1; k < t.length; k++) tParent.set(tRoot(t[k]), tRoot(t[0])); };
   for (let i = 0; i < wOff; i++) unite(ped[i].zones);
   for (const [a, b] of vpairs) unite([...ped[a].zones, ...ped[b].zones]);
-  const groups = new Map<number, Zone[]>();
-  for (const z of zs) if (tParent.has(z.id)) { const r = tRoot(z.id); groups.set(r, [...(groups.get(r) ?? []), z]); }
-  const terminals: Terminal[] = [...groups.values()].sort((a, b) => Math.min(...a.map(z => z.id)) - Math.min(...b.map(z => z.id))).map((g, i) => {
-    const x0 = Math.min(...g.map(z => z.x)), y0 = Math.min(...g.map(z => z.y));
-    const x1 = Math.max(...g.map(z => z.x + z.w)), y1 = Math.max(...g.map(z => z.y + z.h));
-    return { id: i + 1, name: `Terminal ${i + 1}`, zones: g, active: false, problems: [], bbox: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, gateAreas: 0, gates: 0, shops: 0 };
-  });
+  // v0.8: a terminal is a site and the modules on it. Modules on no site (old saves) group by touching, as before.
+  const sites = world.sites ?? [];
+  const groups = new Map<string, { zones: Zone[]; site?: Site }>();
+  for (const st of sites) groups.set(`s${st.id}`, { zones: [], site: st });
+  // a module on no site joins the site of whatever it connects to on foot
+  const rootSite = new Map<number, Site>();
+  for (const z of zs) if (tParent.has(z.id)) { const st = siteOf(world, z); if (st && !rootSite.has(tRoot(z.id))) rootSite.set(tRoot(z.id), st); }
+  for (const z of zs) if (tParent.has(z.id)) {
+    const st = siteOf(world, z) ?? rootSite.get(tRoot(z.id));
+    const k = st ? `s${st.id}` : `c${tRoot(z.id)}`;
+    const g = groups.get(k) ?? { zones: [] }; g.zones.push(z); groups.set(k, g);
+  }
+  const order = (g: { zones: Zone[]; site?: Site }) => g.site ? g.site.id : Math.min(...g.zones.map(z => z.id));
+  const terminals: Terminal[] = [...groups.values()].sort((a, b) => order(a) - order(b)).map((g, i) => ({
+    id: i + 1, name: `Terminal ${i + 1}`, zones: g.zones, active: false, problems: [], site: g.site,
+    bbox: g.site ? { x: g.site.x, y: g.site.y, w: g.site.w, h: g.site.h } : bboxOf(g.zones), gateAreas: 0, gates: 0, shops: 0,
+  }));
   const termOf = new Map<number, Terminal>();
   for (const T of terminals) for (const z of T.zones) termOf.set(z.id, T);
   const roadCurbs = zs.filter(z => z.type === 'curb' && roadOK.has(z.id));
@@ -508,6 +586,7 @@ export function derive(world: World): Derived {
     const tg = gates.filter(g => T.zones.includes(g.zone));
     T.gateAreas = ga.length; T.gates = tg.length; T.shops = ga.reduce((n, z) => n + (shops.get(z.id)?.length ?? 0), 0);
     const missing: string[] = [];
+    if (!T.zones.length) { T.problems.push('an empty site: open it and lay out check-in, security, a concourse and baggage claim'); T.active = false; continue; }
     if (!ci.length) missing.push('check-in'); if (!sec.length) missing.push('security');
     if (!ga.length) missing.push('a concourse'); if (!cl.length) missing.push('baggage claim');
     if (missing.length) {
@@ -578,7 +657,7 @@ export function derive(world: World): Derived {
     }
   }
   for (const T of terminals) if (!T.active) issues.push({ level: 'error', text: `${T.name} is closed: ${T.problems.join('; ')}.` });
-  if (!has('curb')) issues.push({ level: 'error', text: 'No curb: cars cannot drop off or pick up.' });
+  if (!has('curb')) issues.push({ level: 'error', text: 'No curb: run a road along the landside face of a terminal, 8–45 m out, and a curb grows there.' });
   const entry = [...byType('curb'), ...byType('checkin')];
   for (const lot of byType('parking')) if (entry.length && !entry.some(z => zoneReach(lot.id, z.id))) {
     issues.push({ level: 'warn', text: 'A parking lot has no sidewalk to the curb or terminal. Drivers will use the curb instead.', zoneId: lot.id });
@@ -604,6 +683,7 @@ export function derive(world: World): Derived {
     runways, aprons, gates, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
+    zones: zs, decks: FR.decks, frontGuides: FR.guides,
   };
 }
 

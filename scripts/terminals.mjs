@@ -24,6 +24,16 @@ Z('concourse', 1, 2400, 2620, 400, 80, { cls: 1 }); sim.relayout(); sim.startDay
 Z('concourse', 1, 4600, 2620, 300, 80, { cls: 2 }); sim.relayout(); show('lone gate area:');
 console.log('stranded reasons:', JSON.stringify([...st.entries()]));
 while (sim.day < d0 + 3) sim.step(0.25);
+// v0.8 frontage: curbs grow from the road along Terminal 1's face; the road's offset decides.
+const front = w.ways.find(x => x.kind === 'road' && x.a.y === 2898 && x.b.y === 2898);
+const curbs = () => sim.d.zones.filter(z => z.auto && sim.d.termOf.get(z.auto.module)?.id === 1).map(z => (z.level ? 'L1 ' : 'G ') + z.auto.deck).join(', ') || 'none';
+const t1 = () => (sim.d.terminals[0].active ? 'open' : 'closed: ' + sim.d.terminals[0].problems.join('; ')) + ' | decks ' + sim.d.decks.length;
+const sideA = w.ways.find(x => x.kind === 'road' && x.a.x === front.a.x && x.b.y === 2898), sideB = w.ways.find(x => x.kind === 'road' && x.a.x === front.b.x && x.a.y === 2898);
+const at = y => { front.a.y = front.b.y = y; sideA.b.y = y; sideB.a.y = y; sim.relayout(); };
+console.log('frontage 20 m:', curbs(), '|', t1());
+at(2920); console.log('frontage 42 m:', curbs(), '|', t1());
+at(2960); console.log('frontage 82 m:', curbs(), '|', t1());
+at(2898); console.log('frontage back:', curbs(), '|', t1());
 `;
 const dir = mkdtempSync(join(tmpdir(), 'term-')); const out = join(dir, 'run.mjs');
 await build({ stdin: { contents: entry, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', outfile: out, logLevel: 'error' });

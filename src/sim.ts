@@ -89,7 +89,7 @@ export class Sim {
   money = TUNE.startMoney;
   moneyOn = true;
   slotPrice = TUNE.refSlotPrice;
-  staff = { agents: 14, screeners: 15, handlers: 16 };
+  staff = { agents: 14, screeners: 18, handlers: 16 };
   rep = 1.0;
   flights: Flight[] = [];
   pax: Pax[] = [];
@@ -146,7 +146,7 @@ export class Sim {
     this.roadLoad = new Float32Array(this.d.road.edges.length);
     const keep = new Map(this.procs);
     this.procs.clear();
-    for (const z of this.world.zones) {
+    for (const z of this.d.zones) {
       if (!['checkin', 'security', 'claim', 'curb'].includes(z.type)) continue;
       const old = keep.get(z.id);
       const frame = this.d.frames.get(z.id)!;
@@ -193,7 +193,7 @@ export class Sim {
     this.lotUsed = Math.min(this.lotUsed, this.lotCapacity());
   }
 
-  lotCapacity() { return this.world.zones.filter(z => z.type === 'parking').reduce((s, z) => s + unitsOf(this.d, z), 0); }
+  lotCapacity() { return this.d.zones.filter(z => z.type === 'parking').reduce((s, z) => s + unitsOf(this.d, z), 0); }
 
   /** Staff go where today's passengers are: each terminal's share of departing passengers, split by desk count inside it. */
   allocateStaff() {
@@ -725,11 +725,14 @@ export class Sim {
       case 'curb': {
         const party = p.party;
         const fixed = party.curb ? this.procs.get(party.curb.id) : undefined;
-        const cands = fixed ? [fixed] : [...this.procs.values()].filter(q => q.type === 'curb');
+        // pickups use the arrivals deck where a frontage road has two levels
+        const all = [...this.procs.values()].filter(q => q.type === 'curb');
+        const arr = all.filter(q => q.zone.auto?.deck !== 'dep');
+        const cands = fixed ? [fixed] : arr.length ? arr : all;
         let roadRoute: Route | null = null, anyRoute: Route | null = null, rz: Proc | undefined, az: Proc | undefined;
         for (const proc of cands) {
           const f = proc.frame;
-          const r = go(add(add(f.a, mul(f.along, f.edgeLen * (0.08 + this.r() * 0.84))), mul(f.inward, 3)), 0);
+          const r = go(add(add(f.a, mul(f.along, f.edgeLen * (0.08 + this.r() * 0.84))), mul(f.inward, 3)), proc.zone.level);
           if (!r) continue;
           if (this.d.roadOK.has(proc.zone.id) && (!roadRoute || r.len < roadRoute.len)) { roadRoute = r; rz = proc; }
           if (!anyRoute || r.len < anyRoute.len) { anyRoute = r; az = proc; }
@@ -821,7 +824,7 @@ export class Sim {
     if (p.stage !== 'done') { p.steps.shift(); p.stage = 'walk'; this.advance(p); }
   }
 
-  hasType(t: ZoneType) { return this.world.zones.some(z => z.type === t); }
+  hasType(t: ZoneType) { return this.d.zones.some(z => z.type === t); }
 
   stall(lot: Zone): Pt {
     const cols = Math.max(1, Math.floor((lot.w - 16) / 6)), rows = Math.max(1, Math.floor((lot.h - 16) / 14));
@@ -1010,20 +1013,22 @@ export class Sim {
   }
   hwyEnd() { const [w, e] = this.d.hwyEnds; return this.r() < 0.8 ? (e >= 0 ? e : w) : (w >= 0 ? w : e); }
 
-  lotsByRoad() { return this.world.zones.filter(z => z.type === 'parking' && this.d.roadOK.has(z.id)); }
+  lotsByRoad() { return this.d.zones.filter(z => z.type === 'parking' && this.d.roadOK.has(z.id)); }
 
   /** Departing party arrives: park if they planned to and a lot works, otherwise get dropped at a curb. */
   arriveByCar(party: Party) {
     if (party.mode === 'park') {
       const PT = this.termOf(party.flight);
-      const entry = this.world.zones.filter(z => (z.type === 'checkin' || z.type === 'security') && this.inTerm(z, PT));
+      const entry = this.d.zones.filter(z => (z.type === 'checkin' || z.type === 'security') && this.inTerm(z, PT));
       const lot = this.lotsByRoad().find(l => entry.some(z => this.d.zoneReach(l.id, z.id)));
       if (lot && this.driveToLot(party, lot)) return;
       party.mode = 'curb'; this.lotUsed = Math.max(0, this.lotUsed - 1);
     }
     const T = this.termOf(party.flight);
-    const target = this.world.zones.filter(z => (z.type === 'checkin' || z.type === 'security') && this.inTerm(z, T));
-    const curbs = [...this.procs.values()].filter(p => p.type === 'curb' && this.d.roadOK.has(p.zone.id));
+    const target = this.d.zones.filter(z => (z.type === 'checkin' || z.type === 'security') && this.inTerm(z, T));
+    const curbs0 = [...this.procs.values()].filter(p => p.type === 'curb' && this.d.roadOK.has(p.zone.id));
+    // drop-offs use the departures deck where a frontage road has two levels
+    const curbs = curbs0.some(c => c.zone.auto?.deck !== 'arr') ? curbs0.filter(c => c.zone.auto?.deck !== 'arr') : curbs0;
     const good = curbs.filter(c => target.some(z => this.d.zoneReach(c.zone.id, z.id)));
     const pool = good.length ? good : curbs;
     const curb = pool.reduce<Proc | undefined>((m, c) => (!m || (c.cars!.length / Math.max(1, c.maxServers)) < (m.cars!.length / Math.max(1, m.maxServers)) ? c : m), undefined);
@@ -1150,7 +1155,7 @@ export class Sim {
         const curb = c.curb!; curb.bays![c.bay] = null;
         if (c.pick) { for (const p of c.party.pax) this.finishPax(p); }
         else for (const p of c.party.pax) {
-          p.x = c.x + (this.r() - .5) * 3; p.y = c.y + (this.r() - .5) * 3; p.level = 0; p.since = t;
+          p.x = c.x + (this.r() - .5) * 3; p.y = c.y + (this.r() - .5) * 3; p.level = curb.zone.level; p.since = t;
           this.pax.push(p); this.advance(p);
         }
         const r = this.exitRoute({ x: c.x, y: c.y }, curb.zone.id, c.entry);

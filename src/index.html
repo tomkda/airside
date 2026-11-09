@@ -33,11 +33,18 @@
   <nav id="tools" aria-label="Build tools"></nav>
 
   <div id="levels" role="group" aria-label="Levels and view">
+    <span class="label">View</span>
+    <button data-lod="airfield" title="Airfield: runways, taxiways, terminals as blocks (A)"><b>A</b><span>Airfield</span></button>
+    <button data-lod="landside" title="Landside: roads, curbs, parking (L)"><b>L</b><span>Landside</span></button>
+    <button data-lod="terminal" title="Open a terminal: its fit-out and passengers (Enter)"><b>T</b><span>Terminal</span></button>
+    <div class="levels">
+    <hr>
     <span class="label">Level</span>
     <button data-level="1" title="Level 1 · Departures (])"><b>L1</b><span>Departures</span></button>
     <button data-level="0" title="Ground · Arrivals and apron ([)"><b>G</b><span>Arrivals · apron</span></button>
+    </div>
     <hr>
-    <button id="view25" aria-pressed="false" title="Toggle 2.5D (T)"><b>2.5D</b><span>Massing</span></button>
+    <button id="view3d" aria-pressed="false" title="Toggle 3D (T): drag to orbit, right-drag to pan"><b>3D</b><span>Orbit</span></button>
     <button id="heat" aria-pressed="false" title="Queue heatmap (H)"><b>Q</b><span>Queues · traffic</span></button>
     <button id="commerce" aria-pressed="false" title="Commercial heatmap (C)"><b>C</b><span>Footfall · revenue</span></button>
   </div>
