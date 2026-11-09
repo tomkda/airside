@@ -2,12 +2,13 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH } from './config';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind } from './config';
 import type { Sim, Flight } from './sim';
 import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
 import type { LItem } from './layout';
 import { Renderer3D } from './render3d';
 import { scenery } from './scenery';
+import { roadPlan } from './roads';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -41,6 +42,7 @@ export class Renderer {
   /** v0.8: a true 3D view with an orbiting camera (render3d.ts), made on first use. */
   mode3d = false;
   r3?: Renderer3D;
+  weather: WeatherKind = 'clear';
   /** v0.9 feedback: modules pulse as they appear, and what you spent floats up from where you built. */
   private born = new Map<number, number>(); private knownIds: Set<number> | null = null; private dSeen: unknown = null;
   private floaters: { text: string; p: Pt; z: number; t0: number; color: string }[] = [];
@@ -138,6 +140,7 @@ export class Renderer {
     if (this.mode3d && this.r3) {
       g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); g.clearRect(0, 0, this.W, this.H);
       this.r3.draw(sim, this.nightness(sim.t));
+      if (this.weather !== 'fog') this.drawWeather(sim);
       this.drawFloaters();
       return;
     }
@@ -176,6 +179,7 @@ export class Renderer {
       g.save(); g.globalCompositeOperation = 'multiply'; g.fillStyle = `rgba(70,78,118,${0.42 * n})`; g.fillRect(0, 0, this.W, this.H); g.restore();
       this.drawLights(sim, n);
     }
+    this.drawWeather(sim);
     if (this.cam.zoom > 0.1) this.drawSheet();
     this.drawFloaters();
   }
@@ -231,46 +235,79 @@ export class Renderer {
     }
   }
 
-  // ------------------------------------------------------------ roads (vehicles): asphalt, lane markings, kerb lines
+  // ------------------------------------------------------------ roads (vehicles), drawn from roads.ts
+  curve(k: { p1: Pt; c: Pt; p2: Pt }, wM: number, color: string, minPx = 1) {
+    const g = this.ctx; g.strokeStyle = color; g.lineWidth = Math.max(minPx, wM * this.cam.zoom); g.lineCap = 'butt';
+    const [x1, y1] = this.P(k.p1.x, k.p1.y), [cx, cy] = this.P(k.c.x, k.c.y), [x2, y2] = this.P(k.p2.x, k.p2.y);
+    g.beginPath(); g.moveTo(x1, y1); g.quadraticCurveTo(cx, cy, x2, y2); g.stroke();
+  }
   drawRoads(sim: Sim) {
-    const g = this.ctx; const z = this.cam.zoom;
-    const HY = SITE.highwayY;
-    const hwy = { a: { x: 0, y: HY }, b: { x: SITE.width, y: HY }, w: 24, lanes: 6, id: -1 };
-    const roads = [hwy, ...[...sim.world.ways, ...sim.d.autoRoads].filter(w => w.kind === 'road').map(w => ({ a: w.a, b: w.b, w: wayWidth('road', 0, w.lanes), lanes: w.lanes, id: w.id }))];
+    const g = this.ctx; const z = this.cam.zoom; const HY = SITE.highwayY;
+    const RP = roadPlan(sim.d); const far = this.lod === 'airfield';
+    const VERGE = 'rgba(150,158,118,0.28)', KERB = '#8A8375', ASPHALT = '#9C968A', HWY = '#948E83', LINE = '#F1EBDC', YEL = '#D9B24C';
     g.lineJoin = 'round';
-    // kerb (darker, slightly wider) then asphalt
-    if (this.lod === 'airfield') g.globalAlpha = 0.55;
-    for (const r of roads) this.line(r.a, r.b, r.w + 2, PAL.roadEdge, 0, 'round', 1.6);
-    for (const r of roads) this.line(r.a, r.b, r.w, PAL.road, 0, 'round', 1);
+    if (far) g.globalAlpha = 0.55;
+    // grass verge, kerb, asphalt: segments, then the turning curves and ramps that round every junction
+    if (!far && z > 0.3) { for (const s of RP.segs) this.line(s.a, s.b, s.w + (s.hwy ? 14 : 9), VERGE, 0, 'round', 2); for (const k of RP.ramps) this.curve(k, k.w + 9, VERGE, 2); }
+    for (const s of RP.segs) this.line(s.a, s.b, s.w + 1.6, KERB, 0, 'round', 1.6);
+    for (const k of [...RP.turns, ...RP.ramps]) this.curve(k, k.w + 1.6, KERB, 1.6);
+    for (const s of RP.segs) this.line(s.a, s.b, s.w, s.hwy ? HWY : ASPHALT, 0, 'round', 1);
+    for (const k of [...RP.turns, ...RP.ramps]) this.curve(k, k.w, ASPHALT, 1);
     g.globalAlpha = 1;
     // congestion overlay
-    if (this.overlay) {
-      for (const e of sim.d.road.edges) {
-        const x = sim.edgeLoadRatio(e.id); if (x < 0.25) continue;
-        const col = x < 0.5 ? 'rgba(194,133,46,0.55)' : x < 1 ? 'rgba(194,96,46,0.7)' : 'rgba(176,71,43,0.85)';
-        this.line(sim.d.road.nodes[e.u], sim.d.road.nodes[e.v], e.kind === 'hwy' ? 24 : wayWidth('road', 0, e.lanes), col, 0, 'round', 2);
-      }
+    if (this.overlay) for (const e of sim.d.road.edges) {
+      const x = sim.edgeLoadRatio(e.id); if (x < 0.25) continue;
+      const col = x < 0.5 ? 'rgba(194,133,46,0.55)' : x < 1 ? 'rgba(194,96,46,0.7)' : 'rgba(176,71,43,0.85)';
+      this.line(sim.d.road.nodes[e.u], sim.d.road.nodes[e.v], e.kind === 'hwy' ? 24 : wayWidth('road', 0, e.lanes), col, 0, 'round', 2);
     }
-    // markings
-    if (z > 0.35 && this.lod !== 'airfield') {
-      for (const r of roads) {
-        const n = norm({ x: -(r.b.y - r.a.y), y: r.b.x - r.a.x });
-        if (r.lanes >= 4) {
-          for (const s of [-0.6, 0.6]) this.line(add(r.a, mul(n, s)), add(r.b, mul(n, s)), 0.35, PAL.roadLine, 0, 'butt', 0.6);
-          g.setLineDash([Math.max(2, 4 * z), Math.max(3, 7 * z)]);
-          const k = r.w / 4;
-          for (const s of [-k, k]) this.line(add(r.a, mul(n, s)), add(r.b, mul(n, s)), 0.25, PAL.roadLine, 0, 'butt', 0.5);
-          g.setLineDash([]);
-        } else {
-          g.setLineDash([Math.max(2, 4 * z), Math.max(3, 7 * z)]);
-          this.line(r.a, r.b, 0.3, PAL.roadLine, 0, 'butt', 0.6);
-          g.setLineDash([]);
+    if (z > 0.35 && !far) {
+      const dash = [Math.max(2, 3 * z), Math.max(3, 6 * z)];
+      for (const s of RP.segs) {
+        const L = dist(s.a, s.b); const dv = norm(sub(s.b, s.a)); const n = { x: -dv.y, y: dv.x };
+        const a = add(s.a, mul(dv, s.trimA)), b = add(s.a, mul(dv, L - s.trimB)); if (L - s.trimA - s.trimB < 2) continue;
+        const off = (p: Pt, k: number) => add(p, mul(n, k));
+        // edge lines
+        for (const k of [-1, 1]) this.line(off(a, k * (s.w / 2 - 0.5)), off(b, k * (s.w / 2 - 0.5)), 0.18, LINE, 0, 'butt', 0.5);
+        if (s.hwy) {   // three lanes each way either side of a barrier
+          this.line(s.a, s.b, 1.2, '#7F7A70', 0, 'butt', 1); this.line(s.a, s.b, 0.3, '#CFC8BA', 0, 'butt', 0.5);
+          g.setLineDash(dash); for (const k of [-8, -4.4, 4.4, 8]) this.line(off(s.a, k), off(s.b, k), 0.18, LINE, 0, 'butt', 0.5); g.setLineDash([]);
+        } else if (s.lanes >= 4) {
+          g.setLineDash(dash); for (const k of [-1, 1]) this.line(off(a, k * s.w / 4), off(b, k * s.w / 4), 0.18, LINE, 0, 'butt', 0.5); g.setLineDash([]);
+          for (const k of [-1.1, 1.1]) this.line(off(a, k), off(b, k), 0.16, YEL, 0, 'butt', 0.5);
+        } else { g.setLineDash(dash); this.line(a, b, 0.2, YEL, 0, 'butt', 0.6); g.setLineDash([]); }
+      }
+      // planted medians, with a tree every 14 m
+      for (const m of RP.medians) {
+        this.line(m.a, m.b, 1.9, '#8A8375', 0, 'round', 1.2); this.line(m.a, m.b, 1.5, '#B5BD92', 0, 'round', 1);
+        if (z > 0.8) { const L = dist(m.a, m.b); g.fillStyle = 'rgba(96,112,72,0.7)'; g.beginPath(); for (let u = 5; u < L - 3; u += 14) { const p = lerp2(m.a, m.b, u / L); const [x, y] = this.P(p.x, p.y); g.moveTo(x + 1.6 * z, y); g.arc(x, y, 1.6 * z, 0, Math.PI * 2); } g.fill(); }
+      }
+      if (z > 0.55) for (const st of RP.stops) this.line(st.a, st.b, 0.5, LINE, 0, 'butt', 1);
+      if (z > 1) for (const ar of RP.arrows) this.arrow(ar.p, ar.ang, ar.kind, LINE);
+      // gate plazas: booths and barrier arms, IN on the right as you arrive
+      if (z > 0.45) for (const gt of RP.gates) {
+        const n = { x: -gt.dir.y, y: gt.dir.x }; const c = add(gt.p, mul(gt.dir, 3));
+        this.poly([add(gt.p, mul(n, -6)), add(gt.p, mul(n, 6)), add(add(gt.p, mul(n, 6)), mul(gt.dir, 9)), add(add(gt.p, mul(n, -6)), mul(gt.dir, 9))], ASPHALT);
+        this.poly([add(c, mul(n, -0.9)), add(c, mul(n, 0.9)), add(add(c, mul(n, 0.9)), mul(gt.dir, 3)), add(add(c, mul(n, -0.9)), mul(gt.dir, 3))], PAL.ink2);
+        for (const k of [-1, 1]) this.line(add(c, mul(n, k * 0.9)), add(c, mul(n, k * 4.6)), 0.35, PAL.bad, 0, 'butt', 1.2);
+        if (z > 1.2) {
+          if (gt.twin) { const first = RP.gates.find(q => q.zone === gt.zone) === gt; this.label(first ? 'IN' : 'OUT', add(gt.p, mul(gt.dir, -5)), 0, 7.5, LINE, { weight: 800, spacing: 0.8 }); }
+          else { this.label('IN', add(add(gt.p, mul(n, 2.4)), mul(gt.dir, -4)), 0, 7, LINE, { weight: 800, spacing: 0.5 }); this.label('OUT', add(add(gt.p, mul(n, -2.4)), mul(gt.dir, -4)), 0, 7, LINE, { weight: 800, spacing: 0.5 }); }
         }
       }
     }
     this.label('STATE ROUTE 12', { x: 1500, y: HY + 48 }, 0, clamp(60 * z, 8, 11), PAL.ink3, { spacing: 3 });
     this.label('TO LAKESHORE →', { x: SITE.cityX - 500, y: HY + 48 }, 0, clamp(60 * z, 8, 11), PAL.ink3, { spacing: 3 });
     for (const r of sim.world.ways) if (r.kind === 'road') this.wayHighlight(r.id, r.a, r.b, wayWidth('road', 0, r.lanes));
+  }
+  /** A painted lane arrow: ahead, or hooked left or right. */
+  arrow(p: Pt, ang: number, kind: 'ahead' | 'left' | 'right', color: string) {
+    const g = this.ctx; const z = this.cam.zoom; const [x, y] = this.P(p.x, p.y);
+    g.save(); g.translate(x, y); g.scale(z, z * this.yScale); g.rotate(ang);
+    g.strokeStyle = color; g.fillStyle = color; g.lineWidth = 0.35; g.lineCap = 'butt';
+    const k = kind === 'left' ? -1 : 1;
+    g.beginPath(); g.moveTo(-3, 0); g.lineTo(kind === 'ahead' ? 1.5 : 0.6, 0); if (kind !== 'ahead') g.lineTo(0.6, k * 0.9); g.stroke();
+    g.beginPath(); if (kind === 'ahead') { g.moveTo(3, 0); g.lineTo(1.2, -0.8); g.lineTo(1.2, 0.8); } else { g.moveTo(0.6, k * 2.3); g.lineTo(-0.2, k * 0.9); g.lineTo(1.4, k * 0.9); } g.closePath(); g.fill();
+    g.restore();
   }
 
   // ------------------------------------------------------------ sidewalks (people): pale paving with fine edges
@@ -453,16 +490,33 @@ export class Renderer {
         this.facility(sim, zn);
       } else if (zn.type === 'curb') {
         if (zn.level !== this.level && order.some(o => o.type === 'curb' && o.level === this.level && rectsTouch(o, zn))) continue;
-        this.poly(this.rectPts(zn), zn.level === 1 ? '#B4AEA2' : PAL.road);
-        const f = sim.d.frames.get(zn.id)!;
-        if (z > 0.6) {
-          g.setLineDash([6 * z, 6 * z]);
-          for (const k of [0.36, 0.62]) this.line(add(f.a, mul(f.inward, f.depth * k)), add(f.b, mul(f.inward, f.depth * k)), 0.3, PAL.roadLine);
-          g.setLineDash([]);
+        // the curbside cross-section, from the building out: sidewalk, two pull-in lanes, a planted island with
+        // crossings, then the through lanes that merge with the road (ACRP Report 40's inner and outer roadways)
+        const f = sim.d.frames.get(zn.id)!; const D = f.depth; const upper = zn.level === 1;
+        const band = (v0: number, v1: number) => [add(f.a, mul(f.inward, D * v0)), add(f.b, mul(f.inward, D * v0)), add(f.b, mul(f.inward, D * v1)), add(f.a, mul(f.inward, D * v1))];
+        const at = (u: number, v: number) => add(add(f.a, mul(f.along, u)), mul(f.inward, D * v));
+        this.poly(this.rectPts(zn), upper ? '#ABA598' : '#9C968A');
+        this.poly(band(0, 0.26), PAL.walk);
+        this.line(at(0, 0.26), at(f.edgeLen, 0.26), 0.3, PAL.walkEdge, 0, 'butt', 0.6);
+        if (z > 0.5) {
+          const L = f.edgeLen;
+          g.setLineDash([Math.max(2, 3 * z), Math.max(3, 5 * z)]); this.line(at(4, 0.43), at(L - 4, 0.43), 0.18, PAL.roadLine, 0, 'butt', 0.5); g.setLineDash([]);
+          // island: planted, broken by a crossing every ~36 m
+          const nX = Math.max(1, Math.round(L / 36)); const gap = 5;
+          for (let k = 0; k <= nX; k++) {
+            const u0 = k === 0 ? 3 : (L * k) / nX - 0 + gap / 2, u1 = k === nX ? L - 3 : (L * (k + 1)) / nX - gap / 2;
+            if (k === nX || u1 - u0 < 3) continue;
+            this.poly([at(u0, 0.6), at(u1, 0.6), at(u1, 0.7), at(u0, 0.7)], '#8A8375'); this.poly([at(u0 + 0.3, 0.615), at(u1 - 0.3, 0.615), at(u1 - 0.3, 0.685), at(u0 + 0.3, 0.685)], '#B5BD92');
+            if (z > 0.9) { g.fillStyle = 'rgba(96,112,72,0.75)'; g.beginPath(); for (let u = u0 + 4; u < u1 - 2; u += 9) { const [x, y] = this.P(at(u, 0.65).x, at(u, 0.65).y); g.moveTo(x + 1.3 * z, y); g.arc(x, y, 1.3 * z, 0, Math.PI * 2); } g.fill(); }
+            if (k > 0 && z > 0.7) for (let s = 0.28; s < 0.98; s += 0.07) { const c = at((L * k) / nX, s); this.line(add(c, mul(f.along, -1.8)), add(c, mul(f.along, 1.8)), 0.55, PAL.roadLine, 0, 'butt', 0.8); }
+          }
+          if (z > 0.9) for (let u = 6; u < L - 4; u += 9) this.line(at(u, 0.27), at(u, 0.34), 0.15, PAL.roadLine, 0, 'butt', 0.5);   // bay ticks
+          if (z > 1.3 && L > 60) {
+            const txt = zn.auto?.deck === 'dep' ? 'DEPARTURES' : zn.auto?.deck === 'arr' ? 'ARRIVALS' : 'DROP-OFF · PICK-UP';
+            const rot = Math.atan2(f.along.y * this.yScale, f.along.x); const flip = Math.cos(rot) < 0;
+            for (const u of L > 200 ? [L * 0.25, L * 0.75] : [L / 2]) this.label(txt, at(u, 0.5), 0, 8, 'rgba(241,235,220,0.9)', { weight: 800, spacing: 2.5, rot: flip ? rot + Math.PI : rot });
+          }
         }
-        // sidewalk strip on the building side
-        this.line(add(f.a, mul(f.inward, 2)), add(f.b, mul(f.inward, 2)), 4, PAL.walk, 0, 'butt', 1.2);
-        this.line(add(f.a, mul(f.inward, 4)), add(f.b, mul(f.inward, 4)), 0.3, PAL.walkEdge, 0, 'butt', 0.5);
         if (this.lod !== 'airfield' && (zn.level === this.level || this.cam.zoom < 0.7)) this.zoneLabel(sim, zn, 0);
       }
       if (!ZONES[zn.type].terminal) this.selectOutline(zn, 0);
@@ -767,6 +821,28 @@ export class Renderer {
       for (let x = r.x + 7.5; x < r.x + r.w; x += 7.5) { const [x0, y0] = this.P(x, r.y), [x1, y1] = this.P(x, r.y + r.h); g.moveTo(x0, y0); g.lineTo(x1, y1); }
       for (let y = r.y + 7.5; y < r.y + r.h; y += 7.5) { const [x0, y0] = this.P(r.x, y), [x1, y1] = this.P(r.x + r.w, y); g.moveTo(x0, y0); g.lineTo(x1, y1); } }
     g.stroke();
+  }
+
+  /** Weather over the plan: rain streaks blown with the wind, a fog veil, or snow on the ground and in the air. */
+  drawWeather(sim: Sim) {
+    const w = this.weather; if (w === 'clear') return;
+    const g = this.ctx; const t = performance.now() / 1000;
+    g.save();
+    if (w === 'fog') { const gr = g.createRadialGradient(this.W / 2, this.H / 2, this.H * 0.15, this.W / 2, this.H / 2, this.H * 0.85); gr.addColorStop(0, 'rgba(236,232,224,0.25)'); gr.addColorStop(1, 'rgba(236,232,224,0.8)'); g.fillStyle = gr; g.fillRect(0, 0, this.W, this.H); }
+    else {
+      g.fillStyle = w === 'rain' ? 'rgba(70,84,104,0.16)' : 'rgba(250,250,252,0.3)'; g.fillRect(0, 0, this.W, this.H);
+      const a = ((sim.wind.from + 180) * Math.PI) / 180; const dx = Math.sin(a), dy = -Math.cos(a);
+      g.strokeStyle = w === 'rain' ? 'rgba(60,76,100,0.35)' : 'rgba(255,255,255,0.9)'; g.fillStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = 1; g.beginPath();
+      const n = w === 'rain' ? 260 : 200; const sp = w === 'rain' ? 520 : 60;
+      for (let i = 0; i < n; i++) {
+        const hx = Math.sin(i * 127.1) * 43758.5453, hy = Math.sin(i * 311.7) * 43758.5453;
+        const x = (((hx - Math.floor(hx)) * this.W + dx * t * sp + (w === 'snow' ? Math.sin(t + i) * 12 : 0)) % this.W + this.W) % this.W;
+        const y = (((hy - Math.floor(hy)) * this.H + (dy * 0.4 + 1) * t * sp) % this.H + this.H) % this.H;
+        if (w === 'rain') { g.moveTo(x, y); g.lineTo(x + dx * 5 + 1, y + 9); } else { g.moveTo(x + 1.6, y); g.arc(x, y, 1.6, 0, Math.PI * 2); }
+      }
+      if (w === 'rain') g.stroke(); else g.fill();
+    }
+    g.restore();
   }
 
   /** North arrow and scale bar, bottom left, like any drawing. */

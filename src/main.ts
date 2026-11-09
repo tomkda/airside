@@ -4,10 +4,10 @@ import { Renderer } from './render';
 import { UI, money } from './ui';
 import { World, newWorld, migrateWorld } from './world';
 import { sampleWorld } from './sample';
-import type { UnlockId } from './config';
+import type { UnlockId, Offer, Deal } from './config';
 
 const KEY = 'airport-builder-alpha-v3';
-interface Save { world: World; staff: Sim['staff']; slotPrice: number; moneyOn: boolean; money: number; calDays: number; rep: number; goals?: string[]; unlocked?: string[]; bestPax?: number }
+interface Save { world: World; staff: Sim['staff']; slotPrice: number; moneyOn: boolean; money: number; calDays: number; rep: number; goals?: string[]; unlocked?: string[]; bestPax?: number; offer?: Offer | null; deals?: Record<string, Deal> }
 
 type Hot = { data?: Save; ready?: (fn: (d: Save | Record<string, never>) => void) => void; snapshot?: (fn: () => Save) => void };
 const hot = (window as unknown as { claude?: { hot?: Hot } }).claude?.hot;
@@ -25,14 +25,14 @@ function start(restored: Save | null) {
     sim.money = saved.money; sim.calDays = saved.calDays; sim.rep = saved.rep;
     sim.goalsDone = new Set(Array.isArray(saved.goals) ? saved.goals : []);
     sim.unlocked = new Set((Array.isArray(saved.unlocked) ? saved.unlocked : []) as UnlockId[]); sim.bestPax = saved.bestPax ?? 0;
-    sim.staff.officers ??= 0;
+    sim.staff.officers ??= 0; sim.offer = saved.offer ?? null; sim.deals = saved.deals ?? {};
     sim.relayout(); sim.startDay();
   }
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const ren = new Renderer(canvas);
   ren.resize();
 
-  const snapshot = (): Save => ({ world: sim.world, staff: sim.staff, slotPrice: sim.slotPrice, moneyOn: sim.moneyOn, money: sim.money, calDays: sim.calDays, rep: sim.rep, goals: [...sim.goalsDone], unlocked: [...sim.unlocked], bestPax: sim.bestPax });
+  const snapshot = (): Save => ({ world: sim.world, staff: sim.staff, slotPrice: sim.slotPrice, moneyOn: sim.moneyOn, money: sim.money, calDays: sim.calDays, rep: sim.rep, goals: [...sim.goalsDone], unlocked: [...sim.unlocked], bestPax: sim.bestPax, offer: sim.offer, deals: sim.deals });
   const ctl = {
     speed: 4, paused: false,
     save() { try { localStorage.setItem(KEY, JSON.stringify(snapshot())); } catch { /* storage unavailable: play on */ } },
@@ -40,13 +40,14 @@ function start(restored: Save | null) {
     clearSite() { reset(newWorld()); ui.toast('Site cleared. Draw a runway to begin.'); ui.setTool('runway'); },
   };
   function reset(w: World) {
-    sim.world = w; sim.money = 420_000_000; sim.calDays = 0; sim.day = 0; sim.rep = 1; sim.history = []; sim.log = []; sim.goalsDone = new Set(); sim.unlocked = new Set(); sim.bestPax = 0;
+    sim.world = w; sim.money = 420_000_000; sim.calDays = 0; sim.day = 0; sim.rep = 1; sim.history = []; sim.log = []; sim.goalsDone = new Set(); sim.unlocked = new Set(); sim.bestPax = 0; sim.offer = null; sim.deals = {};
     sim.relayout(); sim.startDay();
     ren.selected = null; ui.focusAirport(); ui.refresh(true); ctl.save();
   }
   const ui = new UI(sim, ren, ctl);
   sim.onGoal = g => ui.celebrate(g);
   sim.onUnlock = u => ui.unlockedNow(u);
+  sim.onOffer = o => { ui.toast(`Offer: ${o.title}. See Operations.`); if (ui.tab === 'ops') ui.refresh(true); };
   ui.focusAirport();
   hot?.snapshot?.(snapshot);
 

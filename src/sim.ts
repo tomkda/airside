@@ -2,7 +2,7 @@
 // Time unit: minutes of the day. One sim "day" stands in for several calendar days.
 // Everything moves on networks: aircraft on taxiways, cars on roads, people through doors, cores and sidewalks.
 import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
-import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId } from './config';
+import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { flowBins, newFlow, tenantsOf } from './commerce';
 import { Goal, checkGoals } from './goals';
@@ -110,6 +110,34 @@ export class Sim {
   /** v0.10: facilities unlock as traffic grows (best day's departures). Saved. Sandbox mode has everything. */
   unlocked = new Set<UnlockId>(); bestPax = 0;
   onUnlock?: (u: Unlock) => void;
+  /** v0.10: today's weather; an airline's open offer and the deals in force (saved). */
+  weather: WeatherKind = 'clear';
+  offer: Offer | null = null; deals: Record<string, Deal> = {};
+  onOffer?: (o: Offer) => void;
+  dealOf(a: Airline) { const d = this.deals[a.id]; return d && d.until > this.day ? d : undefined; }
+  acceptOffer() {
+    const o = this.offer; if (!o) return; this.offer = null;
+    this.deals[o.airline] = { mult: o.mult, feeMult: o.feeMult, until: this.day + o.days, kind: o.kind };
+    if (this.moneyOn) this.money += o.bonus;
+    this.note(`Deal signed: ${o.title}`);
+  }
+  declineOffer() { if (this.offer) this.note(`Declined: ${this.offer.title}`); this.offer = null; }
+  /** Now and then an airline that is happy here proposes something. Its own random stream, so the sim stays reproducible. */
+  makeOffer(sat: number) {
+    if (this.offer || sat < 78) return;
+    const rr = rng(this.day * 104729 + 5); if (rr() > 0.4) return;
+    const pool = AIRLINES.filter(a => !this.dealOf(a) && (!a.intl || (this.has('intl') && this.d.terminals.some(T => T.intl))) && a.id !== 'polaris');
+    if (!pool.length) return;
+    const a = pool[Math.floor(rr() * pool.length)];
+    const volume = rr() < 0.55;
+    const bonus = Math.round((2 + rr() * 4)) * 1e6;
+    this.offer = volume
+      ? { airline: a.id, kind: 'volume', title: `${a.name}: more flights for a lower fee`, mult: 1.4, feeMult: 0.75, bonus: 0, days: 10,
+          text: `${a.name} will schedule 40% more flights here for the next 10 days if its slot fee drops 25%. More passengers through the terminal and the shops, less from each landing. Worth it if you have gates and lanes to spare.` }
+      : { airline: a.id, kind: 'base', title: `${a.name}: a crew base`, mult: 1.2, feeMult: 1, bonus, days: 14,
+          text: `${a.name} will base crews here: 20% more flights for 14 days and ${(bonus / 1e6).toFixed(0)} million dollars on signing. In return it expects 90% of flights on time; each day that falls short costs 1 million dollars.` };
+    this.note(`Offer: ${this.offer.title}`); this.onOffer?.(this.offer);
+  }
   has(id: UnlockId) { return !this.moneyOn || this.unlocked.has(id); }
   checkUnlocks() {
     for (const u of UNLOCKS) if (!this.unlocked.has(u.id) && this.bestPax >= u.at) {
@@ -268,6 +296,10 @@ export class Sim {
     }
     this.stats = emptyStats();
     this.dayWind = { shift: (this.r() - 0.5) * 50, gust: 0.65 + this.r() * 0.9 };
+    // weather draws from its own stream, so it never shifts the rest of the day's dice
+    { const x = rng(this.day * 7919 + 13)(); let c = 0; this.weather = 'clear';
+      if (this.day > 0) for (const k of ['clear', 'rain', 'fog', 'snow'] as const) { c += WEATHER[k].p; if (x < c) { this.weather = k; break; } }
+      if (WEATHER[this.weather].note) this.note(WEATHER[this.weather].note, 'warn'); }
     this.lotUsed = Math.round(this.lotCapacity() * 0.55);
     this.plan = this.schedule();
     this.allocateStaff();
@@ -280,7 +312,8 @@ export class Sim {
     return AIRLINES.filter(a => !a.intl || this.has('intl')).map(a => {
       let n = 0;
       for (const [c, share] of Object.entries(a.mix)) n += (a.share * D * (share as number)) / (CLASSES[Number(c)].seats * lf);
-      return { airline: a, n: n * Math.pow(price / TUNE.refSlotPrice, -a.elasticity) };
+      const deal = this.dealOf(a);
+      return { airline: a, n: n * Math.pow((price * (deal?.feeMult ?? 1)) / TUNE.refSlotPrice, -a.elasticity) * (deal?.mult ?? 1) };
     });
   }
 
@@ -300,7 +333,8 @@ export class Sim {
       if (a.intl && !this.has('intl')) continue;   // not asking yet
       const row = { airline: a, requested: 0, scheduled: 0 };
       plan.byAirline.push(row);
-      const priceF = Math.pow(this.slotPrice / TUNE.refSlotPrice, -a.elasticity);
+      const deal = this.dealOf(a);
+      const priceF = Math.pow((this.slotPrice * (deal?.feeMult ?? 1)) / TUNE.refSlotPrice, -a.elasticity) * (deal?.mult ?? 1);
       for (const [cs, share] of Object.entries(a.mix)) {
         const c = Number(cs) as Cls;
         const x = (a.share * D * (share as number) * priceF) / (CLASSES[c].seats * 0.8);
@@ -322,7 +356,7 @@ export class Sim {
     cands.sort((a, b) => a.arr - b.arr);
     const prevailing: Wind = { from: SITE.windFrom, kt: SITE.windSpeed };
     const usable = d.runways.filter(r => r.cls >= 0 && runwayUsable(r, prevailing));
-    const capHr = this.capacityPerHour(usable.length ? usable : d.runways.filter(r => r.cls >= 0).slice(0, 1));
+    const capHr = this.capacityPerHour(usable.length ? usable : d.runways.filter(r => r.cls >= 0).slice(0, 1)) * WEATHER[this.weather].cap;
     const perHour = new Map<number, number>();
     const gateFree = new Map<string, number>();
     const flightNo = new Map<string, number>();
@@ -556,7 +590,7 @@ export class Sim {
       const delay = t - f.schedDep;
       this.stats.flights++;
       if (delay > 15) { this.stats.delayed++; this.stats.delaySum += delay; }
-      this.stats.rev.slots += this.slotPrice * 2;
+      this.stats.rev.slots += this.slotPrice * 2 * (this.dealOf(f.airline)?.feeMult ?? 1);
       const ok = this.rwyOK(f);
       const cands = this.d.runways.filter(ok);
       const reach = this.d.runways.filter(r => r.cls >= f.cls && f.gate.rwys[f.cls].has(r.rw.id));
@@ -1254,6 +1288,8 @@ export class Sim {
       const n = Math.min(nights, unitsOf(this.d, h) * 0.92); nights -= n;
       s.rev.hotel += n * GROWTH.hotelTake * (h.tier ? 1.3 : 1);
     }
+    // crew-base deals expect punctuality
+    for (const a of AIRLINES) { const dl = this.dealOf(a); if (dl?.kind === 'base' && s.flights && 1 - s.delayed / s.flights < 0.9) { const fine = 1e6; if (this.moneyOn) this.money -= fine; this.note(`${a.name}: under 90% on time today. Penalty $1.0M under its crew-base deal.`, 'warn'); } }
     this.bestPax = Math.max(this.bestPax, s.paxDep);
     this.checkUnlocks();
     // Rent: each leased lot pays the greater of its sales share and its minimum guarantee (ACRP Report 54).
@@ -1295,6 +1331,7 @@ export class Sim {
     if (this.history.length > 120) this.history.shift();
     this.calDays += period; this.day++;
     this.onDayEnd?.(rep);
+    this.makeOffer(sat);
     this.relayout();
     // Re-let: with the new scores, tenants bid again. Save who holds what, and say what moved.
     for (const z of this.world.zones) if (z.type === 'concourse') {

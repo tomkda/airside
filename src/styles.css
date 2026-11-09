@@ -283,6 +283,9 @@ ul.goals li.done .tick { background: var(--ink); border-color: var(--ink); color
 
 /* ---------- v0.10: growth unlocks */
 .tool.locked { opacity: 0.38; }
-.tool.locked kbd { visibility: hidden; }
-.tool.locked::after { content: ''; width: 9px; height: 8px; border-radius: 2px; background: var(--ink-3); margin-left: auto; box-shadow: 0 -5px 0 -2px var(--paper), 0 -5px 0 0 var(--ink-3); }
 #stamp.wide em { display: block; max-width: 420px; font: 500 12.5px/1.4 var(--display); color: var(--ink-2); }
+.offer { border: 1.5px solid #C2852E; border-radius: var(--r); padding: 10px 12px; margin: 0 0 14px; background: rgba(194,133,46,0.07); }
+.offer b { display: block; margin: 2px 0 4px; font-size: 13.5px; }
+.offer p { margin: 0 0 8px; font-size: 12.5px; color: var(--ink-2); }
+.offer .row { display: flex; gap: 8px; }
+.btn.ghost { background: none; }

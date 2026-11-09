@@ -15,6 +15,7 @@ import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
 import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
+import { roadPlan } from './roads';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -188,6 +189,7 @@ export class Renderer3D {
     this.hemi.color.set(night > 0.5 ? '#8E97C2' : '#F7F2E8');
     this.scene.background = night > 0.5 ? this.skyNight : this.skyDay;
     (this.scene.fog as THREE.Fog).color.set('#EFE6D3').lerp(this.col.set('#3A3B52'), night);
+    { const w = this.ren.weather; const fog = this.scene.fog as THREE.Fog; fog.near = w === 'fog' ? 120 : w === 'clear' ? 7000 : 1500; fog.far = w === 'fog' ? 1700 : w === 'clear' ? 24000 : 9000; if (w !== 'clear') fog.color.lerp(this.col.set(night > 0.5 ? '#4A4C5E' : '#D9D8D2'), 0.7); }
     this.glassMat.emissiveIntensity = 0.05 + 0.85 * night; this.cityMat.emissiveIntensity = 0.55 * night;
     for (const m of [...this.lightMats, ...this.statLights]) m.opacity = Math.min(1, night * 1.4);
     this.poolMat.opacity = 0.55 * night;
@@ -232,6 +234,10 @@ export class Renderer3D {
     for (const w of [...sim.world.ways, ...d.autoWalks, ...d.autoRoads]) strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : w.kind === 'road' ? 0.12 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : w.kind === 'road' ? '#8E8A83' : '#EFE8DA' });
     for (const x of d.airExtra) strips.push({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0), z: 0.1, c: '#BDB29C' });
     strips.push({ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, w: 24, z: 0.12, c: '#8E8A83' });
+    // junction curves and highway slip ramps (roads.ts), so every corner has a curved kerb
+    const RP = roadPlan(d);
+    const bez = (k: { p1: Pt; c: Pt; p2: Pt }, t: number): Pt => ({ x: (1 - t) * (1 - t) * k.p1.x + 2 * (1 - t) * t * k.c.x + t * t * k.p2.x, y: (1 - t) * (1 - t) * k.p1.y + 2 * (1 - t) * t * k.c.y + t * t * k.p2.y });
+    for (const k of [...RP.turns, ...RP.ramps]) for (let i = 0; i < 8; i++) strips.push({ a: bez(k, i / 8 - 0.02), b: bez(k, (i + 1) / 8 + 0.02), w: k.w, z: 0.121, c: '#8E8A83' });
     add3(stripMesh(strips));
     const flats: Box[] = [];
     for (const ap of d.aprons) flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' });
@@ -290,6 +296,8 @@ export class Renderer3D {
         for (let x = z.x + 6; x < z.x + z.w - 6; x += 2.7) { m({ x, y: y - 5 }, { x, y }, 0.12, '#E8E2D4', 0.16); m({ x, y: y + 6 }, { x, y: y + 11 }, 0.12, '#E8E2D4', 0.16); }
       }
     }
+    for (const st of RP.stops) m(st.a, st.b, 0.5, WHITE, 0.19);
+    for (const md of RP.medians) { mk.push({ a: md.a, b: md.b, w: 1.9, z: 0.3, c: '#8A8375' }, { a: md.a, b: md.b, w: 1.4, z: 0.34, c: '#A9B28A' }); }
     add3(stripMesh(mk));
 
     // ---- upper decks: slab on columns with ramps; curb canopies over the sidewalk at each curb
@@ -308,6 +316,9 @@ export class Renderer3D {
       const f = d.frames.get(z.id); if (!f) continue;
       // canopy: 7 m deep over the sidewalk, on a row of slender columns
       const a = f.a, b = f.b, inw = f.inward;
+      // sidewalk slab by the building and a planted island between the pull-in lanes and the through lanes
+      const D = f.depth; const strip = (v0: number, v1: number, h: number, c: string) => misc.push({ ...bbox([add(a, mul(inw, D * v0)), add(b, mul(inw, D * v1))]), z0: zz, z1: zz + h, c });
+      strip(0, 0.26, 0.22, '#EFE8DA'); strip(0.6, 0.7, 0.25, '#A9B28A');
       const corners = [a, b, add(b, mul(inw, 7)), add(a, mul(inw, 7))];
       misc.push({ ...bbox(corners), z0: zz + 5.2, z1: zz + 5.7, c: ROOF });
       const L = dist(a, b); const al = norm(sub(b, a));
@@ -360,6 +371,13 @@ export class Renderer3D {
     }
     if (beams.length) add3(stripMesh(beams));
     if (glassF.length) add3(instancedBoxes(glassF, true, this.glassMat));
+
+    // gate plazas at car parks and rental centres: a booth and two barrier arms
+    for (const gt of RP.gates) {
+      const n = { x: -gt.dir.y, y: gt.dir.x }; const c = add(gt.p, mul(gt.dir, 4));
+      misc.push({ x: c.x - 1.2, y: c.y - 1.2, w: 2.4, h: 2.4, z0: 0, z1: 2.8, c: '#E9E3D6' }, { x: c.x - 1.8, y: c.y - 1.8, w: 3.6, h: 3.6, z0: 2.8, z1: 3.1, c: ROOF });
+      for (const k of [-1, 1]) { const e = add(c, mul(n, k * 3)); misc.push({ ...bbox([add(c, mul(n, k * 1.2)), add(e, mul(n, k * 1.6))]), z0: 1, z1: 1.2, c: '#B0472B' }); }
+    }
 
     // ---- terminal sites and their names
     for (const st of sim.world.sites ?? []) {

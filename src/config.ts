@@ -224,17 +224,30 @@ export const TUNE = {
 export type UnlockId = 'bus' | 'rideshare' | 'garage' | 'rental' | 'mezz' | 'hotel' | 'intl' | 'train';
 export interface Unlock { id: UnlockId; at: number; title: string; why: string }
 export const UNLOCKS: Unlock[] = [
-  { id: 'bus', at: 2900, title: 'Bus station', why: 'The curb is filling with cars. City buses carry passengers without one.' },
-  { id: 'rideshare', at: 3100, title: 'Rideshare pickup', why: 'App-hailed cars are crowding the arrivals curb. Give them their own lot.' },
-  { id: 'garage', at: 3250, title: 'Parking decks', why: 'Surface lots are running out. Stack decks on a lot to make a garage.' },
-  { id: 'rental', at: 3400, title: 'Rental car centre', why: 'Visitors want cars. A rental centre pays a concession on each one.' },
-  { id: 'mezz', at: 3550, title: 'Concourse mezzanine', why: 'Lounges are full. Add a mezzanine floor over the concourse spine.' },
-  { id: 'hotel', at: 3700, title: 'Airport hotel', why: 'Early departures and late arrivals want a bed on site.' },
-  { id: 'intl', at: 3850, title: 'International flights', why: 'Aurora International wants routes here. Build passport control to take them.' },
-  { id: 'train', at: 4000, title: 'AirTrain', why: 'The airport is too big to walk. Stations link garages, hotels and terminals.' },
+  { id: 'bus', at: 3000, title: 'Bus station', why: 'The curb is filling with cars. City buses carry passengers without one.' },
+  { id: 'rideshare', at: 3300, title: 'Rideshare pickup', why: 'App-hailed cars are crowding the arrivals curb. Give them their own lot.' },
+  { id: 'garage', at: 3500, title: 'Parking decks', why: 'Surface lots are running out. Stack decks on a lot to make a garage.' },
+  { id: 'rental', at: 3700, title: 'Rental car centre', why: 'Visitors want cars. A rental centre pays a concession on each one.' },
+  { id: 'mezz', at: 3900, title: 'Concourse mezzanine', why: 'Lounges are full. Add a mezzanine floor over the concourse spine.' },
+  { id: 'hotel', at: 4100, title: 'Airport hotel', why: 'Early departures and late arrivals want a bed on site.' },
+  { id: 'intl', at: 4300, title: 'International flights', why: 'Aurora International wants routes here. Build passport control to take them.' },
+  { id: 'train', at: 4600, title: 'AirTrain', why: 'The airport is too big to walk. Stations link garages, hotels and terminals.' },
 ];
 /** Which unlock a tool or zone type waits for. */
 export const UNLOCK_OF: Partial<Record<ZoneType | 'garage', UnlockId>> = { bus: 'bus', rideshare: 'rideshare', garage: 'garage', rental: 'rental', hotel: 'hotel', passport: 'intl', train: 'train' };
+/** v0.10: the day's weather. cap scales how many movements an hour the runways take. */
+export type WeatherKind = 'clear' | 'rain' | 'fog' | 'snow';
+export const WEATHER: Record<WeatherKind, { label: string; cap: number; p: number; note: string }> = {
+  // Rough capacity effects: FAA airport capacity profiles put instrument-weather arrival rates at roughly 60–85% of
+  // visual rates; snow adds runway clearing on top.
+  clear: { label: 'Clear', cap: 1, p: 0.64, note: '' },
+  rain: { label: 'Rain', cap: 0.85, p: 0.2, note: 'Rain: wider spacing on approach, runways take 85% of normal.' },
+  fog: { label: 'Fog', cap: 0.6, p: 0.09, note: 'Fog: instrument approaches only, runways take 60% of normal.' },
+  snow: { label: 'Snow', cap: 0.7, p: 0.07, note: 'Snow: ploughing between movements, runways take 70% of normal.' },
+};
+/** v0.10: an airline's proposal. Accepting changes its flights and what it pays; declining costs nothing. */
+export interface Offer { airline: string; kind: 'volume' | 'base'; title: string; text: string; mult: number; feeMult: number; bonus: number; days: number }
+export interface Deal { mult: number; feeMult: number; until: number; kind: 'volume' | 'base' }
 export const GROWTH = {
   // How arriving and departing parties split once the facility exists and is reachable. Rough US mode shares from
   // ACRP Report 4 (Ground Access to Major Airports by Public Transportation, 2008) and ACRP Synthesis 84 on
@@ -256,7 +269,7 @@ export const GROWTH = {
   passportTime: [0.75, 0.3] as [number, number],   // minutes per passenger per booth: officer, e-gate
   intlPaxFee: 14,          // extra passenger charge on international departures
   intlSpend: 1.5,          // duty free and concessions take, times domestic
-  autoRoadReach: 220,      // m: a facility this close to a road lays its own access drive
+  autoRoadReach: 300,      // m: a facility this close to a road lays its own access drive
 };
 
 // ---------------------------------------------------------------- Frontage and terminal sites (v0.8)

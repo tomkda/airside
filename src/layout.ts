@@ -196,7 +196,7 @@ export function layoutZone(z: Zone, world: World, opts: { items?: LItem[]; claim
   else if (z.type === 'concourse') items = opts.items ?? [];
   else if (z.type === 'curb') {
     const n = Math.max(2, Math.floor(f.edgeLen / 9) * 2); const per = Math.ceil(n / 2); const { P } = helpers(f);
-    for (let k = 0; k < n; k++) { const row = Math.floor(k / per), i = k % per; slots.push(P(f.edgeLen * (0.04 + 0.92 * (i + 0.5) / per), f.depth * (0.22 + 0.26 * row))); }
+    for (let k = 0; k < n; k++) { const row = Math.floor(k / per), i = k % per; slots.push(P(f.edgeLen * (0.04 + 0.92 * (i + 0.5) / per), f.depth * (0.34 + 0.17 * row))); }
     max = n;
   }
   return { frame: { ...f, slots, items }, max, count };

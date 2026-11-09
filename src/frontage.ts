@@ -177,15 +177,38 @@ export function autoRoads(world: World, zones: Zone[], aprons: Rect[], highwayY:
   const onSeg = (p: Pt, a: Pt, b: Pt): Pt => { const dx = b.x - a.x, dy = b.y - a.y; const L2 = dx * dx + dy * dy || 1; const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2)); return { x: a.x + dx * t, y: a.y + dy * t }; };
   for (const fac of zones.filter(z => NEEDS_ROAD.has(z.type))) {
     if (roads.some(r => { const q = onSeg(ctr(fac), r.a, r.b); const q2 = onSeg(clamp2(q, fac), r.a, r.b); return nearRect(q2, fac, 3) || nearRect(r.a, fac, 3) || nearRect(r.b, fac, 3); })) continue;
-    let best: { p: Pt; q: Pt; d: number } | null = null;
+    let best: { p: Pt; q: Pt; d: number; r: { a: Pt; b: Pt } } | null = null;
+    let bent: { p: Pt; c: Pt; q: Pt; d: number } | null = null;
     for (const r of roads) {
       let q = onSeg(ctr(fac), r.a, r.b); let p = clamp2(q, fac); q = onSeg(p, r.a, r.b); p = clamp2(q, fac);
-      // keep clear of the ends of the road so the junction is a clean T
       const d = dist(p, q);
-      if (d > reach || d < 1 || blocked(p, q, [fac])) continue;
-      if (!best || d < best.d) best = { p, q, d };
+      if (d < 1) continue;
+      const square = Math.abs(p.x - q.x) < 0.5 || Math.abs(p.y - q.y) < 0.5;
+      if (d <= reach && square && !blocked(p, q, [fac])) { if (!best || d < best.d) best = { p, q, d, r }; continue; }
+      // not straight ahead: leave square from the edge and turn one corner
+      for (const c of [{ x: p.x, y: q.y }, { x: q.x, y: p.y }]) {
+        const p2 = clamp2(c, fac); const len = dist(p2, c) + dist(c, q);
+        if (len > reach * 1.8 || dist(p2, c) < 4 || dist(c, q) < 4) continue;
+        if (Math.abs(p2.x - c.x) > 0.5 && Math.abs(p2.y - c.y) > 0.5) continue;
+        if (blocked(p2, c, [fac]) || blocked(c, q, [fac])) continue;
+        if (!bent || len < bent.d) bent = { p: p2, c, q, d: len };
+      }
     }
-    if (best) out.push({ id: -(700000 + fac.id), kind: 'road', a: best.p, b: best.q, cls: 0, lanes: 2 });
+    const id = -(700000 + fac.id);
+    if (best) {
+      // car parks, garages and rental centres get separate IN and OUT drives where the frontage allows
+      const dv = norm(sub(best.q, best.p)); const al = { x: -dv.y, y: dv.x };
+      const half = (Math.abs(al.x) > 0.5 ? fac.w : fac.h) / 2; const off = Math.min(32, half * 0.55);
+      const twin = (fac.type === 'parking' || fac.type === 'rental') && off >= 14 ? [-1, 1].map(k => {
+        const c0 = ctr(fac); const base = clamp2({ x: c0.x + dv.x * 1e4, y: c0.y + dv.y * 1e4 }, fac);
+        const p2 = { x: base.x + al.x * k * off, y: base.y + al.y * k * off }; const q2 = onSeg({ x: p2.x + dv.x * best!.d, y: p2.y + dv.y * best!.d }, best!.r.a, best!.r.b);
+        const ok = Math.abs((q2.x - p2.x) * al.x + (q2.y - p2.y) * al.y) < 0.5 && !blocked(p2, q2, [fac]) && dist(q2, best!.r.a) > 6 && dist(q2, best!.r.b) > 6;
+        return ok ? { p: p2, q: q2 } : null;
+      }) : [];
+      if (twin.length === 2 && twin[0] && twin[1]) {
+        out.push({ id, kind: 'road', a: twin[0].p, b: twin[0].q, cls: 0, lanes: 2 }, { id: id - 250000, kind: 'road', a: twin[1].p, b: twin[1].q, cls: 0, lanes: 2 });
+      } else out.push({ id, kind: 'road', a: best.p, b: best.q, cls: 0, lanes: 2 });
+    } else if (bent) out.push({ id, kind: 'road', a: bent.p, b: bent.c, cls: 0, lanes: 2 }, { id: id - 120000, kind: 'road', a: bent.c, b: bent.q, cls: 0, lanes: 2 });
   }
   return out;
 }

@@ -1,6 +1,6 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, UNLOCK_OF, Unlock, UnlockId } from './config';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GOALS, Goal, nextGoals, rating } from './goals';
 import { GateSlot, slotAt, SIDE_NAMES, standDepth, sideReach } from './gates';
@@ -75,6 +75,7 @@ export class UI {
     this.setTool('select');
     this.setLevel(1);
     this.refresh(true);
+    this.snap = this.snapshot();
   }
 
   get world(): World { return this.sim.world; }
@@ -597,6 +598,7 @@ export class UI {
   key(e: KeyboardEvent) {
     if ((e.target as HTMLElement).closest('input, select, textarea')) return;
     const k = e.key;
+    if (e.ctrlKey || e.metaKey) { if (k === 'z' || k === 'Z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); } else if (k === 'y') { e.preventDefault(); this.redo(); } return; }
     const t = TOOLS.find(x => x.key.toLowerCase() === k.toLowerCase());
     if (t) { this.setTool(t.id); return; }
     if (k === 'Escape') {
@@ -706,7 +708,30 @@ export class UI {
   }
 
   // ------------------------------------------------------------ edits
-  changed() { this.sim.relayout(); this.refresh(true); this.ctl.save(); }
+  changed() {
+    if (this.snap) { this.undoStack.push(this.snap); if (this.undoStack.length > 50) this.undoStack.shift(); this.redoStack = []; }
+    this.sim.relayout(); this.refresh(true); this.ctl.save();
+    this.snap = this.snapshot();
+  }
+
+  // ------------------------------------------------------------ undo (v0.10): every edit can be taken back
+  private undoStack: string[] = []; private redoStack: string[] = []; private snap = '';
+  snapshot() { return JSON.stringify({ w: this.sim.world, m: this.sim.money }); }
+  restore(s: string) {
+    const o = JSON.parse(s) as { w: World; m: number };
+    Object.assign(this.sim.world, o.w); this.sim.money = o.m;
+    this.ren.selected = null; this.ren.hover = null;
+    if (this.ren.focus !== null && !this.world.sites?.some(q => q.id === this.ren.focus)) this.setLod('landside', null);
+    this.sim.relayout(); this.refresh(true); this.ctl.save(); this.snap = s;
+  }
+  undo() {
+    const s = this.undoStack.pop(); if (!s) { this.toast('Nothing to undo'); return; }
+    this.redoStack.push(this.snap || this.snapshot()); this.restore(s); this.toast('Undone');
+  }
+  redo() {
+    const s = this.redoStack.pop(); if (!s) { this.toast('Nothing to redo'); return; }
+    this.undoStack.push(this.snap || this.snapshot()); this.restore(s); this.toast('Redone');
+  }
 
   buildRunway(a: Pt, b: Pt) {
     const cost = runwayCost(a, b);
@@ -816,6 +841,8 @@ export class UI {
     $('#windText').textContent = `${String(Math.round(w.from)).padStart(3, '0')}° ${Math.round(w.kt)} kt`;
     $('#rwyText').textContent = s.d.runways.length ? (ends.length ? `Landing ${ends.join(', ')}` : 'All runways closed: crosswind') : 'No runway';
     $('#rwyText').classList.toggle('bad', !!s.d.runways.length && !ends.length);
+    if (s.weather !== 'clear') $('#rwyText').textContent += ` · ${WEATHER[s.weather].label}`;
+    this.ren.weather = s.weather;
     $('#money').textContent = s.moneyOn ? money(s.money) : 'Sandbox';
     $('#money').classList.toggle('bad', s.moneyOn && s.money < 0);
     const live = s.pax.filter(p => p.stage !== 'done').length;
@@ -1124,7 +1151,7 @@ export class UI {
         <li><i class="sw miss"></i>Missing connection</li>
       </ul>
       <h3>Keys</h3>
-      <p class="muted keys"><kbd>A</kbd> airfield · <kbd>L</kbd> landside · <kbd>Enter</kbd> open terminal · <kbd>Esc</kbd> step out · <kbd>N</kbd> new terminal · <kbd>Space</kbd> pause · <kbd>[</kbd> <kbd>]</kbd> level · <kbd>T</kbd> 3D · <kbd>H</kbd> queues and traffic · <kbd>C</kbd> commerce · <kbd>Del</kbd> demolish · <kbd>Shift</kbd>-drag pan</p>`;
+      <p class="muted keys"><kbd>A</kbd> airfield · <kbd>L</kbd> landside · <kbd>Enter</kbd> open terminal · <kbd>Esc</kbd> step out · <kbd>N</kbd> new terminal · <kbd>Space</kbd> pause · <kbd>[</kbd> <kbd>]</kbd> level · <kbd>T</kbd> 3D · <kbd>H</kbd> queues and traffic · <kbd>C</kbd> commerce · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Del</kbd> demolish · <kbd>Shift</kbd>-drag pan</p>`;
   }
 
   opsHTML(): string {
@@ -1159,6 +1186,7 @@ export class UI {
       <h2>Terminals</h2>
       ${terms ? `<ul class="terms">${terms}</ul>` : '<p class="muted">No terminal yet. Connect check-in, security, a concourse and baggage claim, with a curb served by a road.</p>'}
       <p class="muted small">A terminal opens when check-in, security, a concourse with working gates and baggage claim connect on foot, with a road-served curb. Only open terminals get flights.</p>
+      ${this.offerHTML()}
       <h2>Airlines and slots</h2>
       <div class="slider">
         <label for="price">Slot fee per movement <b id="priceOut">${money(s.slotPrice)}</b></label>
@@ -1188,6 +1216,16 @@ export class UI {
         <button class="btn" data-act="sample">Load sample airport</button>
         <button class="btn danger" data-act="clear">${this.confirmClear > performance.now() ? 'Click again to clear' : 'Clear site'}</button>
       </div>`;
+  }
+
+  /** An airline's open offer, and the deals in force. */
+  offerHTML() {
+    const s = this.sim; const o = s.offer;
+    const live = AIRLINES.map(a => ({ a, d: s.dealOf(a) })).filter(x => x.d);
+    const deals = live.length ? `<p class="muted small">In force: ${live.map(x => `${esc(x.a.name)} ${x.d!.kind === 'base' ? 'crew base' : 'volume deal'}, ${x.d!.until - s.day} day${x.d!.until - s.day === 1 ? '' : 's'} left`).join(' · ')}</p>` : '';
+    if (!o) return deals;
+    return `<div class="offer"><span class="label">Offer</span><b>${esc(o.title)}</b><p>${esc(o.text)}</p>
+      <div class="row"><button class="btn" data-act="offerYes">Accept</button><button class="btn ghost" data-act="offerNo">Decline</button></div></div>${deals}`;
   }
 
   /** A goal reached: a stamp across the map, a toast, and the grant in the bank. */
@@ -1295,6 +1333,9 @@ export class UI {
     const z = sel?.kind === 'zone' ? s.world.zones.find(q => q.id === sel.id) : undefined;
     const w = sel?.kind === 'way' ? s.world.ways.find(q => q.id === sel.id) : undefined;
     const pay = (cost: number) => { if (!s.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return false; } s.spend(cost); return true; };
+    if (a === 'offerYes') { s.acceptOffer(); this.toast('Deal signed. It applies from tomorrow\'s schedule.'); this.refresh(true); this.ctl.save(); return; }
+    if (a === 'offerNo') { s.declineOffer(); this.refresh(true); this.ctl.save(); return; }
+    if (a === 'undo') { this.undo(); return; }
     if (a === 'demolish' && sel) this.demolish(this.selHit(sel));
     else if (a === 'open' && sel?.kind === 'site') { const st = this.world.sites?.find(q => q.id === sel.id); if (st) this.openTerminal(st); }
     else if ((a === 'units-' || a === 'units+') && z) {
