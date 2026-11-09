@@ -2,11 +2,19 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES } from './config';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE } from './config';
 import type { Sim, Flight } from './sim';
 import { Zone, Frame, WayKind, wayWidth, runwayWidth } from './world';
 import type { LItem } from './layout';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+/** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
+export function heatRamp(v: number, alpha = 1) {
+  const t = clamp(v, 0, 1);
+  const c0 = [226, 214, 188], c1 = [194, 133, 46], c2 = [140, 48, 28];
+  const [p, q, k] = t < 0.5 ? [c0, c1, t / 0.5] : [c1, c2, (t - 0.5) / 0.5];
+  const m = (i: number) => Math.round(p[i] + (q[i] - p[i]) * k);
+  return `rgba(${m(0)},${m(1)},${m(2)},${(0.55 + 0.4 * t) * alpha})`;
+}
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Ghost {
@@ -23,7 +31,8 @@ export class Renderer {
   cam: Camera = { x: 3150, y: 2700, zoom: 0.5 };
   tilt = 0; tiltTarget = 0;
   level: Level = 1;
-  overlay = false;
+  overlay = false;             // queue and road-congestion heatmap (H)
+  commerce = false;            // commercial heatmap: footfall and revenue per lot (C)
   W = 0; H = 0; dpr = 1;
   selected: Sel | null = null;
   hover: Sel | null = null;
@@ -383,6 +392,7 @@ export class Renderer {
       if (isActive || tilted) { g.strokeStyle = 'rgba(40,36,30,0.35)'; g.lineWidth = 1; this.path(this.rectPts(zn), top); g.stroke(); }
       if (isActive) {
         if (this.overlay) this.heat(sim, zn, top);
+        if (this.commerce && zn.type === 'concourse') this.flowBand(sim, zn, top);
         this.fitout(sim, zn, top);
         labels.push([zn, top]);
       }
@@ -459,19 +469,60 @@ export class Renderer {
       f.slots.forEach((c, i) => { const fl = p?.carousels?.[i]; if (fl) this.label(fl.code, c, top, 8, PAL.ink, { weight: 700, spacing: 0.5, bg: 'rgba(240,232,215,0.85)' }); });
     } else if (zn.type === 'concourse') {
       if (z > 1.1) for (const gt of sim.d.gates) if (gt.zone.id === zn.id) this.label(gt.num, add(gt.door, mul(gt.apron.outward, -3)), top, 9, PAL.ink, { weight: 700, spacing: 1, bg: 'rgba(240,232,215,0.85)' });
-      // commercial lots: leased ones filled by type, vacant ones dashed ("for lease")
+      // commercial lots: leased ones filled by type, vacant ones dashed ("for lease"). The commercial heatmap
+      // fills every lot by footfall instead and labels it with its revenue.
       const list = sim.d.shops.get(zn.id) ?? [];
       const fill: Record<string, string> = { shop: 'rgba(70,62,50,0.42)', food: 'rgba(168,112,48,0.5)', lounge: 'rgba(47,93,124,0.45)' };
       const g = this.ctx;
       for (const sh of list) {
-        if (sim.leased(sh)) { this.poly(sh.pts, fill[sh.type], top); }
+        const on = sim.leased(sh); const df = sh.tenant === 'dutyfree';
+        const c = { x: (sh.pts[0].x + sh.pts[2].x) / 2, y: (sh.pts[0].y + sh.pts[2].y) / 2 };
+        if (this.commerce) {
+          this.poly(sh.pts, heatRamp(sh.footScore, on ? 1 : 0.45), top);
+          if (!on) { g.setLineDash([3, 3]); g.strokeStyle = soft; g.lineWidth = 1; this.path(sh.pts, top); g.stroke(); g.setLineDash([]); }
+        } else if (df) this.poly(sh.pts, 'rgba(94,122,85,0.5)', top);
+        else if (on) this.poly(sh.pts, fill[sh.type], top);
         else { g.setLineDash([3, 3]); g.strokeStyle = soft; g.lineWidth = 1; this.path(sh.pts, top); g.stroke(); g.setLineDash([]); }
-        if (z > 1.6 && sim.leased(sh)) {
-          const c = { x: (sh.pts[0].x + sh.pts[2].x) / 2, y: (sh.pts[0].y + sh.pts[2].y) / 2 };
-          const big = Math.hypot(sh.pts[1].x - sh.pts[0].x, sh.pts[1].y - sh.pts[0].y) * z > sh.kind.length * 5.6 + 10;
-          this.label(big ? sh.kind.toUpperCase() : sh.type === 'shop' ? 'S' : sh.type === 'food' ? 'F' : 'L', c, top, big ? 7 : 8, '#F4EDDF', { weight: 800, spacing: big ? 0.6 : 0 });
+        if (df && z > 0.6) this.serpentine(sh.pts, top);
+        const sel = this.selected?.kind === 'zone' && this.selected.id === zn.id && this.selected.key === sh.key;
+        if (sel) { g.strokeStyle = PAL.select; g.lineWidth = 2.5; this.path(sh.pts, top); g.stroke(); }
+        const wpx = Math.hypot(sh.pts[1].x - sh.pts[0].x, sh.pts[1].y - sh.pts[0].y) * z;
+        if (this.commerce && z > 1.1 && on) {
+          const L = sim.lotPrev.get(sh.id) ?? sim.lotDay.get(sh.id);
+          const num = L && L.rev >= 1 ? (L.rev >= 1000 ? (L.rev / 1000).toFixed(1) + 'k' : String(Math.round(L.rev))) : '—';
+          const txt = [`$${num}`, num].find(t => wpx > t.length * 4.8 + 2);
+          if (txt) this.label(txt, c, top, 7.5, sh.footScore > 0.55 ? '#F4EDDF' : PAL.ink, { weight: 800, spacing: 0 });
+        } else if (!this.commerce && z > 1.6 && on) {
+          const big = wpx > sh.kind.length * 5.6 + 10;
+          this.label(big ? sh.kind.toUpperCase() : df ? 'DF' : sh.type === 'shop' ? 'S' : sh.type === 'food' ? 'F' : 'L', c, top, big ? 7 : 8, '#F4EDDF', { weight: 800, spacing: big ? 0.6 : 0 });
         }
       }
+    }
+  }
+
+  /** Walk-through duty free: the winding path everyone follows between the displays. */
+  serpentine(pts: Pt[], top: number) {
+    const [a, b, , d] = pts;
+    const along = sub(b, a), across = sub(d, a);
+    const long = Math.hypot(along.x, along.y) >= Math.hypot(across.x, across.y);
+    const U = long ? along : across, V = long ? across : along;
+    const line: Pt[] = [];
+    for (let i = 0; i <= 8; i++) { const t = (i + 0.5) / 9; line.push(add(add(a, mul(V, i % 2 ? 0.75 : 0.25)), mul(U, t))); }
+    const g = this.ctx; g.setLineDash([3, 3]); g.strokeStyle = 'rgba(40,36,30,0.5)'; g.lineWidth = 1;
+    this.path(line, top, false); g.stroke(); g.setLineDash([]);
+  }
+
+  /** Commercial heatmap: today's footfall along the spine, bin by bin, as a band on the concourse centreline. */
+  flowBand(sim: Sim, zn: Zone, top: number) {
+    const B = sim.d.budgets.get(zn.id); const f = sim.flowDay.get(zn.id) ?? zn.flow; if (!B || !f) return;
+    const max = Math.max(1, ...f.w);
+    const bin = COMMERCE.binM;
+    const vMid = B.horiz ? zn.h / 2 : zn.w / 2;
+    for (let i = 0; i < f.w.length; i++) {
+      const v = f.w[i] / max; if (v < 0.03) continue;
+      const u0 = i * bin, u1 = Math.min(B.long, u0 + bin); const h = 2 + 4 * v;
+      const r = B.horiz ? { x: zn.x + u0, y: zn.y + vMid - h / 2, w: u1 - u0, h } : { x: zn.x + vMid - h / 2, y: zn.y + u0, w: h, h: u1 - u0 };
+      this.poly(this.rectPts(r), heatRamp(v, 0.9), top);
     }
   }
 

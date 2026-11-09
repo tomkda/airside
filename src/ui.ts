@@ -1,7 +1,7 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
-import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass } from './config';
-import { Sim, DAY_START, DAY_END } from './sim';
+import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId } from './config';
+import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GateSlot, slotAt, SIDE_NAMES, standDepth, sideReach } from './gates';
 import { holdDepth, spineWidth, depthClass } from './bands';
 import { Renderer, Sel } from './render';
@@ -11,7 +11,7 @@ import {
 } from './world';
 
 export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish';
-type Hit = { kind: 'zone'; zone: Zone } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | null;
+type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | null;
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 export const money = (n: number) => {
@@ -87,7 +87,8 @@ export class UI {
       const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b) return;
       if (b.dataset.level) this.setLevel(Number(b.dataset.level) as Level);
       if (b.id === 'view25') { this.ren.tiltTarget = this.ren.tiltTarget ? 0 : 1; b.setAttribute('aria-pressed', String(!!this.ren.tiltTarget)); }
-      if (b.id === 'heat') { this.ren.overlay = !this.ren.overlay; b.setAttribute('aria-pressed', String(this.ren.overlay)); }
+      if (b.id === 'heat') this.setHeat(this.ren.overlay ? null : 'queues');
+      if (b.id === 'commerce') this.setHeat(this.ren.commerce ? null : 'commerce');
     });
     $('#speed').addEventListener('click', e => {
       const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b) return;
@@ -130,6 +131,13 @@ export class UI {
     this.ren.showGuides = t === 'taxi' || t === 'concourse';
     this.hint(this.toolHint());
     this.ren.canvas.style.cursor = t === 'select' ? 'default' : 'crosshair';
+  }
+
+  /** One heatmap at a time: queues and road traffic (H), or footfall and revenue per lot (C). */
+  setHeat(m: 'queues' | 'commerce' | null) {
+    this.ren.overlay = m === 'queues'; this.ren.commerce = m === 'commerce';
+    $('#heat').setAttribute('aria-pressed', String(this.ren.overlay));
+    $('#commerce').setAttribute('aria-pressed', String(this.ren.commerce));
   }
 
   setLevel(l: Level) {
@@ -187,7 +195,11 @@ export class UI {
     const L = this.ren.level;
     const zs = this.world.zones;
     const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inRect(p, z));
-    if (z1) return { kind: 'zone', zone: z1 };
+    if (z1) {
+      // inside a concourse, a click on a commercial lot picks that lot (its scores show in the inspector)
+      const lot = z1.type === 'concourse' ? (this.sim.d.shops.get(z1.id) ?? []).find(sh => pointInPoly(p, sh.pts)) : undefined;
+      return { kind: 'zone', zone: z1, lot: lot?.key };
+    }
     const sl = slotAt(this.sim.d.gateSlots, p);
     if (sl) return { kind: 'gate', slot: sl };
     const tol = 8 / this.ren.cam.zoom;
@@ -200,7 +212,7 @@ export class UI {
     return null;
   }
   hitToSel(h: Hit): Sel | null {
-    return !h ? null : h.kind === 'zone' ? { kind: 'zone', id: h.zone.id } : h.kind === 'runway' ? { kind: 'runway', id: h.id }
+    return !h ? null : h.kind === 'zone' ? { kind: 'zone', id: h.zone.id, key: h.lot } : h.kind === 'runway' ? { kind: 'runway', id: h.id }
       : h.kind === 'gate' ? { kind: 'gate', id: h.slot.zone.id, key: h.slot.key } : { kind: 'way', id: h.way.id };
   }
 
@@ -414,7 +426,8 @@ export class UI {
     else if (k === '[' || k === 'PageDown') this.setLevel(0);
     else if (k === ']' || k === 'PageUp') this.setLevel(1);
     else if (k === 't' || k === 'T') { this.ren.tiltTarget = this.ren.tiltTarget ? 0 : 1; $('#view25').setAttribute('aria-pressed', String(!!this.ren.tiltTarget)); }
-    else if (k === 'h' || k === 'H') { this.ren.overlay = !this.ren.overlay; $('#heat').setAttribute('aria-pressed', String(this.ren.overlay)); }
+    else if (k === 'h' || k === 'H') this.setHeat(this.ren.overlay ? null : 'queues');
+    else if (k === 'c' || k === 'C') this.setHeat(this.ren.commerce ? null : 'commerce');
     else if (k === '+' || k === '=') this.zoomAt(this.ren.W / 2, this.ren.H / 2, 1.25);
     else if (k === '-') this.zoomAt(this.ren.W / 2, this.ren.H / 2, 0.8);
     else if ((k === 'Delete' || k === 'Backspace') && this.ren.selected) this.demolish(this.selHit(this.ren.selected));
@@ -702,7 +715,9 @@ export class UI {
         <dt>Lots</dt><dd>${open.length} of ${list.length} leased${B?.window ? ` · ${B.window} with apron views` : ''}${kinds ? `<br><span class="muted small">${kinds}</span>` : ''}</dd>
         <dt>Customers now</dt><dd>${inNow}</dd>
         <dt>Today so far</dt><dd>${n0(day.visits)} visits · ${money(day.rev)}</dd>
-        <dt></dt><dd class="muted small">Every gate claims ${Math.round(holdDepth(z.cls ?? 2))} m of holdroom behind its frontage. Remove gates on a side to free that wall for window restaurants and lounges; widen the concourse to fit both.</dd>`;
+        ${this.dutyFreeHTML(z)}
+        <dt></dt><dd class="muted small">Every gate claims ${Math.round(holdDepth(z.cls ?? 2))} m of holdroom behind its frontage. Remove gates on a side to free that wall for window restaurants and lounges; widen the concourse to fit both.</dd>
+        ${this.lotHTML(z, sel.key)}`;
     }
     const upCost = area(z) * def.tierCostPerM2;
     const clsSeg = z.type === 'concourse' ? `<div class="tier"><span class="label">Gates sized for</span><div class="seg">${CLASSES.map(c =>
@@ -731,6 +746,38 @@ export class UI {
       <button class="btn danger" data-act="demolish">Demolish (${money(area(z) * def.costPerM2 * 0.4)} back)</button>`;
   }
 
+  /** Walk-through duty free: only where the concourse's entry wall is shared with security. */
+  dutyFreeHTML(z: Zone) {
+    const B = this.sim.d.budgets.get(z.id); if (!B) return '';
+    if (!B.dutyFreeOK) return `<dt>Duty free</dt><dd class="muted small">Walk-through duty free needs security opening straight into this concourse.</dd>`;
+    const sh = (this.sim.d.shops.get(z.id) ?? []).find(q => q.tenant === 'dutyfree');
+    const L = sh ? this.sim.lotDay.get(sh.id) : undefined;
+    const now = L && L.passed ? `<br><span class="small">Today: ${n0(L.passed)} walked through · ${n0(L.visits)} bought (${Math.round((100 * L.visits) / L.passed)}%) · ${money(L.rev)}</span>` : '';
+    return `<dt>Duty free</dt><dd><div class="seg"><button data-act="df0" aria-pressed="${!z.dutyFree}">Off</button><button data-act="df1" aria-pressed="${!!z.dutyFree}">Walk-through</button></div>
+      <span class="muted small">Every departing passenger winds through a store at the security exit. About ${Math.round(COMMERCE.dfCapture * 100)}% stop to shop (Arthur D. Little). It earns more, but adds ${COMMERCE.dfWalk} min to every walk and irritates people with under ${COMMERCE.dfHurry} min to spare.</span>${now}</dd>`;
+  }
+
+  /** The selected lot's scores, bids and money; or a prompt to pick one. */
+  lotHTML(z: Zone, key?: string) {
+    const s = this.sim; const list = s.d.shops.get(z.id) ?? [];
+    const sh = key ? list.find(q => q.key === key) : undefined;
+    if (!sh) return `<dt>Lot</dt><dd class="muted small">Click a lot to see its footfall, visibility and dwell scores, and what each tenant would bid. Press <kbd>C</kbd> for the commercial heatmap.</dd>`;
+    const bar = (v: number, txt: string) => `<span class="sbar"><i style="width:${Math.round(clamp(v, 0, 1) * 100)}%"></i></span> <span class="small">${txt}</span>`;
+    const L = s.lotDay.get(sh.id) ?? { visits: 0, rev: 0, passed: 0 }; const P = s.lotPrev.get(sh.id);
+    const leased = s.leased(sh);
+    const bids = sh.tenant === 'dutyfree' ? '' : (Object.entries(sh.bids) as [TenantId, number][]).sort((p, q) => q[1] - p[1])
+      .map(([t, v]) => `<dt class="small">${TENANTS[t].label}${t === sh.tenant ? ' ✓' : ''}</dt><dd>${bar(v, v.toFixed(2))}</dd>`).join('');
+    return `</dl><h3>Lot ${esc(sh.key)} · ${esc(sh.kind)}${leased ? '' : ' <span class="muted">(for lease)</span>'}</h3><dl class="kv">
+      <dt>Size</dt><dd>${n0(sh.frontage)} m frontage × ${n0(sh.depth)} m deep · ${n0(sh.area)} m² · ${sh.tenant === 'dutyfree' ? 'walk-through store' : depthClass(sh.depth)}${sh.window ? ' · apron view' : ''}</dd>
+      <dt>Footfall</dt><dd>${bar(sh.footScore, `${n0(sh.foot)} a day, weighted by time to spare${sh.measured ? '' : ' (estimated from the plan until passengers are counted)'}`)}</dd>
+      <dt>Visibility</dt><dd>${bar(sh.vis, `${Math.round(sh.vis * 100)}% of the spine sees it`)}</dd>
+      <dt>Dwell</dt><dd>${bar(sh.dwellScore, `${n0(sh.dwell)} min to spare, on average`)}</dd>
+      <dt>Position</dt><dd class="small">${n0(sh.near * 100)}% near security · ${n0(sh.gateScore * 100)}% gate cluster · ${n0(sh.far * 100)}% out along the pier</dd>
+      ${bids ? `<dt>Bids</dt><dd class="muted small">What each format would pay for this lot. A sitting tenant stays unless out-bid by ${Math.round(COMMERCE.relet * 100)}%; lots re-let overnight.</dd>${bids}` : ''}
+      <dt>Rent</dt><dd>${money(sh.rent)}/day minimum guarantee${leased ? '' : ' if let'}</dd>
+      <dt>Revenue</dt><dd>${money(L.rev)} today (${n0(L.visits)} customers)${P ? ` · ${money(P.rev)} yesterday` : ''}</dd>`;
+  }
+
   gateSidesHTML(z: Zone) {
     const s = this.sim; const zc = z.cls ?? 2;
     const rows = s.d.gateGuides.filter(g => g.zone.id === z.id).map(g => {
@@ -754,7 +801,8 @@ export class UI {
         <li><i class="sw walk"></i>Sidewalk (people)</li>
         <li><i class="sw taxi"></i>Taxiway (aircraft), lettered</li>
         <li><i class="sq"></i>Vertical core (stairs, escalators, lifts)</li>
-        <li><i class="chip-s shop"></i><i class="chip-s food"></i><i class="chip-s lounge"></i>Shop · food · lounge lots; dashed = for lease</li>
+        <li><i class="chip-s shop"></i><i class="chip-s food"></i><i class="chip-s lounge"></i><i class="chip-s df"></i>Shop · food · lounge · duty free; dashed = for lease</li>
+        <li><i class="chip-s ramp"></i>Commercial heatmap (C): footfall per lot, revenue labels, flow along the spine</li>
         <li><i class="sw miss"></i>Missing connection</li>
       </ul>
       <h3>Keys</h3>
@@ -832,7 +880,7 @@ export class UI {
       const pct = clamp(avg / (tol * 2), 0, 1) * 100, mx = clamp(w.max / (tol * 2), 0, 1) * 100;
       return `<div class="wait"><span>${label}</span><div class="track"><i style="left:50%" class="tol"></i><b style="width:${pct}%" class="${avg > tol ? 'over' : ''}"></b><em style="left:${mx}%"></em></div><span class="num">${avg.toFixed(1)} · ${w.max.toFixed(0)} max</span></div>`;
     };
-    const rev = st.rev; const revT = rev.slots + rev.pax + rev.shops + rev.food + rev.lounges + rev.parking + rev.curb; const cost = st.cost.staff + st.cost.upkeep;
+    const rev = st.rev; const revT = revTotal(rev); const cost = st.cost.staff + st.cost.upkeep;
     return `
       <h2>${r.label}</h2>
       <div class="kpis">
@@ -848,7 +896,7 @@ export class UI {
       <h3>Money per day ${r.periodDays > 1 ? `<span class="muted">× ${r.periodDays} days this period</span>` : ''}</h3>
       <dl class="kv money">
         <dt>Slot fees</dt><dd>${money(rev.slots)}</dd><dt>Passenger charges</dt><dd>${money(rev.pax)}</dd>
-        <dt>Shops</dt><dd>${money(rev.shops)}</dd><dt>Restaurants</dt><dd>${money(rev.food)}</dd><dt>Lounges</dt><dd>${money(rev.lounges)}</dd><dt>Parking</dt><dd>${money(rev.parking)}</dd><dt>Curb access</dt><dd>${money(rev.curb)}</dd>
+        <dt>Shops</dt><dd>${money(rev.shops)}</dd><dt>Restaurants</dt><dd>${money(rev.food)}</dd><dt>Lounges</dt><dd>${money(rev.lounges)}</dd>${rev.dutyfree ? `<dt>Duty free</dt><dd>${money(rev.dutyfree)}</dd>` : ""}${rev.rent ? `<dt>Rent guarantees</dt><dd>${money(rev.rent)}</dd>` : ""}<dt>Parking</dt><dd>${money(rev.parking)}</dd><dt>Curb access</dt><dd>${money(rev.curb)}</dd>
         <dt>Staff</dt><dd>−${money(st.cost.staff)}</dd><dt>Upkeep</dt><dd>−${money(st.cost.upkeep)}</dd>
         <dt><b>Profit</b></dt><dd><b class="${r.profit < 0 ? 'bad' : ''}">${money(revT - cost)}</b></dd>
       </dl>
@@ -907,6 +955,10 @@ export class UI {
       if (!pay(area(z) * ZONES[z.type].tierCostPerM2)) return;
       z.tier = 1; this.toast(`${ZONES[z.type].short} upgraded: ${ZONES[z.type].tierNames[1]}`); this.changed();
     } else if (a === 'tier0' && z && z.tier === 1) { z.tier = 0; this.changed(); }
+    else if ((a === 'df0' || a === 'df1') && z && z.type === 'concourse') {
+      z.dutyFree = a === 'df1'; this.changed();
+      this.toast(z.dutyFree ? 'Walk-through duty free opens at the security exit' : 'Duty free closed: the security exit opens straight onto the spine');
+    }
     else if (a.startsWith('cls') && z) {
       const c = Number(a.slice(3)) as Cls; const cur = (z.cls ?? 2) as number;
       if (c > cur && !pay((c - cur) * area(z) * 350)) return;

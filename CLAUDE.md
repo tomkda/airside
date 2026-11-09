@@ -21,14 +21,14 @@ node scripts/shot.cjs out.png <camX> <camY> <zoom> ["js using g = window.__game"
 ```
 
 Healthy results:
-- simtest shows Terminal 1 open, 0 missed passengers and leased lots growing week to week.
+- simtest shows Terminal 1 open, 0 missed passengers and leased lots growing week to week. Security in the sample runs close to capacity, so other seeds can miss some passengers in week 3; that predates v0.7.
 - terminals.mjs shows 0 stranded passengers.
 - stress.mjs strands passengers on purpose on the days it cuts walkways or moves check-in. That is expected.
 
 ## Architecture
 
 - **One file out.** scripts/build.mjs bundles src/ with esbuild into a single HTML page. There are no runtime dependencies and no server.
-- **The sim never touches the DOM.** config, geom, net, world, gates, bands, layout and sim are pure logic.
+- **The sim never touches the DOM.** config, geom, net, world, gates, bands, commerce, layout and sim are pure logic.
   - render.ts reads sim state and never writes it.
   - ui.ts owns input and panels.
   - Keep this split: sim and world may be ported to Godot/C# later.
@@ -44,6 +44,12 @@ Healthy results:
   - Airfield edges carry a class. Back-taxi on a runway is allowed at ×4 cost.
   - Pedestrians move only through doors where same-level zones touch, through vertical cores, and along sidewalks.
 - **Aircraft classes** (config.ts `CLASSES`): turboprop, regional jet, A320, A380. Each sets runway length, gate spacing, stand depth, seats and turnaround.
+- **Concourse commerce** (commerce.ts, v0.7):
+  - bands.ts carves lots and scores what the plan decides: visibility from the spine, closeness to the security exit, the gate cluster nearby.
+  - The sim counts departing passengers along each concourse's long axis in 4 m bins, weighted by spare minutes (`sim.flowDay`). At day end the count folds into `zone.flow`, so it is saved.
+  - `letLots()` runs inside `derive()`: each tenant format bids for each lot it fits; a sitting tenant (`zone.tenants`, written by the sim at day end) keeps its lot unless out-bid by `COMMERCE.relet`.
+  - Walk-through duty free (`zone.dutyFree`) adds a `dutyfree` step after security for every departing passenger in the terminal.
+  - All tuning lives in `COMMERCE` and `TENANTS` (config.ts).
 - **Gates** (gates.ts): any concourse side with a parallel taxiway within reach gets gate slots on a fixed grid.
   - Reach runs from one stand depth to max(150 m, two stand depths + 40 m).
   - Gates are downsized if the taxiway is close.
@@ -53,7 +59,7 @@ Healthy results:
   - **Spine:** 9 m wide, or 13.4 m with moving walkways on arms over 300 m.
   - **Commercial lots** either side of the spine, sized by depth: under 4 m is seating only; 4–8 m kiosks; 8–15 m shops and cafés; over 15 m restaurants, flagship stores and lounges.
   - **Restroom cores** about every 160 m.
-  - Window lots sit on ungated exterior walls. Lots nearest security lease first.
+  - Window lots sit on ungated exterior walls. Tenants bid for lots (commerce.ts) and the best-scoring lots lease first.
 - **Other fit-outs** (layout.ts): check-in, security, claim and curb. Each module faces the module it touches upstream.
 - **Terminals:** zones joined on foot form a terminal. It opens only when check-in, security, a concourse with working gates and bag claim connect, with a road-served curb. Only open terminals get flights. Each airline has a home terminal.
 - **Saves** go to localStorage under `airport-builder-alpha-v3`. Don't rename the key. Any schema change needs a step in `migrateWorld()` (world.ts).
@@ -71,13 +77,8 @@ Healthy results:
 The concourse interiors plan has four phases.
 
 1. **Done in v0.6:** one concourse type, with band carving in rectangles.
-2. **Next:**
-   - simulated footfall past each lot
-   - visibility and dwell scores
-   - tenants bidding for lots by score
-   - walk-through duty free at the first node after security
-   - a commercial heatmap view
-3. Compound arm-and-hub concourse shapes (X, Y and T piers), and satellites with a people mover.
+2. **Done in v0.7:** simulated footfall past each lot, visibility and dwell scores, tenants bidding for lots by score (with rent and overnight re-letting), walk-through duty free at the security exit, and a commercial heatmap.
+3. **Next:** compound arm-and-hub concourse shapes (X, Y and T piers), and satellites with a people mover.
 4. Mezzanine lounges; tenant growth, merges and pop-ups; day-parting; disruption surges.
 
 Other known gaps:

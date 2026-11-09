@@ -10,6 +10,8 @@ export const LEVELS: { id: Level; name: string; short: string; z0: number; z1: n
 
 export type ZoneType = 'checkin' | 'security' | 'concourse' | 'claim' | 'curb' | 'parking';
 export type ShopType = 'shop' | 'food' | 'lounge';
+/** Who leases a commercial lot. Core retail, sit-down dining, grab-and-go / convenience, lounges, and walk-through duty free. */
+export type TenantId = 'retail' | 'dining' | 'grab' | 'lounge' | 'dutyfree';
 
 export interface ZoneDef {
   type: ZoneType;
@@ -174,6 +176,67 @@ export const TUNE = {
   retailPerMin: 0.32,
   parkingPerStay: 58,
   curbFeePerCar: 3,
+};
+
+// ---------------------------------------------------------------- Concourse commerce (v0.7)
+// Footfall, visibility and dwell scores per lot, tenants bidding for lots, walk-through duty free.
+export const COMMERCE = {
+  // Footfall: departing passengers counted as they cross the spine, in bins along the concourse's long axis.
+  binM: 4,                 // bin length, m
+  spareRef: 45,            // spare minutes before boarding at which a passer counts as one full shopper
+  spareMin: 0.1,           // weight floor: someone running for the gate still sees the shopfront
+  spareCap: 2,             // weight cap: very early passengers count at most twice
+  boardLead: 20,           // boarding starts this many minutes before departure (sim.board uses readyT - 20)
+  memory: 0.5,             // share of the running count kept when a day folds in, so scores move over 2–3 days
+  dwellLo: 25, dwellHi: 75, // spare minutes that score 0 and 1 on dwell
+  // Visibility: how much of the spine sees a shopfront. Game tuning; retail planners commonly design for
+  // shopfronts readable 30–60 m down a pier, and within the forward cone of a walking passenger.
+  sightM: 60,              // a shopfront reads from this far down the spine, m
+  coneDeg: 60,             // half-angle of the forward cone a walker scans
+  besideScore: 0.35,       // a front beside you, outside that cone, partly registers
+  straightScore: 0.75,     // visibility of a front midway down a straight run; the hub face adds hubBonus on top
+  hubBonus: 0.35,          // lot that faces passengers stepping out of security
+  hubReach: 18,            // m either side of the security exit that count as the hub face
+  cornerPenalty: 0.25,     // lot tucked into the end of the spine
+  cornerM: 8,
+  // Shoppers' first choice: share who want food (vs retail) with under / over 45 spare minutes. Game tuning, in line with
+  // ACRP Report 54's observation that food and beverage takes roughly half of concession sales.
+  wantFood: [0.35, 0.55] as [number, number],
+  wantLounge: 0.35,        // premium passengers with 40+ spare minutes who head for a lounge
+  // Bidding. Weights are game tuning; the brief follows ACRP Report 54 (Resource Manual for Airport In-Terminal
+  // Concessions, 2011): convenience retail near security, dining with apron views and near gate clusters,
+  // grab-and-go close to remote gates, lounges away from the main flow.
+  minBid: 0.25,            // a lot nobody bids this much for stays vacant
+  relet: 0.15,             // a challenger must out-bid the sitting tenant by this share to take the lot
+  jitter: 0.06,            // stable per-lot noise so equal lots don't all go the same way
+  neighbour: 0.1,          // penalty for the same format as the lot next door, so a pier gets a mix
+  gateReach: 60,           // m: gates within this distance of a lot count as its gate cluster
+  nearSecurityM: 150,      // m from the security exit over which "near security" fades to zero
+  loungeMinDepth: 12, loungeMinArea: 300,
+  loungePerGates: 10,      // one lounge per this many gates (plus one with the premium fit-out)
+  // Rent. ACRP Report 54: concession agreements usually pay the greater of a minimum annual guarantee (MAG)
+  // and a percentage of gross sales. Base MAG per m² per day is game tuning, scaled by the lot's score.
+  rentPerM2Day: { retail: 1.6, dining: 1.3, grab: 2.0, lounge: 0.8, dutyfree: 2.2 } as Record<TenantId, number>,
+  rentFloor: 0.2,          // MAG = base × area × (rentFloor + score)
+  // Walk-through duty free at the security exit. Arthur D. Little's airport retail work puts penetration of
+  // a walk-through store at about 60% of the passengers routed through it, against well under half for a
+  // conventional storefront.
+  dfCapture: 0.6,          // share of passers who stop and browse
+  dfTake: 9,               // airport's take per browsing passenger, $ (game tuning: concession fee on an average basket)
+  dfBrowse: [4, 10] as [number, number],   // minutes a browser spends
+  dfWalk: 1.2,             // minutes the serpentine path adds even for those who don't stop
+  dfHurry: 25,             // spare minutes below which a passenger is in a hurry
+  dfHurrySat: 5,           // satisfaction a hurried passenger loses to the detour
+  dfLen: 36,               // store length along the spine, m
+  dfDepth: 18,             // store depth from the security wall when it fronts a long side, m
+};
+/** How each tenant format shows up in each depth class: [4–8 m, 8–15 m, over 15 m]. null: doesn't fit. */
+export const TENANTS: Record<TenantId, { label: string; type: ShopType; kinds: [string | null, string | null, string | null] }> = {
+  retail: { label: 'Core retail', type: 'shop', kinds: ['Kiosk', 'Shop', 'Flagship store'] },
+  dining: { label: 'Sit-down food', type: 'food', kinds: [null, 'Café', 'Restaurant'] },
+  grab: { label: 'Grab-and-go', type: 'food', kinds: ['Grab-and-go', 'Convenience', 'Food hall'] },
+  lounge: { label: 'Lounge', type: 'lounge', kinds: [null, 'Lounge', 'Lounge'] },
+  dutyfree: { label: 'Walk-through duty free', type: 'shop', kinds: ['Duty free', 'Duty free', 'Duty free'] },
 };
 
 export const PAL = {
