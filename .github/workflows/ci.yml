@@ -18,3 +18,4 @@ jobs:
       - run: node scripts/terminals.mjs
       - run: node scripts/stress.mjs
       - run: node scripts/growth.mjs
+      - run: node scripts/roads.mjs

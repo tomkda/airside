@@ -12,9 +12,13 @@ import {
   Site, siteOf, fitSite, isTerminalModule, inBuildable, padRect,
 } from './world';
 import { rectsOverlap, rectSegDist } from './geom';
+import { ROUNDS } from './config';
+import { canPlaceRound, Round } from './world';
+import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
+import { roadPlan } from './roads';
 
-export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site';
-type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | null;
+export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round';
+type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | { kind: 'round'; round: Round } | null;
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 export const money = (n: number) => {
@@ -39,6 +43,7 @@ const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: strin
   { id: 'claim', label: 'Bag claim', key: '6', lod: 'terminal', icon: '<rect x="2" y="4" width="12" height="9"/><rect x="4" y="7" width="8" height="3" rx="1.5"/>' },
   { id: 'passport', label: 'Passport', key: 'I', lod: 'terminal', unlock: 'intl', icon: '<rect x="3" y="2" width="10" height="12" rx="1"/><circle cx="8" cy="7" r="2"/><path d="M5.5 11.5h5"/>' },
   { id: 'road', label: 'Road', key: 'R', group: 'Landside', lod: 'landside', icon: '<path d="M2 5h12M2 11h12" stroke-width="1.6"/><path d="M3 8h2M7 8h2M11 8h2"/>' },
+  { id: 'round', label: 'Roundabout', key: 'G', lod: 'landside', icon: '<circle cx="8" cy="8" r="5.2"/><circle cx="8" cy="8" r="1.6"/><path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15"/>' },
   { id: 'curb', label: 'Curb', key: '7', lod: 'landside', icon: '<path d="M2 6h12M2 11h12"/><path d="M5 8.5h2M9 8.5h2"/>' },
   { id: 'parking', label: 'Parking', key: '8', lod: 'landside', icon: '<rect x="2" y="3" width="12" height="10"/><path d="M6 11V6h2.5a1.5 1.5 0 010 3H6"/>' },
   { id: 'walk', label: 'Sidewalk', key: 'S', lod: 'landside', icon: '<path d="M2 9h12" stroke-width="3.5" stroke-opacity=".35"/><path d="M2 7h12M2 11h12"/>' },
@@ -56,9 +61,10 @@ export interface Controls { speed: number; paused: boolean; save(): void; loadSa
 export class UI {
   tool: Tool = 'select';
   tab: 'inspect' | 'ops' | 'report' = 'ops';
-  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1 };
+  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0 };
   private drag: null | {
-    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site'; sx: number; sy: number; start: Pt; snapStart?: boolean;
+    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend';
+    way?: Way; handle?: 'a' | 'b' | 'm'; orig3?: { a: Pt; b: Pt; c?: Pt }; bend?: { a: Pt; b: Pt; c?: Pt; ok: boolean; cost: number; reason?: string }; sx: number; sy: number; start: Pt; snapStart?: boolean;
     cam?: Pt; zone?: Zone; off?: Pt; moved?: boolean;
     rw?: Runway; end?: 'a' | 'b'; orig?: { a: Pt; b: Pt }; extras?: WaySpec[];
     pend?: { a: Pt; b: Pt; ok: boolean; cost: number; delta: number; follow: ReturnType<typeof followRunwayEnd> | null };
@@ -206,7 +212,8 @@ export class UI {
     let html = '';
     if (t === 'taxi') html = `<span class="label">Taxiway</span>${seg('taxi', this.opt.taxi, TAXI_CLASSES.map(c => [c.cls, `${c.name}<span class="opt-note"> · ${c.note}</span>`]))}<span class="label">Runway links</span>${seg('auto', this.opt.auto, [[1, 'Auto'], [0, 'Manual']])}`;
     else if (t === 'select' && this.ren.selected?.kind === 'runway') html = `<span class="label">Extending</span>${seg('auto', this.opt.auto, [[1, 'Stretch parallel taxiways'], [0, 'Runway only']])}`;
-    else if (t === 'road') html = `<span class="label">Road</span>${seg('lanes', this.opt.lanes, ROAD_LANES.map(c => [c.lanes, c.name]))}`;
+    else if (t === 'road') html = `<span class="label">Road</span>${seg('lanes', this.opt.lanes, ROAD_LANES.map(c => [c.lanes, c.name]))}<span class="label">Shape</span>${seg('shape', this.opt.shape, [[0, 'Straight'], [1, 'Curve']])}<span class="label">Traffic</span>${seg('oneway', this.opt.oneway, [[0, 'Two-way'], [1, 'One-way']])}`;
+    else if (t === 'round') html = `<span class="label">Roundabout</span>${seg('round', this.opt.round, ROUNDS.map((r, i) => [i, `${r.name}<span class="opt-note"> · ${r.note}</span>`]))}`;
     else if (t === 'concourse') html = `<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
     el.innerHTML = html; el.hidden = !html;
   }
@@ -243,12 +250,12 @@ export class UI {
     } else if (want && want !== 'terminal' && this.ren.lod !== want) this.setLod(want, null);
     this.tool = t;
     document.querySelectorAll<HTMLElement>('.tool').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
-    const groundOnly = ZONES[t as ZoneType]?.groundOnly || t === 'road' || t === 'walk' || t === 'taxi' || t === 'runway';
+    const groundOnly = ZONES[t as ZoneType]?.groundOnly || t === 'road' || t === 'walk' || t === 'taxi' || t === 'runway' || t === 'round';
     if (groundOnly && this.ren.level !== 0 && t !== 'runway' && t !== 'taxi') this.setLevel(0);
     this.ren.ghost = null; this.ren.cursor = null;
     this.renderToolOpts();
     this.ren.showGuides = t === 'taxi' || t === 'concourse';
-    this.ren.showFront = t === 'road';
+    this.ren.showFront = t === 'road' && !this.opt.shape;
     this.ren.setOrbitLeft(t === 'select');
     this.hint(this.toolHint());
     this.ren.canvas.style.cursor = t === 'select' ? 'default' : 'crosshair';
@@ -272,7 +279,9 @@ export class UI {
     if (t === 'select') { if (this.ren.selected?.kind === 'runway') return 'Drag either end of the runway to extend or shorten it'; if (this.ren.mode3d) return 'Drag to orbit · right-drag to pan · scroll to zoom · click to inspect · T for plan'; return matchMedia('(pointer: coarse)').matches ? 'Drag to pan · pinch to zoom · tap to inspect' : 'Drag to pan · scroll to zoom · click to inspect · drag a module to move it'; }
     if (t === 'runway') return 'Drag to draw a runway · 1,200 m turboprop · 1,600 m E175 · 2,100 m A320 · 3,000 m A380';
     if (t === 'taxi') return `Drag to draw a taxiway · snaps to runways, aprons and other taxiways${this.opt.auto ? ' · drawn beside a runway, it links itself with end stubs and rapid exits' : ''}`;
-    if (t === 'road') return `Drag to draw a road (for cars) · run it along a terminal face, ${FRONTAGE.minGap}–${FRONTAGE.maxGap} m out, and a curb grows there; where departures sit over arrivals it becomes a two-level road · snaps to the dashed guides`;
+    if (t === 'round') return 'Click to place a roundabout · on a junction, a road end or anywhere along a road: every road that reaches it joins the ring · traffic keeps moving where a crossroads would stop it';
+    if (t === 'road' && this.opt.shape) return `Drag to draw a curved road · it leaves in line with the road it starts from, or sweeps round a corner on open ground · ${this.opt.oneway ? 'one-way, in the direction you draw · ' : ''}select a road later and drag its middle handle to bend it`;
+    if (t === 'road') return `Drag to draw a road (for cars)${this.opt.oneway ? ', one-way in the direction you draw' : ''} · run it along a terminal face, ${FRONTAGE.minGap}–${FRONTAGE.maxGap} m out, and a curb grows there; where departures sit over arrivals it becomes a two-level road · snaps to the dashed guides`;
     if (t === 'site') return `Drag to allocate a terminal site (at least ${SITES.minW} × ${SITES.minH} m) · then lay out check-in, security, a concourse and bag claim inside it · the site grows to fit`;
     if (t === 'walk') return 'Drag to draw a sidewalk (for people) · links ground-level modules, curbs and lots · can cross roads';
     if (t === 'demolish') return 'Click anything to demolish it (40% refund)';
@@ -338,6 +347,8 @@ export class UI {
     }
     const sl = slotAt(this.sim.d.gateSlots, p);
     if (sl) return { kind: 'gate', slot: sl };
+    const rd = (this.world.rounds ?? []).find(r => dist(r, p) < roundOuter(r));
+    if (rd) return { kind: 'round', round: rd };
     const tol = 8 / this.ren.cam.zoom;
     const w = [...this.world.ways].reverse().find(w => segDistWay(p, w) < Math.max(wayWidth(w.kind, w.cls, w.lanes) / 2, tol));
     if (w) return { kind: 'way', way: w };
@@ -349,7 +360,7 @@ export class UI {
   }
   hitToSel(h: Hit): Sel | null {
     return !h ? null : h.kind === 'zone' ? { kind: 'zone', id: h.zone.id, key: h.lot } : h.kind === 'runway' ? { kind: 'runway', id: h.id }
-      : h.kind === 'gate' ? { kind: 'gate', id: h.slot.zone.id, key: h.slot.key } : h.kind === 'site' ? { kind: 'site', id: h.site.id } : { kind: 'way', id: h.way.id };
+      : h.kind === 'gate' ? { kind: 'gate', id: h.slot.zone.id, key: h.slot.key } : h.kind === 'site' ? { kind: 'site', id: h.site.id } : h.kind === 'round' ? { kind: 'round', id: h.round.id } : { kind: 'way', id: h.way.id };
   }
 
   /** Snap a point for drawing: existing endpoints first, then runways, aprons, the highway, zone edges; else the grid. */
@@ -366,7 +377,9 @@ export class UI {
       const dl = p.x - r.x, dr = r.x + r.w - p.x, dt = p.y - r.y, db = r.y + r.h - p.y; const m = Math.min(dl, dr, dt, db);
       return m === dl ? { x: r.x, y: p.y } : m === dr ? { x: r.x + r.w, y: p.y } : m === dt ? { x: p.x, y: r.y } : { x: p.x, y: r.y + r.h };
     };
-    if (kind !== 'runway') for (const w of this.world.ways) if (w.kind === kind) { consider(w.a, 4); consider(w.b, 4); consider(onSeg(w.a, w.b), 1); }
+    if (kind !== 'runway') for (const w of this.world.ways) if (w.kind === kind) { consider(w.a, 4); consider(w.b, 4); for (const [a, b] of waySegs(w)) consider(onSeg(a, b), 1); }
+    // a road drawn to a roundabout aims at its centre, so it meets the ring square-on
+    if (kind === 'road') for (const r of this.world.rounds ?? []) consider({ x: r.x, y: r.y }, 5, roundOuter(r) + tol);
     if (kind === 'taxi') {
       for (const r of this.world.runways) { consider(r.a, 4); consider(r.b, 4); consider(onSeg(r.a, r.b), 2); }
       for (const gd of this.sim.d.gateGuides) {
@@ -419,6 +432,12 @@ export class UI {
     const t = this.tool;
     if (t === 'runway') { const s = this.snapFor('runway', p); this.drag = { mode: 'runway', ...base, start: s.p }; return; }
     if (isWay(t)) { const s = this.snapFor(t, p); this.drag = { mode: 'way', ...base, start: s.p, snapStart: s.snapped }; return; }
+    if (t === 'round') { this.placeRound(this.snapRound(p)); return; }
+    if (t === 'select' && this.ren.selected?.kind === 'way') {
+      const w = this.world.ways.find(q => q.id === this.ren.selected!.id);
+      const h = w && this.wayHandleAt(w, e.offsetX, e.offsetY);
+      if (w && h) { this.drag = { mode: 'bend', ...base, way: w, handle: h, orig3: { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined } }; return; }
+    }
     if (t in ZONES) { this.drag = { mode: 'zone', ...base, start: this.magnet(p, ZONES[t as ZoneType].groundOnly ? 0 : this.ren.level) }; return; }
     if (t === 'site') { this.drag = { mode: 'site', ...base, start: { x: snap(p.x, 10), y: snap(p.y, 10) } }; return; }
     if (t === 'select' && this.ren.selected?.kind === 'runway') {
@@ -460,6 +479,28 @@ export class UI {
         this.ren.hover = onEnd ? null : this.hitToSel(this.hitTest(p));
       }
       else if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; }
+      else if (this.tool === 'round') {
+        const q = this.snapRound(p); const def = ROUNDS[this.opt.round]; const chk = canPlaceRound(this.world, q.p, this.opt.round, this.sim.d.aprons);
+        const ok = chk.ok && this.sim.canAfford(def.cost);
+        this.ren.ghost = { kind: 'round', a: q.p, r: def.icd / 2, ok, snapA: q.snapped };
+        this.hint(chk.ok ? (ok ? `${def.name} roundabout · ${def.note} · ${money(def.cost)}${q.snapped ? ' · joins the roads here' : ''}` : `Not enough money: ${money(def.cost)}`) : chk.reason!, !ok);
+      }
+      if (this.tool === 'select' && this.ren.selected?.kind === 'way') {
+        const w = this.world.ways.find(q => q.id === this.ren.selected!.id);
+        if (w && this.wayHandleAt(w, e.offsetX, e.offsetY)) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; }
+      }
+      return;
+    }
+    if (dr.mode === 'bend' && dr.way && dr.orig3) {
+      const w = dr.way; const o = dr.orig3; let a = o.a, b = o.b, c = o.c;
+      if (dr.handle === 'm') c = bendThrough(a, b, { x: snap(p.x, 1), y: snap(p.y, 1) });
+      else { const q = this.snapFor(w.kind, p).p; if (dr.handle === 'a') a = q; else b = q; }
+      const chk = canPlaceWay(this.world, w.kind, a, b, this.sim.d.aprons, c);
+      const cost = Math.max(0, (wayLen({ a, b, c }) - wayLen(o)) * wayCostPerM(w.kind, w.cls, w.lanes));
+      const ok = chk.ok && this.sim.canAfford(cost);
+      dr.bend = { a, b, c, ok, cost, reason: chk.reason };
+      this.ren.ghost = { kind: 'way', a, b, c, ok, way: { kind: w.kind, cls: w.cls, lanes: w.lanes } };
+      this.hint(chk.ok ? (ok ? `${dr.handle === 'm' ? (c ? 'Bending' : 'Straight') : 'Moving the end'} · ${n0(wayLen({ a, b, c }))} m${cost ? ` · ${money(cost)}` : ''}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
       return;
     }
     if (dr.mode === 'pan') {
@@ -512,18 +553,20 @@ export class UI {
     if (dr.mode === 'way') {
       const kind = this.tool as WayKind;
       const s = this.snapFor(kind, p);
-      const b = s.snapped ? s.p : this.angled(dr.start, p, 10).b;
+      const curved = kind === 'road' && !!this.opt.shape;
+      const b = s.snapped ? s.p : curved ? { x: snap(p.x, 5), y: snap(p.y, 5) } : this.angled(dr.start, p, 10).b;
       const cls = kind === 'taxi' ? this.opt.taxi : 0, lanes = kind === 'road' ? this.opt.lanes : 0;
-      const chk = canPlaceWay(this.world, kind, dr.start, b, this.sim.d.aprons);
-      const cost = dist(dr.start, b) * wayCostPerM(kind, cls, lanes);
+      const c = curved ? this.curveControl(dr.start, b) : undefined;
+      const chk = canPlaceWay(this.world, kind, dr.start, b, this.sim.d.aprons, c);
+      const cost = wayLen({ a: dr.start, b, c }) * wayCostPerM(kind, cls, lanes);
       const extras = kind === 'taxi' && this.opt.auto && chk.ok ? autoConnectors(this.world, { a: dr.start, b, cls }, this.sim.d.aprons) : [];
       const xcost = extras.reduce((t, x) => t + dist(x.a, x.b) * wayCostPerM('taxi', cls, 0), 0);
       const ok = chk.ok && this.sim.canAfford(cost + xcost);
       dr.extras = extras;
-      this.ren.ghost = { kind: 'way', a: dr.start, b, ok, way: { kind, cls, lanes }, snapA: dr.snapStart, snapB: s.snapped, extras };
-      const what = kind === 'taxi' ? `${TAXI_CLASSES[cls === 3 ? 1 : 0].name} taxiway` : kind === 'road' ? `${lanes}-lane road` : 'Sidewalk';
+      this.ren.ghost = { kind: 'way', a: dr.start, b, c, ok, way: { kind, cls, lanes }, snapA: dr.snapStart, snapB: s.snapped, extras };
+      const what = kind === 'taxi' ? `${TAXI_CLASSES[cls === 3 ? 1 : 0].name} taxiway` : kind === 'road' ? `${lanes}-lane ${this.opt.oneway ? 'one-way ' : ''}${c ? 'curved ' : ''}road` : 'Sidewalk';
       const xs = extras.length ? ` + ${extras.length} runway link${extras.length > 1 ? 's' : ''}` : '';
-      this.hint(chk.ok ? (ok ? `${what} · ${n0(dist(dr.start, b))} m${xs} · ${money(cost + xcost)}${s.snapped ? ' · connects here' : ''}` : `Not enough money: ${money(cost + xcost)}`) : chk.reason!, !ok);
+      this.hint(chk.ok ? (ok ? `${what} · ${n0(wayLen({ a: dr.start, b, c }))} m${xs} · ${money(cost + xcost)}${s.snapped ? ' · connects here' : ''}` : `Not enough money: ${money(cost + xcost)}`) : chk.reason!, !ok);
       return;
     }
     if (dr.mode === 'zone') {
@@ -564,8 +607,15 @@ export class UI {
       if (g.ok) this.buildRunway(g.a, g.b);
       else if (dist(g.a, g.b) > 50) this.toast(canPlaceRunway(this.world, g.a, g.b).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'way' && g?.a && g.b && g.way) {
-      if (g.ok) this.buildWay(g.way.kind, g.a, g.b, g.way.cls, g.way.lanes, dr.extras ?? []);
-      else if (dist(g.a, g.b) > 10) this.toast(canPlaceWay(this.world, g.way.kind, g.a, g.b, this.sim.d.aprons).reason ?? 'Not enough money', 'bad');
+      if (g.ok) this.buildWay(g.way.kind, g.a, g.b, g.way.cls, g.way.lanes, dr.extras ?? [], g.c, g.way.kind === 'road' && !!this.opt.oneway);
+      else if (dist(g.a, g.b) > 10) this.toast(canPlaceWay(this.world, g.way.kind, g.a, g.b, this.sim.d.aprons, g.c).reason ?? 'Not enough money', 'bad');
+    } else if (dr.mode === 'bend' && dr.way && dr.bend) {
+      const bd = dr.bend; const w = dr.way;
+      if (bd.ok) {
+        w.a = bd.a; w.b = bd.b; if (bd.c) w.c = bd.c; else delete w.c;
+        if (bd.cost) { this.sim.spend(bd.cost); this.ren.float(`− ${money(bd.cost)}`, wayMid(w), PAL_BAD); }
+        this.changed(); this.ren.selected = { kind: 'way', id: w.id };
+      } else this.toast(bd.reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'extend' && dr.rw && dr.pend) {
       const pd = dr.pend;
       if (pd.ok && (pd.a.x !== dr.orig!.a.x || pd.a.y !== dr.orig!.a.y || pd.b.x !== dr.orig!.b.x || pd.b.y !== dr.orig!.b.y)) {
@@ -623,6 +673,7 @@ export class UI {
     if (s.kind === 'zone') { const z = this.sim.d.zones.find(q => q.id === s.id); return z ? { kind: 'zone', zone: z } : null; }
     if (s.kind === 'site') { const st = this.world.sites?.find(q => q.id === s.id); return st ? { kind: 'site', site: st } : null; }
     if (s.kind === 'way') { const w = this.world.ways.find(q => q.id === s.id); return w ? { kind: 'way', way: w } : null; }
+    if (s.kind === 'round') { const r = this.world.rounds?.find(q => q.id === s.id); return r ? { kind: 'round', round: r } : null; }
     if (s.kind === 'gate') { const sl = this.sim.d.gateSlots.find(q => q.zone.id === s.id && q.key === s.key); return sl ? { kind: 'gate', slot: sl } : null; }
     return { kind: 'runway', id: s.id };
   }
@@ -745,10 +796,65 @@ export class UI {
     this.toast(`Runway ${r.labels.join('/')} built · ${n0(r.length)} m · ${money(cost)}. Connect it with taxiways.`);
   }
 
-  buildWay(kind: WayKind, a: Pt, b: Pt, cls: number, lanes: number, extras: WaySpec[] = []) {
+  /** Curve tool: where the control point goes. In line with a road the new one starts from (or ends at); else round a corner. */
+  curveControl(a: Pt, b: Pt): Pt | undefined {
+    const L = dist(a, b); if (L < 20) return undefined;
+    const tangent = (p: Pt): Pt | null => {
+      for (const w of this.world.ways) if (w.kind === 'road') {
+        if (dist(w.b, p) < 1.5) return norm(sub(w.b, w.c ?? w.a));
+        if (dist(w.a, p) < 1.5) return norm(sub(w.a, w.c ?? w.b));
+      }
+      return null;
+    };
+    const from = (p: Pt, q: Pt, t: Pt): Pt | undefined => {
+      const dv = norm(sub(q, p)); const cs = dot(t, dv);
+      if (cs > 0.995) return undefined;                       // straight on
+      const k = cs > 0.25 ? (L / 2) / cs : L * 0.9;
+      return { x: p.x + t.x * Math.min(k, L * 1.6), y: p.y + t.y * Math.min(k, L * 1.6) };
+    };
+    const ta = tangent(a); if (ta) return from(a, b, ta);
+    const tb = tangent(b); if (tb) return from(b, a, tb);
+    const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+    if (Math.min(dx, dy) < 8) return undefined;
+    return dx >= dy ? { x: b.x, y: a.y } : { x: a.x, y: b.y };
+  }
+
+  /** Which handle of a selected way is under the pointer: an end, or the middle (drag it to bend a road). */
+  wayHandleAt(w: Way, sx: number, sy: number): 'a' | 'b' | 'm' | null {
+    const near = (p: Pt) => { const [x, y] = this.ren.P(p.x, p.y); return Math.hypot(x - sx, y - sy) < 11; };
+    if (w.kind === 'road' && near(wayMid(w))) return 'm';
+    if (w.kind === 'taxi') return null;
+    return near(w.a) ? 'a' : near(w.b) ? 'b' : null;
+  }
+
+  snapRound(p: Pt): { p: Pt; snapped: boolean } {
+    const tol = 16 / this.ren.cam.zoom; const R = this.sim.d.road;
+    let best: { p: Pt; d: number; pri: number } | null = null;
+    const consider = (q: Pt, pri: number) => { const d0 = dist(p, q); if (d0 <= tol && (!best || pri > best.pri || (pri === best.pri && d0 < best.d))) best = { p: { x: Math.round(q.x), y: Math.round(q.y) }, d: d0, pri }; };
+    R.nodes.forEach((q, n) => { const es = R.adj[n].map(k => R.edges[k]); if (es.some(e => e.kind === 'hwy' || isRingRef(e.ref))) return; if (es.length >= 3) consider(q, 4); else if (es.length === 1) consider(q, 2); });
+    for (const w of this.world.ways) if (w.kind === 'road') { consider(w.a, 3); consider(w.b, 3); for (const [a, b] of waySegs(w)) consider(lerpPt(a, b, clamp(projT(p, a, b), 0, 1)), 1); }
+    if (best) return { p: (best as { p: Pt }).p, snapped: true };
+    return { p: { x: snap(p.x, 5), y: snap(p.y, 5) }, snapped: false };
+  }
+
+  placeRound(q: { p: Pt }) {
+    const def = ROUNDS[this.opt.round]; const chk = canPlaceRound(this.world, q.p, this.opt.round, this.sim.d.aprons);
+    if (!chk.ok) { this.toast(chk.reason!, 'bad'); return; }
+    if (!this.sim.canAfford(def.cost)) { this.toast(`Not enough money: ${money(def.cost)}`, 'bad'); return; }
+    const id = this.world.nextId++;
+    (this.world.rounds ??= []).push({ id, x: q.p.x, y: q.p.y, size: this.opt.round });
+    this.sim.spend(def.cost); this.changed();
+    this.ren.float(`− ${money(def.cost)}`, q.p, PAL_BAD);
+    const n = roadPlan(this.sim.d).rounds.find(r => r.id === id)?.entries.length ?? 0;
+    this.toast(n ? `Roundabout built: ${n} road${n > 1 ? 's' : ''} join${n > 1 ? '' : 's'} it.` : 'Roundabout built. Draw roads to it and they join the ring.');
+  }
+
+  buildWay(kind: WayKind, a: Pt, b: Pt, cls: number, lanes: number, extras: WaySpec[] = [], c?: Pt, oneway = false) {
     const curbs0 = this.sim.d.zones.filter(z => z.auto).length, decks0 = this.sim.d.decks.length;
-    let cost = dist(a, b) * wayCostPerM(kind, cls, lanes);
-    this.world.ways.push({ id: this.world.nextId++, kind, a, b, cls, lanes });
+    let cost = wayLen({ a, b, c }) * wayCostPerM(kind, cls, lanes);
+    const nw: Way = { id: this.world.nextId++, kind, a, b, cls, lanes };
+    if (c) nw.c = c; if (oneway) nw.oneway = true;
+    this.world.ways.push(nw);
     for (const x of extras) { this.world.ways.push({ id: this.world.nextId++, kind: 'taxi', a: x.a, b: x.b, cls: x.cls, lanes: 0 }); cost += dist(x.a, x.b) * wayCostPerM('taxi', x.cls, 0); }
     this.sim.spend(cost);
     this.changed();
@@ -802,8 +908,11 @@ export class UI {
       const z = h.zone; refund = area(z) * ZONES[z.type].costPerM2 * 0.4; what = ZONES[z.type].label;
       this.world.zones = this.world.zones.filter(q => q !== z);
     } else if (h.kind === 'way') {
-      const w = h.way; refund = dist(w.a, w.b) * wayCostPerM(w.kind, w.cls, w.lanes) * 0.4; what = wayName(w.kind);
+      const w = h.way; refund = wayLen(w) * wayCostPerM(w.kind, w.cls, w.lanes) * 0.4; what = wayName(w.kind);
       this.world.ways = this.world.ways.filter(q => q !== w);
+    } else if (h.kind === 'round') {
+      refund = roundDef(h.round).cost * 0.4; what = 'Roundabout';
+      this.world.rounds = (this.world.rounds ?? []).filter(q => q !== h.round);
     } else {
       const r = this.world.runways.find(q => q.id === h.id)!; refund = runwayCost(r.a, r.b) * 0.4; what = 'Runway';
       this.world.runways = this.world.runways.filter(q => q.id !== h.id);
@@ -938,9 +1047,23 @@ export class UI {
         ${gate ? `<button class="btn danger" data-act="gateOff">Remove this gate</button><p class="muted small">The stand stays marked so you can add it back. Removing gates frees apron for something else.</p>`
           : `<button class="btn" data-act="gateOn">Add a gate here</button>`}`;
     }
+    if (sel.kind === 'round') {
+      const r = s.world.rounds?.find(q => q.id === sel.id); if (!r) return '';
+      const def = roundDef(r); const rp = roadPlan(s.d).rounds.find(q => q.id === r.id);
+      const eids = s.d.road.edges.filter(e => e.ref === ringRef(r.id)).map(e => e.id);
+      const cars = eids.reduce((n, e) => n + s.roadLoad[e], 0); const ratio = Math.max(0, ...eids.map(e => s.edgeLoadRatio(e)));
+      const other = ROUNDS[1 - r.size]; const fits = canPlaceRound(s.world, r, 1 - r.size, s.d.aprons, r.id).ok;
+      return `<h2>Roundabout <span class="lvl">${def.name}</span></h2>
+        <dl class="kv"><dt>Size</dt><dd>${def.icd} m across · ${def.lanes} lane${def.lanes > 1 ? 's' : ''} round</dd>
+          <dt>Roads joining</dt><dd class="${rp?.entries.length ? '' : 'bad'}">${rp?.entries.length ?? 0}</dd><dt>Cars on it</dt><dd>${n0(cars)}</dd>
+          <dt>Traffic</dt><dd class="${ratio > 1 ? 'bad' : ''}">${ratio < 0.5 ? 'Free-flowing' : ratio < 1 ? 'Slowing' : 'Jammed'}</dd></dl>
+        <p class="muted">Traffic circulates anticlockwise and never stops for a signal, so the roads leading in hold more cars than they would at a crossroads. Any road drawn to it joins the ring.</p>
+        ${fits ? `<button class="btn" data-act="roundSize">Make it ${other.name.toLowerCase()} (${other.note})${other.cost > def.cost ? ` · ${money(other.cost - def.cost)}` : ''}</button>` : ''}
+        <button class="btn danger" data-act="demolish">Demolish (${money(def.cost * 0.4)} back)</button>`;
+    }
     if (sel.kind === 'way') {
       const w = s.world.ways.find(q => q.id === sel.id); if (!w) return '';
-      const L = dist(w.a, w.b);
+      const L = wayLen(w);
       if (w.kind === 'taxi') {
         const letter = s.d.taxiLetter.get(w.id) ?? '';
         const C = TAXI_CLASSES[w.cls >= 3 ? 1 : 0];
@@ -956,11 +1079,12 @@ export class UI {
         const ratio = Math.max(0, ...eids.map(e => s.edgeLoadRatio(e)));
         const cars = eids.reduce((n, e) => n + s.roadLoad[e], 0);
         const up = L * (ROAD_LANES[1].costPerM - ROAD_LANES[0].costPerM);
-        return `<h2>Road <span class="lvl">${w.lanes} lanes</span></h2>
+        return `<h2>Road <span class="lvl">${w.lanes} lanes${w.oneway ? ' · one-way' : ''}${w.c ? ' · curved' : ''}</span></h2>
           <dl class="kv"><dt>Length</dt><dd>${n0(L)} m</dd><dt>Cars on it</dt><dd>${n0(cars)}</dd>
             <dt>Traffic</dt><dd class="${ratio > 1 ? 'bad' : ''}">${ratio < 0.5 ? 'Free-flowing' : ratio < 1 ? 'Slowing' : 'Jammed'}</dd></dl>
           ${w.lanes < 4 ? `<button class="btn" data-act="lanes4">Widen to 4 lanes · ${money(up)}</button>` : ''}
-          <p class="muted">Press <kbd>H</kbd> to see congestion on every road.</p>
+          <div class="row"><button class="btn" data-act="oneway">${w.oneway ? 'Make two-way' : 'Make one-way'}</button>${w.oneway ? '<button class="btn" data-act="reverse">Reverse direction</button>' : ''}${w.c ? '<button class="btn" data-act="straighten">Straighten</button>' : ''}</div>
+          <p class="muted">Drag the middle handle to bend the road, or an end handle to move it. Press <kbd>H</kbd> to see congestion on every road.</p>
           <button class="btn danger" data-act="demolish">Demolish (${money(L * wayCostPerM('road', 0, w.lanes) * 0.4)} back)</button>`;
       }
       const walkers = s.pax.filter(p => p.stage === 'walk' && p.level === 0 && segDistWay(p, w) < 4).length;
@@ -1367,8 +1491,18 @@ export class UI {
       if (!pay(dist(w.a, w.b) * (TAXI_CLASSES[1].costPerM - TAXI_CLASSES[0].costPerM))) return;
       w.cls = 3; this.changed();
     } else if (a === 'lanes4' && w && w.lanes < 4) {
-      if (!pay(dist(w.a, w.b) * (ROAD_LANES[1].costPerM - ROAD_LANES[0].costPerM))) return;
+      if (!pay(wayLen(w) * (ROAD_LANES[1].costPerM - ROAD_LANES[0].costPerM))) return;
       w.lanes = 4; this.changed();
+    }
+    else if (a === 'oneway' && w?.kind === 'road') { if (w.oneway) delete w.oneway; else w.oneway = true; this.changed(); this.ren.selected = { kind: 'way', id: w.id }; this.refresh(true); }
+    else if (a === 'reverse' && w?.oneway) { [w.a, w.b] = [w.b, w.a]; this.changed(); this.ren.selected = { kind: 'way', id: w.id }; this.refresh(true); }
+    else if (a === 'straighten' && w?.c) {
+      if (!canPlaceWay(s.world, 'road', w.a, w.b, s.d.aprons).ok) { this.toast('Something is in the way of the straight line', 'bad'); return; }
+      delete w.c; this.changed(); this.ren.selected = { kind: 'way', id: w.id }; this.refresh(true);
+    }
+    else if (a === 'roundSize' && sel?.kind === 'round') {
+      const r = s.world.rounds?.find(q => q.id === sel.id);
+      if (r) { const up = ROUNDS[1 - r.size].cost - ROUNDS[r.size].cost; if (up > 0 && !pay(up)) return; r.size = 1 - r.size; this.changed(); this.ren.selected = { kind: 'round', id: r.id }; this.refresh(true); }
     }
     else if ((a === 'gateOff' || a === 'gateOn') && sel?.kind === 'gate') {
       const sl = s.d.gateSlots.find(q => q.zone.id === sel.id && q.key === sel.key);

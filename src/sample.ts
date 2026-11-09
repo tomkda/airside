@@ -35,6 +35,10 @@ export function sampleWorld(): World {
   way('road', 2780, 2898, 3320, 2898, 0, 4);
   way('road', 3320, 2898, 3320, 5700, 0, 4);
   way('road', 2780, 2955, 3320, 2955, 0, 2);
+  // v0.11: a roundabout on each approach, joined by a curved link road, so a driver who misses the terminal can
+  // come round again. Both sit on the approach roads and cut them back to the ring by themselves.
+  w.rounds!.push({ id: w.nextId++, x: 2780, y: 3320, size: 1 }, { id: w.nextId++, x: 3320, y: 3320, size: 0 });
+  w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 2780, y: 3320 }, b: { x: 3320, y: 3320 }, c: { x: 3050, y: 3440 }, cls: 0, lanes: 2 });
 
   // No sidewalk is drawn: the lot lays its own to the arrivals curb (v0.9), with crosswalks over both roads.
   return w;

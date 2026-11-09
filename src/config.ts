@@ -161,6 +161,18 @@ export const ROAD_LANES = [
   { lanes: 4, name: '4 lanes', width: 16, costPerM: 6500 },
 ];
 export const WALK = { width: 4, costPerM: 900 };
+// v0.11. Roundabouts follow FHWA's "Roundabouts: An Informational Guide" (NCHRP Report 672, ch. 6): an inscribed
+// circle of 27–55 m for one circulating lane and 46–67 m for two, with 4.3–4.9 m per circulating lane plus a
+// truck apron round the island. Capacity is in the same guide's planning range: about 1,800 vehicles an hour
+// through a single-lane roundabout, against roughly 1,200 for a stop-controlled crossroads.
+export const ROUNDS = [
+  { name: 'Compact', note: '36 m, one lane', icd: 36, width: 6.5, lanes: 1, cost: 160000 },
+  { name: 'Large', note: '56 m, two lanes', icd: 56, width: 10, lanes: 2, cost: 290000 },
+];
+// Curves: a 14 m centreline radius is a tight low-speed turn that a bus can still make (AASHTO Green Book,
+// minimum turning radii: about 7 m for a car, 12–13 m for a city bus). Chords stay longer than the network's
+// 4 m joining tolerance.
+export const ROADS = { minRadius: 14, minChord: 5.5, straighten: 3, onewayCost: 0.8, ringSpeed: 0.7, junctionDelay: 0.75 };
 
 const GROWTH_INTL = 0.16;
 export interface Airline {

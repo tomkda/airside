@@ -1,6 +1,6 @@
 {
   "name": "airside",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "Airside: airport builder / simulator, browser alpha",
   "type": "module",
@@ -9,7 +9,7 @@
     "dev": "node scripts/build.mjs --watch",
     "check": "tsc --noEmit",
     "simtest": "node scripts/simtest.mjs",
-    "test": "node scripts/simtest.mjs && node scripts/terminals.mjs && node scripts/stress.mjs && node scripts/growth.mjs",
+    "test": "node scripts/simtest.mjs && node scripts/terminals.mjs && node scripts/stress.mjs && node scripts/growth.mjs && node scripts/roads.mjs",
     "shot": "node scripts/shot.cjs"
   },
   "devDependencies": {

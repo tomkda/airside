@@ -1,7 +1,8 @@
 // Scenery (v0.9): where trees, street lamps, apron floodlight masts and the control tower go.
 // Pure and deterministic: it follows the player's layout, so planting appears along new roads and clears
 // itself from anything built later. Both renderers draw from it; the sim never reads it.
-import { Pt, Rect, segDist, inRect, pointInPoly, dist, sub, norm, add, mul } from './geom';
+import { Pt, Rect, segDist, inRect, pointInPoly, dist, sub, norm, add, mul, polyLen, along } from './geom';
+import { wayPts, roundR, roundDef, roundOuter } from './ways';
 import { SITE } from './config';
 import type { World, Derived } from './world';
 import { wayWidth } from './world';
@@ -14,7 +15,8 @@ const hash = (a: number, b: number) => { const h = Math.sin(a * 127.1 + b * 311.
 
 export function scenery(world: World, d: Derived): Scenery {
   const hit = cache.get(d); if (hit) return hit;
-  const roads = [...world.ways.filter(w => w.kind === 'road' || w.kind === 'walk'), ...d.autoWalks];
+  // v0.11: roads are taken as straight pieces, so trees and lamps follow curves and keep off roundabouts
+  const roads = [...world.ways.filter(w => w.kind === 'walk'), ...d.autoWalks, ...d.roadPieces.map(p => ({ ...p, kind: 'road' as const, cls: 0, id: p.ref }))];
   const taxis = [...world.ways.filter(w => w.kind === 'taxi').map(w => ({ a: w.a, b: w.b, w: wayWidth('taxi', w.cls, 0) })), ...d.airExtra.map(x => ({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0) }))];
   const pads: { r: Rect; k: number }[] = [
     ...d.zones.map(z => ({ r: z as Rect, k: 7 })), ...(world.sites ?? []).map(s => ({ r: s as Rect, k: 4 })), ...d.aprons.map(a => ({ r: a.rect, k: 14 })),
@@ -29,6 +31,7 @@ export function scenery(world: World, d: Derived): Scenery {
     for (const r of d.runways) if (segDist(p, r.rw.a, r.rw.b) < r.width / 2 + 110) return false;
     for (const t of taxis) if (segDist(p, t.a, t.b) < t.w / 2 + 22) return false;
     for (const w of roads) if (segDist(p, w.a, w.b) < wayWidth(w.kind, w.cls, w.lanes) / 2 + roadClear) return false;
+    for (const r of d.rounds) if (dist(r, p) < roundOuter(r) + 4) return false;
     return true;
   };
 
@@ -36,12 +39,19 @@ export function scenery(world: World, d: Derived): Scenery {
   const plant = (p: Pt, s: number, k: number) => { if (trees.length < 6500 && free(p)) trees.push({ x: p.x, y: p.y, s, k }); };
   // avenues: both sides of every road, every ~18 m
   for (const w of world.ways.filter(q => q.kind === 'road')) {
-    const L = dist(w.a, w.b); const dv = norm(sub(w.b, w.a)); const n = { x: -dv.y, y: dv.x };
+    const pts = wayPts(w); const L = polyLen(pts);
     const off = wayWidth('road', 0, w.lanes) / 2 + 8;
     for (let s = 9; s < L - 9; s += 18) for (const side of [-1, 1]) {
       const j = hash(w.id * 31 + s, side);
-      plant(add(add(w.a, mul(dv, s + (j - 0.5) * 6)), mul(n, side * (off + j * 3))), 7 + j * 4, j);
+      const at = along(pts, s + (j - 0.5) * 6); const n = { x: -Math.sin(at.ang), y: Math.cos(at.ang) };
+      plant(add(at.p, mul(n, side * (off + j * 3))), 7 + j * 4, j);
     }
+  }
+  // a specimen tree in the middle of each roundabout, and a ring of small ones on the large size
+  for (const r of d.rounds) {
+    const inner = roundR(r) - roundDef(r).width / 2 - 2.6;
+    trees.push({ x: r.x, y: r.y, s: Math.min(11, inner * 0.9), k: hash(r.x, r.y) });
+    if (inner > 9) for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2 + 0.4; trees.push({ x: r.x + Math.cos(a) * inner * 0.62, y: r.y + Math.sin(a) * inner * 0.62, s: 4.5, k: hash(r.x + i, r.y) }); }
   }
   // the highway: a looser double row
   for (let x = 20; x < SITE.width; x += 26) for (const side of [-1, 1]) {
@@ -62,9 +72,9 @@ export function scenery(world: World, d: Derived): Scenery {
   // street lamps every ~45 m on player roads, alternating sides
   const lamps: Pt[] = [];
   for (const w of world.ways.filter(q => q.kind === 'road')) {
-    const L = dist(w.a, w.b); const dv = norm(sub(w.b, w.a)); const n = { x: -dv.y, y: dv.x };
+    const pts = wayPts(w); const L = polyLen(pts);
     const off = wayWidth('road', 0, w.lanes) / 2 + 2; let k = 0;
-    for (let s = 20; s < L - 10; s += 45) { const p = add(add(w.a, mul(dv, s)), mul(n, (k++ % 2 ? 1 : -1) * off)); lamps.push(p); }
+    for (let s = 20; s < L - 10; s += 45) { const at = along(pts, s); const p = add(at.p, mul({ x: -Math.sin(at.ang), y: Math.cos(at.ang) }, (k++ % 2 ? 1 : -1) * off)); if (!d.rounds.some(r => dist(r, p) < roundOuter(r) + 1)) lamps.push(p); }
   }
   // apron floodlight masts: along each apron's building edge, between stands
   const masts: Pt[] = [];

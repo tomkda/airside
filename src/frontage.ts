@@ -15,6 +15,7 @@ import { Pt, Rect, sub, dot, dist, norm, lerpPt, rectsOverlap } from './geom';
 import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way } from './world';
 import { sidesOf } from './gates';
+import { waySegs } from './ways';
 
 export type Deck = 'dep' | 'arr' | 'both';
 export interface AutoTag { road: number; module: number; deck: Deck; gap: number }
@@ -30,7 +31,7 @@ interface Cand { m: Zone; road: Way; level: Level; a: Pt; b: Pt; out: Pt; gap: n
 
 /** Curbs and decks for every road that runs along a terminal's landside face. */
 export function autoFrontage(world: World): { curbs: Zone[]; decks: DeckSpan[]; guides: FrontGuide[] } {
-  const roads = world.ways.filter(w => w.kind === 'road');
+  const roads = world.ways.filter(w => w.kind === 'road' && !w.c);   // curbs grow along straight roads
   const mods = world.zones.filter(z => FRONT_TYPES.has(z.type));
   const cands: Cand[] = [];
   const guides: FrontGuide[] = [];
@@ -172,7 +173,8 @@ export function autoWalks(world: World, zones: Zone[], aprons: Rect[]): Way[] {
  */
 export function autoRoads(world: World, zones: Zone[], aprons: Rect[], highwayY: number, siteW: number, reach: number): Way[] {
   const out: Way[] = [];
-  const roads = [...world.ways.filter(w => w.kind === 'road'), { id: -1, kind: 'road' as const, a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY }, cls: 0, lanes: 6 }];
+  // a curved road is a run of straight chords here: a drive can meet any of them
+  const roads = [...world.ways.filter(w => w.kind === 'road').flatMap(w => waySegs(w).map(([a, b]) => ({ ...w, a, b, c: undefined }))), { id: -1, kind: 'road' as const, a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY }, cls: 0, lanes: 6 }];
   const blocked = blocker(world, zones, aprons);
   const onSeg = (p: Pt, a: Pt, b: Pt): Pt => { const dx = b.x - a.x, dy = b.y - a.y; const L2 = dx * dx + dy * dy || 1; const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2)); return { x: a.x + dx * t, y: a.y + dy * t }; };
   for (const fac of zones.filter(z => NEEDS_ROAD.has(z.type))) {

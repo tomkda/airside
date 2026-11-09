@@ -2,8 +2,9 @@
 // Time unit: minutes of the day. One sim "day" stands in for several calendar days.
 // Everything moves on networks: aircraft on taxiways, cars on roads, people through doors, cores and sidewalks.
 import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
-import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal } from './config';
+import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
+import { wayLen, isRingRef } from './ways';
 import { flowBins, newFlow, tenantsOf } from './commerce';
 import { Goal, checkGoals } from './goals';
 import { DJ, dijkstra, trace, nearestNode } from './net';
@@ -101,6 +102,7 @@ export class Sim {
   gateBusy = new Map<string, Flight | null>();
   lotUsed = 0;
   roadLoad = new Float32Array(0);
+  roadCap = new Float32Array(0);
   stats = emptyStats();
   plan!: PlanInfo;
   history: Report[] = [];
@@ -196,6 +198,12 @@ export class Sim {
     this.d = derive(this.world);
     this.airCache.clear(); this.roadCache.clear(); this.shopLoad.clear();
     this.roadLoad = new Float32Array(this.d.road.edges.length);
+    // v0.11: how much of its length each road edge can use. Traffic stops and starts at a crossroads or T, so an
+    // edge that ends at one holds less; a roundabout keeps traffic moving, so its ring and its approaches do not lose any.
+    const R = this.d.road;
+    this.roadCap = new Float32Array(R.edges.length).fill(1);
+    const stopAt = (n: number) => R.adj[n].length >= 3 && !R.adj[n].some(k => R.edges[k].kind === 'hwy' || isRingRef(R.edges[k].ref));
+    for (const e of R.edges) if (e.kind !== 'hwy' && !isRingRef(e.ref) && (stopAt(e.u) || stopAt(e.v))) this.roadCap[e.id] = ROADS.junctionDelay;
     const keep = new Map(this.procs);
     this.procs.clear();
     for (const z of this.d.zones) {
@@ -1085,7 +1093,7 @@ export class Sim {
   // ---------------------------------------------------------------- roads, cars, curbs, lots
   roadDJ(target: number): DJ {
     let dj = this.roadCache.get(target);
-    if (!dj) { dj = dijkstra(this.d.road, [{ n: target, c: 0 }], undefined, e => e.len / (e.kind === 'hwy' ? 1.6 : e.lanes >= 4 ? 1.25 : 1)); this.roadCache.set(target, dj); }
+    if (!dj) { dj = dijkstra(this.d.road, [{ n: target, c: 0 }], undefined, e => e.len / (e.kind === 'hwy' ? 1.6 : e.lanes >= 4 ? 1.25 : 1), -1); this.roadCache.set(target, dj); }
     return dj;
   }
   roadRoute(from: number, to: number): { pts: Pt[]; eids: number[] } | null {
@@ -1206,13 +1214,13 @@ export class Sim {
   /** Speed factor for a road edge from its current load. */
   congestion(eid: number) {
     const e = this.d.road.edges[eid]; if (!e) return 1;
-    const cap = Math.max(2, (e.lanes * e.len) / 9);
+    const cap = Math.max(2, ((e.lanes * e.len) / 9) * (this.roadCap[eid] ?? 1));
     const x = this.roadLoad[eid] / cap;
     return x < 0.5 ? 1 : Math.max(0.08, 1 / (1 + 6 * (x - 0.5) * (x - 0.5)));
   }
   edgeLoadRatio(eid: number) {
     const e = this.d.road.edges[eid]; if (!e) return 0;
-    return this.roadLoad[eid] / Math.max(2, (e.lanes * e.len) / 9);
+    return this.roadLoad[eid] / Math.max(2, ((e.lanes * e.len) / 9) * (this.roadCap[eid] ?? 1));
   }
 
   updateCars(dt: number) {
@@ -1281,7 +1289,7 @@ export class Sim {
     s.cost.staff = staffN * TUNE.wagePerDay;
     s.cost.upkeep = this.world.zones.reduce((u, z) => u + z.w * z.h * ZONES[z.type].upkeepPerM2 * (z.type === 'parking' ? 1 + 0.6 * ((z.floors ?? 1) - 1) : z.type === 'hotel' ? 0 : 1), 0)
       + this.d.runways.reduce((u, r) => u + r.length * 4, 0)
-      + this.world.ways.reduce((u, w) => u + dist(w.a, w.b) * (w.kind === 'taxi' ? 1.2 : w.kind === 'road' ? 0.8 : 0.2), 0);
+      + this.world.ways.reduce((u, w) => u + wayLen(w) * (w.kind === 'taxi' ? 1.2 : w.kind === 'road' ? 0.8 : 0.2), 0);
     // Hotels: early departures and late arrivals fill rooms; the airport takes a ground-lease share per room night.
     let nights = s.paxDep * GROWTH.hotelGuests;
     for (const h of this.d.zones) if (h.type === 'hotel' && this.d.served.has(h.id)) {
