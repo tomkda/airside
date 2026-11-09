@@ -114,3 +114,49 @@ export function rng(seed: number) {
 export const snap = (v: number, g: number) => Math.round(v / g) * g;
 export const deg = (r: number) => (r * 180) / Math.PI;
 export const rad = (d: number) => (d * Math.PI) / 180;
+
+// ------------------------------------------------------------ curves and polylines (v0.11)
+/** Points along a quadratic curve from a to b with control c: n chords, n + 1 points. */
+export function bezPts(a: Pt, c: Pt, b: Pt, n: number): Pt[] {
+  const out: Pt[] = [];
+  for (let i = 0; i <= n; i++) { const t = i / n, u = 1 - t; out.push({ x: u * u * a.x + 2 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2 * u * t * c.y + t * t * b.y }); }
+  return out;
+}
+/** Tightest radius along a quadratic curve. */
+export function bezMinRadius(a: Pt, c: Pt, b: Pt) {
+  let m = Infinity;
+  const ddx = 2 * (a.x - 2 * c.x + b.x), ddy = 2 * (a.y - 2 * c.y + b.y);
+  for (let i = 0; i <= 24; i++) {
+    const t = i / 24; const dx = 2 * (1 - t) * (c.x - a.x) + 2 * t * (b.x - c.x), dy = 2 * (1 - t) * (c.y - a.y) + 2 * t * (b.y - c.y);
+    const cr = Math.abs(dx * ddy - dy * ddx); const s = Math.hypot(dx, dy);
+    if (cr > 1e-9) m = Math.min(m, (s * s * s) / cr);
+  }
+  return m;
+}
+/** A polyline moved sideways by k metres (positive = right of travel on screen), mitred at each vertex. */
+export function offsetLine(pts: Pt[], k: number): Pt[] {
+  if (!k) return pts;
+  const out: Pt[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[Math.max(0, i - 1)], q = pts[Math.min(pts.length - 1, i + 1)];
+    const d0 = i > 0 ? norm(sub(pts[i], p)) : norm(sub(q, pts[i])), d1 = i < pts.length - 1 ? norm(sub(q, pts[i])) : d0;
+    const n = norm({ x: -(d0.y + d1.y), y: d0.x + d1.x });
+    const cs = Math.max(0.5, -d0.y * n.x + d0.x * n.y);
+    out.push({ x: pts[i].x + (n.x * k) / cs, y: pts[i].y + (n.y * k) / cs });
+  }
+  return out;
+}
+/** The part of a polyline between distances d0 and d1 along it. */
+export function sliceLine(pts: Pt[], d0: number, d1: number): Pt[] {
+  const out: Pt[] = []; let s = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i]; const l = dist(a, b); if (l <= 0) continue;
+    const e = s + l;
+    if (e > d0 && s < d1) {
+      if (!out.length) out.push(s >= d0 ? a : lerpPt(a, b, (d0 - s) / l));
+      out.push(e <= d1 ? b : lerpPt(a, b, (d1 - s) / l));
+    }
+    s = e;
+  }
+  return out;
+}

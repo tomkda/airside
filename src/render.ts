@@ -1,7 +1,7 @@
 // Canvas renderer. Reads sim state, never writes it.
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
-import { Pt, Rect, add, mul, sub, norm, clamp, center, dist } from './geom';
+import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along } from './geom';
 import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind } from './config';
 import type { Sim, Flight } from './sim';
 import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
@@ -9,6 +9,7 @@ import type { LItem } from './layout';
 import { Renderer3D } from './render3d';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
+import { isRingRef, wayPts, wayMid } from './ways';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -21,11 +22,11 @@ export function heatRamp(v: number, alpha = 1) {
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Ghost {
-  kind: 'zone' | 'runway' | 'way'; rect?: Rect; a?: Pt; b?: Pt; ok: boolean;
+  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
   way?: { kind: WayKind; cls: number; lanes: number }; snapA?: boolean; snapB?: boolean;
   extras?: { a: Pt; b: Pt; cls: number }[];
 }
-export type Sel = { kind: 'zone' | 'runway' | 'way' | 'gate' | 'site'; id: number; key?: string };
+export type Sel = { kind: 'zone' | 'runway' | 'way' | 'gate' | 'site' | 'round'; id: number; key?: string };
 
 const HS = 3.4;            // vertical exaggeration for heights
 
@@ -247,39 +248,74 @@ export class Renderer {
     const VERGE = 'rgba(150,158,118,0.28)', KERB = '#8A8375', ASPHALT = '#9C968A', HWY = '#948E83', LINE = '#F1EBDC', YEL = '#D9B24C';
     g.lineJoin = 'round';
     if (far) g.globalAlpha = 0.55;
-    // grass verge, kerb, asphalt: segments, then the turning curves and ramps that round every junction
-    if (!far && z > 0.3) { for (const s of RP.segs) this.line(s.a, s.b, s.w + (s.hwy ? 14 : 9), VERGE, 0, 'round', 2); for (const k of RP.ramps) this.curve(k, k.w + 9, VERGE, 2); }
-    for (const s of RP.segs) this.line(s.a, s.b, s.w + 1.6, KERB, 0, 'round', 1.6);
+    // grass verge, kerb, asphalt: each road as one smooth path, then the turning curves and ramps that round every junction
+    const ringOut = (r: { r: number; w: number }) => r.r + r.w / 2;
+    if (!far && z > 0.3) {
+      for (const s of RP.paths) this.pline(s.pts, s.w + (s.hwy ? 14 : 9), VERGE, 'round', 2);
+      for (const k of RP.ramps) this.curve(k, k.w + 9, VERGE, 2);
+      for (const r of RP.rounds) this.disc(r.c, ringOut(r) + 5, VERGE);
+    }
+    for (const s of RP.paths) this.pline(s.pts, s.w + 1.6, KERB, 'round', 1.6);
     for (const k of [...RP.turns, ...RP.ramps]) this.curve(k, k.w + 1.6, KERB, 1.6);
-    for (const s of RP.segs) this.line(s.a, s.b, s.w, s.hwy ? HWY : ASPHALT, 0, 'round', 1);
+    for (const r of RP.rounds) this.disc(r.c, ringOut(r) + 0.8, KERB);
+    for (const s of RP.paths) this.pline(s.pts, s.w, s.hwy ? HWY : ASPHALT, 'round', 1);
     for (const k of [...RP.turns, ...RP.ramps]) this.curve(k, k.w, ASPHALT, 1);
+    for (const r of RP.rounds) this.disc(r.c, ringOut(r), ASPHALT);
     g.globalAlpha = 1;
+    // roundabouts: a paved truck apron round a planted island
+    for (const r of RP.rounds) {
+      const inner = r.r - r.w / 2;
+      this.disc(r.c, inner, far ? '#B5BD92' : '#B9AE9B');
+      if (far) continue;
+      this.disc(r.c, inner - 0.3, '#C9BFAC'); this.disc(r.c, inner - 2.2, KERB); this.disc(r.c, inner - 2.6, '#B5BD92');
+      if (z > 0.6 && inner > 9) this.ring(r.c, (inner - 2.6) * 0.62, 0.5, 'rgba(96,112,72,0.35)');
+    }
     // congestion overlay
     if (this.overlay) for (const e of sim.d.road.edges) {
       const x = sim.edgeLoadRatio(e.id); if (x < 0.25) continue;
       const col = x < 0.5 ? 'rgba(194,133,46,0.55)' : x < 1 ? 'rgba(194,96,46,0.7)' : 'rgba(176,71,43,0.85)';
-      this.line(sim.d.road.nodes[e.u], sim.d.road.nodes[e.v], e.kind === 'hwy' ? 24 : wayWidth('road', 0, e.lanes), col, 0, 'round', 2);
+      this.line(sim.d.road.nodes[e.u], sim.d.road.nodes[e.v], e.kind === 'hwy' ? 24 : isRingRef(e.ref) ? 6 : wayWidth('road', 0, e.lanes), col, 0, 'round', 2);
     }
     if (z > 0.35 && !far) {
       const dash = [Math.max(2, 3 * z), Math.max(3, 6 * z)];
-      for (const s of RP.segs) {
-        const L = dist(s.a, s.b); const dv = norm(sub(s.b, s.a)); const n = { x: -dv.y, y: dv.x };
-        const a = add(s.a, mul(dv, s.trimA)), b = add(s.a, mul(dv, L - s.trimB)); if (L - s.trimA - s.trimB < 2) continue;
-        const off = (p: Pt, k: number) => add(p, mul(n, k));
-        // edge lines
-        for (const k of [-1, 1]) this.line(off(a, k * (s.w / 2 - 0.5)), off(b, k * (s.w / 2 - 0.5)), 0.18, LINE, 0, 'butt', 0.5);
+      for (const s of RP.paths) {
+        if (s.len - s.trimA - s.trimB < 2) continue;
+        const mid = sliceLine(s.pts, s.trimA, s.len - s.trimB);
+        const off = (k: number, w: number, col: string, mp = 0.5) => this.pline(offsetLine(mid, k), w, col, 'butt', mp);
+        // edge lines; on a one-way road the left one is yellow
+        off(s.w / 2 - 0.5, 0.18, LINE); off(-(s.w / 2 - 0.5), 0.18, s.ow ? YEL : LINE);
         if (s.hwy) {   // three lanes each way either side of a barrier
-          this.line(s.a, s.b, 1.2, '#7F7A70', 0, 'butt', 1); this.line(s.a, s.b, 0.3, '#CFC8BA', 0, 'butt', 0.5);
-          g.setLineDash(dash); for (const k of [-8, -4.4, 4.4, 8]) this.line(off(s.a, k), off(s.b, k), 0.18, LINE, 0, 'butt', 0.5); g.setLineDash([]);
+          this.pline(s.pts, 1.2, '#7F7A70', 'butt', 1); this.pline(s.pts, 0.3, '#CFC8BA', 'butt', 0.5);
+          g.setLineDash(dash); for (const k of [-8, -4.4, 4.4, 8]) this.pline(offsetLine(s.pts, k), 0.18, LINE, 'butt', 0.5); g.setLineDash([]);
+        } else if (s.ow) {
+          g.setLineDash(dash); for (const k of s.lanes >= 4 ? [-s.w / 4, 0, s.w / 4] : [0]) off(k, 0.18, LINE); g.setLineDash([]);
         } else if (s.lanes >= 4) {
-          g.setLineDash(dash); for (const k of [-1, 1]) this.line(off(a, k * s.w / 4), off(b, k * s.w / 4), 0.18, LINE, 0, 'butt', 0.5); g.setLineDash([]);
-          for (const k of [-1.1, 1.1]) this.line(off(a, k), off(b, k), 0.16, YEL, 0, 'butt', 0.5);
-        } else { g.setLineDash(dash); this.line(a, b, 0.2, YEL, 0, 'butt', 0.6); g.setLineDash([]); }
+          g.setLineDash(dash); for (const k of [-1, 1]) off(k * s.w / 4, 0.18, LINE); g.setLineDash([]);
+          for (const k of [-1.1, 1.1]) off(k, 0.16, YEL);
+        } else { g.setLineDash(dash); off(0, 0.2, YEL, 0.6); g.setLineDash([]); }
       }
       // planted medians, with a tree every 14 m
       for (const m of RP.medians) {
-        this.line(m.a, m.b, 1.9, '#8A8375', 0, 'round', 1.2); this.line(m.a, m.b, 1.5, '#B5BD92', 0, 'round', 1);
-        if (z > 0.8) { const L = dist(m.a, m.b); g.fillStyle = 'rgba(96,112,72,0.7)'; g.beginPath(); for (let u = 5; u < L - 3; u += 14) { const p = lerp2(m.a, m.b, u / L); const [x, y] = this.P(p.x, p.y); g.moveTo(x + 1.6 * z, y); g.arc(x, y, 1.6 * z, 0, Math.PI * 2); } g.fill(); }
+        this.pline(m, 1.9, '#8A8375', 'round', 1.2); this.pline(m, 1.5, '#B5BD92', 'round', 1);
+        if (z > 0.8) { const L = polyLen(m); g.fillStyle = 'rgba(96,112,72,0.7)'; g.beginPath(); for (let u = 5; u < L - 3; u += 14) { const p = along(m, u).p; const [x, y] = this.P(p.x, p.y); g.moveTo(x + 1.6 * z, y); g.ellipse(x, y, 1.6 * z, 1.6 * z * this.yScale, 0, 0, Math.PI * 2); } g.fill(); }
+      }
+      // roundabout markings: splitter islands, yield lines, the ring's edge lines, arrows round the ring
+      for (const il of RP.islands) { g.strokeStyle = KERB; g.lineWidth = Math.max(1, 0.5 * z); g.lineJoin = 'round'; this.path(il, 0); g.stroke(); this.poly(il, '#C9BFAC'); }
+      if (z > 0.5) { g.setLineDash([Math.max(1.5, 0.9 * z), Math.max(1.5, 0.9 * z)]); for (const y of RP.yields) this.line(y.a, y.b, 0.5, LINE, 0, 'butt', 1); g.setLineDash([]); }
+      for (const r of RP.rounds) {
+        this.ring(r.c, r.r - r.w / 2 + 0.45, 0.18, YEL);
+        if (r.lanes > 1) { g.setLineDash(dash); this.ring(r.c, r.r, 0.18, LINE); g.setLineDash([]); }
+        // the outer edge line breaks at each entry
+        const gaps = r.entries.map(e => ({ a: e.ang, h: Math.min(0.9, (e.w / 2 + 9) / ringOut(r)) })).sort((p, q) => p.a - q.a);
+        if (!gaps.length) this.ring(r.c, ringOut(r) - 0.45, 0.18, LINE);
+        else for (let i = 0; i < gaps.length; i++) {
+          const a0 = gaps[i].a + gaps[i].h; const nx = gaps[(i + 1) % gaps.length]; let a1 = nx.a - nx.h; if (i === gaps.length - 1) a1 += Math.PI * 2;
+          if (a1 > a0) this.ring(r.c, ringOut(r) - 0.45, 0.18, LINE, a0, a1);
+        }
+        if (z > 1) {
+          const n = Math.max(3, Math.round(r.r / 5));
+          for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2 + 0.3; if (r.entries.some(e => Math.abs(Math.atan2(Math.sin(a - e.ang), Math.cos(a - e.ang))) < 0.3)) continue; this.arrow({ x: r.c.x + Math.cos(a) * r.r, y: r.c.y + Math.sin(a) * r.r }, a - Math.PI / 2, 'ahead', LINE); }
+        }
       }
       if (z > 0.55) for (const st of RP.stops) this.line(st.a, st.b, 0.5, LINE, 0, 'butt', 1);
       if (z > 1) for (const ar of RP.arrows) this.arrow(ar.p, ar.ang, ar.kind, LINE);
@@ -297,7 +333,17 @@ export class Renderer {
     }
     this.label('STATE ROUTE 12', { x: 1500, y: HY + 48 }, 0, clamp(60 * z, 8, 11), PAL.ink3, { spacing: 3 });
     this.label('TO LAKESHORE →', { x: SITE.cityX - 500, y: HY + 48 }, 0, clamp(60 * z, 8, 11), PAL.ink3, { spacing: 3 });
-    for (const r of sim.world.ways) if (r.kind === 'road') this.wayHighlight(r.id, r.a, r.b, wayWidth('road', 0, r.lanes));
+    for (const r of sim.world.ways) if (r.kind === 'road') this.wayHighlight(r.id, r.a, r.b, wayWidth('road', 0, r.lanes), wayPts(r));
+    const sw = this.selected?.kind === 'way' ? sim.world.ways.find(q => q.id === this.selected!.id && q.kind !== 'taxi') : undefined;
+    if (sw && !this.ghost) for (const [p, mid] of [[sw.a, false], [sw.b, false], ...(sw.kind === 'road' ? [[wayMid(sw), true] as const] : [])] as const) {
+      const [x, y] = this.P(p.x, p.y);
+      g.fillStyle = mid ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2;
+      g.beginPath(); g.arc(x, y, mid ? 6 : 5, 0, Math.PI * 2); g.fill(); g.stroke();
+    }
+    for (const r of RP.rounds) {
+      const sel = this.selected?.kind === 'round' && this.selected.id === r.id, hov = this.hover?.kind === 'round' && this.hover.id === r.id;
+      if (sel || hov) this.ring(r.c, ringOut(r) + 3, 3, sel ? 'rgba(47,93,124,0.45)' : 'rgba(47,93,124,0.25)');
+    }
   }
   /** A painted lane arrow: ahead, or hooked left or right. */
   arrow(p: Pt, ang: number, kind: 'ahead' | 'left' | 'right', color: string) {
@@ -340,12 +386,27 @@ export class Renderer {
     void g;
   }
 
-  wayHighlight(id: number, a: Pt, b: Pt, w: number) {
+  /** A stroked polyline, w metres wide. */
+  pline(pts: Pt[], wM: number, color: string, cap: CanvasLineCap = 'butt', minPx = 0.6) {
+    if (pts.length < 2) return;
+    const g = this.ctx; g.strokeStyle = color; g.lineWidth = Math.max(minPx, wM * this.cam.zoom); g.lineCap = cap; g.lineJoin = 'round';
+    this.path(pts, 0, false); g.stroke();
+  }
+  disc(c: Pt, r: number, fill: string) {
+    const g = this.ctx; const [x, y] = this.P(c.x, c.y); const z = this.cam.zoom;
+    g.fillStyle = fill; g.beginPath(); g.ellipse(x, y, Math.max(0.5, r * z), Math.max(0.5, r * z * this.yScale), 0, 0, Math.PI * 2); g.fill();
+  }
+  ring(c: Pt, r: number, wM: number, color: string, a0 = 0, a1 = Math.PI * 2) {
+    const g = this.ctx; const [x, y] = this.P(c.x, c.y); const z = this.cam.zoom;
+    g.strokeStyle = color; g.lineWidth = Math.max(0.6, wM * z); g.lineCap = 'butt';
+    g.beginPath(); g.ellipse(x, y, Math.max(0.5, r * z), Math.max(0.5, r * z * this.yScale), 0, a0, a1); g.stroke();
+  }
+  wayHighlight(id: number, a: Pt, b: Pt, w: number, pts?: Pt[]) {
     const sel = this.selected?.kind === 'way' && this.selected.id === id;
     const hov = this.hover?.kind === 'way' && this.hover.id === id;
     if (!sel && !hov) return;
     this.ctx.globalAlpha = sel ? 0.9 : 0.5;
-    this.line(a, b, w + 10, 'rgba(47,93,124,0.45)', 0, 'round', 4);
+    this.pline(pts ?? [a, b], w + 10, 'rgba(47,93,124,0.45)', 'round', 4);
     this.ctx.globalAlpha = 1;
   }
 
@@ -1201,8 +1262,8 @@ export class Renderer {
     }
     g.fillStyle = '#F2D9A6';
     for (const t of sim.world.ways) if (t.kind === 'road') {
-      const L = dist(t.a, t.b); const step = z > 0.4 ? 40 : 120; const d = norm(sub(t.b, t.a));
-      for (let s = 0; s <= L; s += step) { const p = add(t.a, mul(d, s)); const [x, y] = this.P(p.x, p.y); g.fillRect(x - 0.6, y - 0.6, 1.2, 1.2); }
+      const pts = wayPts(t); const L = polyLen(pts); const step = z > 0.4 ? 40 : 120;
+      for (let s = 0; s <= L; s += step) { const p = along(pts, s).p; const [x, y] = this.P(p.x, p.y); g.fillRect(x - 0.6, y - 0.6, 1.2, 1.2); }
     }
     g.strokeStyle = 'rgba(244,205,140,0.8)'; g.lineWidth = 1.5;
     const tilted = this.tilt > 0.02;
@@ -1231,11 +1292,18 @@ export class Renderer {
       const w = wayWidth(gh.way.kind, gh.way.cls, gh.way.lanes);
       const fill = gh.way.kind === 'taxi' ? PAL.pave : gh.way.kind === 'road' ? PAL.road : PAL.walk;
       g.globalAlpha = 0.85;
-      this.line(gh.a, gh.b, w + 2, gh.ok ? PAL.select : PAL.bad, 0, 'round', 3);
-      this.line(gh.a, gh.b, w, fill, 0, 'round', 1.5);
+      const pts = wayPts({ a: gh.a, b: gh.b, c: gh.c });
+      this.pline(pts, w + 2, gh.ok ? PAL.select : PAL.bad, 'round', 3);
+      this.pline(pts, w, fill, 'round', 1.5);
       g.globalAlpha = 1;
+      if (gh.c) { g.setLineDash([3, 4]); this.pline([gh.a, gh.c, gh.b], 0, 'rgba(47,93,124,0.5)', 'butt', 1); g.setLineDash([]); }
       this.ghostExtras(gh);
       this.snapRing(gh.a, !!gh.snapA); this.snapRing(gh.b, !!gh.snapB);
+    } else if (gh.kind === 'round' && gh.a && gh.r) {
+      g.globalAlpha = 0.85;
+      this.disc(gh.a, gh.r + 1, gh.ok ? PAL.select : PAL.bad); this.disc(gh.a, gh.r, PAL.road); this.disc(gh.a, gh.r * 0.45, '#B5BD92');
+      g.globalAlpha = 1;
+      this.snapRing(gh.a, !!gh.snapA);
     }
   }
 

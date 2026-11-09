@@ -9,7 +9,7 @@
 // bridges, vehicles, cars and people are instanced and move every frame. New buildings rise into place.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Pt, Rect, dist, sub, norm, add, mul, lerpPt } from './geom';
+import { Pt, Rect, dist, sub, norm, add, mul, lerpPt, polyLen, sliceLine, offsetLine } from './geom';
 import { PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE } from './config';
 import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
@@ -231,13 +231,20 @@ export class Renderer3D {
 
     // ---- pavements
     for (const r of d.runways) strips.push({ a: sub(r.rw.a, mul(r.dir, 60)), b: add(r.rw.b, mul(r.dir, 60)), w: r.width + 8, z: 0.13, c: '#B7AC95' }, { a: r.rw.a, b: r.rw.b, w: r.width, z: 0.15, c: '#3A3631' });
-    for (const w of [...sim.world.ways, ...d.autoWalks, ...d.autoRoads]) strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : w.kind === 'road' ? 0.12 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : w.kind === 'road' ? '#8E8A83' : '#EFE8DA' });
+    for (const w of [...sim.world.ways, ...d.autoWalks]) if (w.kind !== 'road') strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : '#EFE8DA' });
     for (const x of d.airExtra) strips.push({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0), z: 0.1, c: '#BDB29C' });
-    strips.push({ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, w: 24, z: 0.12, c: '#8E8A83' });
-    // junction curves and highway slip ramps (roads.ts), so every corner has a curved kerb
+    // roads (roads.ts): each one a smooth path, with junction curves and highway slip ramps so every corner has a curved kerb
     const RP = roadPlan(d);
+    const chords = (pts: Pt[], f: (a: Pt, b: Pt) => void, ext = 0) => { for (let i = 1; i < pts.length; i++) { const dv = norm(sub(pts[i], pts[i - 1])); f(sub(pts[i - 1], mul(dv, ext)), add(pts[i], mul(dv, ext))); } };
+    for (const s of RP.paths) chords(s.pts, (a, b) => strips.push({ a, b, w: s.w, z: 0.12, c: '#8E8A83' }), s.pts.length > 2 ? 0.5 : 0);
     const bez = (k: { p1: Pt; c: Pt; p2: Pt }, t: number): Pt => ({ x: (1 - t) * (1 - t) * k.p1.x + 2 * (1 - t) * t * k.c.x + t * t * k.p2.x, y: (1 - t) * (1 - t) * k.p1.y + 2 * (1 - t) * t * k.c.y + t * t * k.p2.y });
     for (const k of [...RP.turns, ...RP.ramps]) for (let i = 0; i < 8; i++) strips.push({ a: bez(k, i / 8 - 0.02), b: bez(k, (i + 1) / 8 + 0.02), w: k.w, z: 0.121, c: '#8E8A83' });
+    // roundabouts: the ring, a paved truck apron and a planted island
+    for (const r of RP.rounds) {
+      const disc = (rad: number, h: number, c: string) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, h, 48), new THREE.MeshLambertMaterial({ color: c })); m.position.set(r.c.x, h / 2, r.c.y); m.receiveShadow = true; add3(m); };
+      const inner = r.r - r.w / 2;
+      disc(r.r + r.w / 2, 0.122, '#8E8A83'); disc(inner, 0.22, '#C9BFAC'); disc(inner - 2.2, 0.5, '#8A8375'); disc(inner - 2.6, 0.62, '#A9B28A');
+    }
     add3(stripMesh(strips));
     const flats: Box[] = [];
     for (const ap of d.aprons) flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' });
@@ -281,11 +288,25 @@ export class Renderer3D {
       const half = CLASSES[g.cls].gateSpacing / 2 - 1; // stand boundary ticks
       for (const s of [-1, 1]) dashed(add(g.door, mul(n, s * half)), add(add(g.door, mul(n, s * half)), mul(dv, -CLASSES[g.cls].apronDepth * 0.8)), 0.3, '#EDE7D9', 3, 3, 0.18);
     }
-    for (const w of [...sim.world.ways, ...d.autoRoads]) if (w.kind === 'road') {
-      const W = wayWidth('road', 0, w.lanes); const n = perp(w.a, w.b);
-      for (const s of [-1, 1]) m(add(w.a, mul(n, s * (W / 2 - 0.6))), add(w.b, mul(n, s * (W / 2 - 0.6))), 0.2, WHITE, 0.17);
-      if (w.lanes >= 4) { m(add(w.a, mul(n, -0.25)), add(w.b, mul(n, -0.25)), 0.18, YELLOW, 0.17); m(add(w.a, mul(n, 0.25)), add(w.b, mul(n, 0.25)), 0.18, YELLOW, 0.17); for (const s of [-1, 1]) dashed(add(w.a, mul(n, s * W / 4)), add(w.b, mul(n, s * W / 4)), 0.18, WHITE, 3, 6, 0.17); }
-      else dashed(w.a, w.b, 0.18, WHITE, 3, 6, 0.17);
+    const dashedPath = (pts: Pt[], w: number, c: string, dash: number, gap: number, z = 0.2) => {
+      const L = polyLen(pts); for (let u = gap / 2; u < L - dash / 2; u += dash + gap) chords(sliceLine(pts, u, Math.min(L, u + dash)), (a, b) => m(a, b, w, c, z));
+    };
+    for (const s of RP.paths) {
+      if (s.len - s.trimA - s.trimB < 2) continue;
+      const mid = sliceLine(s.pts, s.trimA, s.len - s.trimB);
+      const solid = (k: number, w: number, c: string) => chords(offsetLine(mid, k), (a, b) => m(a, b, w, c, 0.17), 0.05);
+      solid(s.w / 2 - 0.6, 0.2, WHITE); solid(-(s.w / 2 - 0.6), 0.2, s.ow ? YELLOW : WHITE);
+      if (s.hwy) { solid(0, 1.1, '#7F7A70'); for (const k of [-8, -4.4, 4.4, 8]) dashedPath(offsetLine(s.pts, k), 0.18, WHITE, 3, 6, 0.17); }
+      else if (s.ow) for (const k of s.lanes >= 4 ? [-s.w / 4, 0, s.w / 4] : [0]) dashedPath(offsetLine(mid, k), 0.18, WHITE, 3, 6, 0.17);
+      else if (s.lanes >= 4) { solid(-0.25, 0.18, YELLOW); solid(0.25, 0.18, YELLOW); for (const k of [-1, 1]) dashedPath(offsetLine(mid, k * s.w / 4), 0.18, WHITE, 3, 6, 0.17); }
+      else dashedPath(mid, 0.18, YELLOW, 3, 6, 0.17);
+    }
+    for (const ar of RP.arrows) { const dv = { x: Math.cos(ar.ang), y: Math.sin(ar.ang) }; m(sub(ar.p, mul(dv, 2.4)), add(ar.p, mul(dv, 0.6)), 0.3, WHITE, 0.18); m(add(ar.p, mul(dv, 0.6)), add(ar.p, mul(dv, 2.4)), 1.1, WHITE, 0.18); }
+    for (const y of RP.yields) { const L = dist(y.a, y.b); const dv = norm(sub(y.b, y.a)); for (let u = 0; u < L - 0.4; u += 1.6) m(add(y.a, mul(dv, u)), add(y.a, mul(dv, Math.min(L, u + 0.8))), 0.5, WHITE, 0.19); }
+    for (const il of RP.islands) { const base = lerpPt(il[2], il[3], 0.5); mk.push({ a: il[0], b: base, w: dist(il[2], il[3]) * 0.8, z: 0.32, c: '#C9BFAC' }); }
+    for (const r of RP.rounds) {
+      const circ = (rad: number, w: number, c: string, dash = 0) => { const n = Math.max(24, Math.round(rad * 1.6)); for (let i = 0; i < n; i++) { if (dash && i % 2) continue; const a0 = (i / n) * Math.PI * 2, a1 = ((i + 1) / n) * Math.PI * 2; m({ x: r.c.x + Math.cos(a0) * rad, y: r.c.y + Math.sin(a0) * rad }, { x: r.c.x + Math.cos(a1) * rad, y: r.c.y + Math.sin(a1) * rad }, w, c, 0.24); } };
+      circ(r.r - r.w / 2 + 0.45, 0.2, YELLOW); if (r.lanes > 1) circ(r.r, 0.18, WHITE, 1);
     }
     for (const c of d.crosswalks) {
       const road = { x: Math.cos(c.ang), y: Math.sin(c.ang) }, walk = { x: -road.y, y: road.x };
@@ -297,7 +318,7 @@ export class Renderer3D {
       }
     }
     for (const st of RP.stops) m(st.a, st.b, 0.5, WHITE, 0.19);
-    for (const md of RP.medians) { mk.push({ a: md.a, b: md.b, w: 1.9, z: 0.3, c: '#8A8375' }, { a: md.a, b: md.b, w: 1.4, z: 0.34, c: '#A9B28A' }); }
+    for (const md of RP.medians) chords(md, (a, b) => mk.push({ a, b, w: 1.9, z: 0.3, c: '#8A8375' }, { a, b, w: 1.4, z: 0.34, c: '#A9B28A' }), 0.3);
     add3(stripMesh(mk));
 
     // ---- upper decks: slab on columns with ramps; curb canopies over the sidewalk at each curb

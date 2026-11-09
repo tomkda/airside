@@ -2,8 +2,9 @@
 // producing a graph that aircraft, cars and pedestrians route on.
 import { Pt, dist, segDist, projT, segIntersection } from './geom';
 
-export interface NSeg { a: Pt; b: Pt; kind: string; cls: number; ref: number; lanes?: number }
-export interface Edge { id: number; u: number; v: number; len: number; kind: string; cls: number; ref: number; lanes: number }
+/** `ow`: one-way, travelled from a to b only (v0.11). */
+export interface NSeg { a: Pt; b: Pt; kind: string; cls: number; ref: number; lanes?: number; ow?: boolean }
+export interface Edge { id: number; u: number; v: number; len: number; kind: string; cls: number; ref: number; lanes: number; ow: boolean }
 export interface Net { nodes: Pt[]; edges: Edge[]; adj: number[][] }
 export interface DJ { dist: Float64Array; prev: Int32Array }
 
@@ -40,7 +41,7 @@ export function buildNet(segs: NSeg[], tol = 4): Net {
       const u = m[k - 1].n, v = m[k].n;
       if (u === v) continue;
       const id = edges.length;
-      edges.push({ id, u, v, len: dist(nodes[u], nodes[v]), kind: s.kind, cls: s.cls, ref: s.ref, lanes: s.lanes ?? 1 });
+      edges.push({ id, u, v, len: dist(nodes[u], nodes[v]), kind: s.kind, cls: s.cls, ref: s.ref, lanes: s.lanes ?? 1, ow: !!s.ow });
       adj[u].push(id); adj[v].push(id);
     }
   });
@@ -53,8 +54,11 @@ export function nearestNode(net: Net, p: Pt, max = Infinity): number {
   return best;
 }
 
-/** Shortest paths from a set of sources. `ok` filters edges (e.g. by aircraft class). */
-export function dijkstra(net: Net, sources: { n: number; c: number }[], ok: (e: Edge) => boolean = () => true, w: (e: Edge) => number = e => e.len): DJ {
+/**
+ * Shortest paths from a set of sources. `ok` filters edges (e.g. by aircraft class).
+ * `dir` says how one-way edges count: 0 ignores them, 1 is travel away from the sources, -1 travel towards them.
+ */
+export function dijkstra(net: Net, sources: { n: number; c: number }[], ok: (e: Edge) => boolean = () => true, w: (e: Edge) => number = e => e.len, dir: -1 | 0 | 1 = 0): DJ {
   const N = net.nodes.length;
   const d = new Float64Array(N).fill(Infinity);
   const prev = new Int32Array(N).fill(-1);
@@ -84,6 +88,7 @@ export function dijkstra(net: Net, sources: { n: number; c: number }[], ok: (e: 
     for (const eid of net.adj[u]) {
       const e = net.edges[eid];
       if (!ok(e)) continue;
+      if (e.ow && dir && (dir === 1 ? e.u !== u : e.v !== u)) continue;
       const v = e.u === u ? e.v : e.u;
       const nc = c + w(e);
       if (nc < d[v]) { d[v] = nc; prev[v] = eid; push(nc, v); }
