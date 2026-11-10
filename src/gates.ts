@@ -8,9 +8,9 @@
 // The ideal taxiway line for each side (one stand depth out) is exported as a guide for drawing and snapping.
 import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rectsOverlap, rectSegDist, segDist, segsIntersect, inRect } from './geom';
 import { APRON, CLASSES, Cls, SITE, TAXI_CLASSES } from './config';
-import { roundOuter } from './ways';
+import { roundOuter, Round } from './ways';
 import type { World, Zone, Way, Apron, Gate, RunwayInfo } from './world';
-import { zonePts, toWorld, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts } from './shapes';
+import { zonePts, zoneParts, toWorld, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts, arcOf, frameOf, inZone } from './shapes';
 import { pointInPoly } from './geom';
 
 /** n, e, s, w for a rectangle (of its own frame); `f0.`, `f1.` … for the facets of a round or polygonal hall (v0.18). */
@@ -24,6 +24,8 @@ export interface SideGuide {
   served: boolean; d?: number; cls?: Cls; note?: string;
   /** v0.19: the side laid its own apron (no taxiway drawn alongside); or it is a landside face and gets none. */
   self?: boolean; land?: boolean;
+  /** v0.20: a curved wall. No taxiway can run parallel to it, so there is no guide line to draw. */
+  curved?: boolean;
 }
 /** A taxilane a concourse laid for itself, or (`link`) its connection to the airfield. Generated, never saved. */
 export interface Lane { a: Pt; b: Pt; cls: Cls; zone: number; link?: boolean }
@@ -45,7 +47,20 @@ export const gateFacets = (z: Zone) => (!z.sides ? 4 : z.sides >= 24 ? 12 : z.si
 
 const inset = (r: Rect, k: number): Rect => ({ x: r.x + k, y: r.y + k, w: Math.max(0, r.w - 2 * k), h: Math.max(0, r.h - 2 * k) });
 
-export function sidesOf(z: Zone) {
+/** A side of a building. `curve` (v0.20): the side is a long wall of a bent bar, at this y of its straight frame;
+ *  a and b are then the ends of the wall and `out` only the way its middle faces. */
+export interface Side { side: SideKey; a: Pt; b: Pt; out: Pt; curve?: number }
+export function sidesOf(z: Zone): Side[] {
+  if (arcOf(z)) {
+    const F = frameOf(z); const P = (x: number, y: number) => toWorld(z, { x, y });
+    const nw = P(F.x, F.y), ne = P(F.x + F.w, F.y), se = P(F.x + F.w, F.y + F.h), sw = P(F.x, F.y + F.h);
+    const face = (a: Pt, b: Pt) => { const d = norm(sub(b, a)); return { x: d.y, y: -d.x }; };
+    const mid = (y: number, dy: number) => norm(sub(P(F.x + F.w / 2, y + dy), P(F.x + F.w / 2, y)));
+    return [
+      { side: 'n', a: nw, b: ne, out: mid(F.y, -1), curve: F.y }, { side: 'e', a: ne, b: se, out: face(ne, se) },
+      { side: 's', a: se, b: sw, out: mid(F.y + F.h, 1), curve: F.y + F.h }, { side: 'w', a: sw, b: nw, out: face(sw, nw) },
+    ];
+  }
   if (z.sides) {
     const pts = hallPts(z, 0, gateFacets(z));
     return pts.map((a, k) => { const b = pts[(k + 1) % pts.length]; const d = norm(sub(b, a)); return { side: `f${k}.` as SideKey, a, b, out: { x: d.y, y: -d.x } }; });
@@ -60,7 +75,6 @@ export function sidesOf(z: Zone) {
   return z.rot ? sides.map(sd => ({ side: sd.side, a: toWorld(z, sd.a), b: toWorld(z, sd.b), out: dirWorld(z, sd.out) })) : sides;
 }
 
-type Side = ReturnType<typeof sidesOf>[number];
 interface Pending { z: Zone; sd: Side; guide: SideGuide; zc: Cls; letter: string }
 interface Count { k: number; n: number }
 
@@ -81,6 +95,8 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
       const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a));
       const guide: SideGuide = { zone: z, side: sd.side, a: sd.a, b: sd.b, out: sd.out, ideal: standDepth(zc), reach: sideReach(zc), served: false };
       guides.push(guide);
+      // a curved wall has no taxiway parallel to it: it always lays its own apron
+      if (sd.curve !== undefined) { guide.curved = true; pending.push({ z, sd, guide, zc, letter }); continue; }
       // nearest parallel taxiway within reach that overlaps this side
       let best: { w: Way; d: number; ov: number } | null = null;
       for (const w of taxis) {
@@ -136,7 +152,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
         aprons.push(ap);
         for (const sl of run) if (sl.on) {
           k++;
-          gates.push({ id: sl.id, key: sl.key, num: `${letter}${k}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
+          gates.push({ id: sl.id, key: sl.key, num: `${letter}${k}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
         }
         run = [];
       };
@@ -198,7 +214,10 @@ const polyDist = (p: Pt, poly: Pt[]) => (pointInPoly(p, poly) ? 0 : edgeDist(p, 
 const within = (p: Pt, poly: Pt[], m: number) => pointInPoly(p, poly) && edgeDist(p, poly) > m;
 const fat = (a: Pt, b: Pt, hw: number): Pt[] => { const n = mul(perpLeft(norm(sub(b, a))), hw); return [add(a, n), add(b, n), sub(b, n), sub(a, n)]; };
 
-interface Run { lane: Lane; al: Pt; out: Pt; ap: Apron; ext: [number, number]; joined: [boolean, boolean]; T: number }
+/** A run of stands and the taxilane along their tails: `pts` is the lane (two points, or a polyline round a curve),
+ *  `outs` the way the stands face at each end and in the middle, `corner` the apron's corners at each end (at the wall, at the lane). */
+interface Run { pts: Pt[]; cls: Cls; zone: number; outs: [Pt, Pt, Pt]; corner: [[Pt, Pt], [Pt, Pt]]; ap: Apron; ext: [number, number]; joined: [boolean, boolean]; T: number }
+type LaneR = Lane & { run?: Run };
 
 function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, pending: Pending[],
   aprons: Apron[], gates: Gate[], slots: GateSlot[], counts: Map<number, Count>, keep: { a: Pt; b: Pt }[]): { lanes: Lane[]; pads: Pt[][] } {
@@ -210,57 +229,108 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
   const nearRunway = (p: Pt) => runways.some(r => segDist(p, r.rw.a, r.rw.b) < runwayWidth(r.length) / 2 + 40);
   const runs: Run[] = [];
   for (const { z, sd, guide, zc, letter } of pending) {
-    const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a)); const out = sd.out;
+    const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a));
     const C = CLASSES[zc]; const sp = C.gateSpacing; const D = selfDepth(zc); const clear = APRON.laneClear[zc];
-    const quad = (d0: number, d1: number) => [add(sd.a, add(mul(al, 1), mul(out, d0))), add(sd.b, add(mul(al, -1), mul(out, d0))), add(sd.b, add(mul(al, -1), mul(out, d1))), add(sd.a, add(mul(al, 1), mul(out, d1)))];
-    if (L < sp) continue;
-    // a processing module stands against this face: it is the landside of the building
-    const thin = quad(0.5, 6);
-    if (outlines.some(o => o.z.id !== z.id && LANDSIDE.has(o.z.type) && polyArea(polyClip(o.pts, thin)) > 2)) { guide.land = true; continue; }
-    const strip = quad(1, D);
-    const blocked: [number, number][] = [];
-    const cut = (pts: Pt[]) => {
-      const c = polyClip(pts, strip); if (c.length < 3 || polyArea(c) <= 2) return;
-      const t = c.map(p => dot(sub(p, sd.a), al)); blocked.push([Math.min(...t), Math.max(...t)]);
-    };
-    for (const o of outlines) if (o.z.id !== z.id) cut(o.pts);
-    for (const ap of aprons) cut(ap.pts);
-    for (const k of keep) cut(fat(k.a, k.b, 8));
-    for (const w of taxis) cut(fat(w.a, w.b, (w.cls >= 3 ? TAXI_CLASSES[1].width : TAXI_CLASSES[0].width) / 2 + 4));
-    for (const rd of world.rounds ?? []) { const R = roundOuter(rd) + 4; cut([{ x: rd.x - R, y: rd.y - R }, { x: rd.x + R, y: rd.y - R }, { x: rd.x + R, y: rd.y + R }, { x: rd.x - R, y: rd.y + R }]); }
-    const n = Math.floor(L / sp); const pad = (L - n * sp) / 2; const cnt = counts.get(z.id)!;
-    let run: GateSlot[] = [];
+    const cnt = counts.get(z.id)!;
+    // ---- where the stands of this side would go: wall point, the way it faces, the way the wall runs, its cell
+    interface Cand { i: number; ep: Pt; out: Pt; tan: Pt; cell: Pt[]; front: Pt; free: boolean }
+    const cands: Cand[] = [];
+    const A = sd.curve !== undefined ? arcOf(z) : null;
+    const roundBox = (rd: Round) => { const R = roundOuter(rd) + 4; return [{ x: rd.x - R, y: rd.y - R }, { x: rd.x + R, y: rd.y - R }, { x: rd.x + R, y: rd.y + R }, { x: rd.x - R, y: rd.y + R }]; };
+    if (A) {
+      // a curved wall (v0.20). Stands are square to the wall, so on the outside of the bend they fan out and can
+      // stand closer along the wall; on the inside they close up, and need more wall each. The spacing is set
+      // where the wings are (half an aircraft out from the nose), and on the inside also where the tails meet.
+      const F = frameOf(z); const yw = sd.curve!; const dir = yw === F.y ? -1 : 1;
+      const rw = A.R + A.sg * (yw - (F.y + F.h / 2));          // the wall's radius
+      const grow = A.sg * dir;                                   // +1: the outside of the bend, -1: the inside
+      const rWing = rw + grow * (APRON.nose + C.length / 2), rLane = rw + grow * D;
+      if (rLane < 30) { guide.note = 'the bend is too tight for stands on its inside'; continue; }
+      const dphi = Math.max(sp / rWing, grow < 0 ? (0.45 * sp) / rLane : 0);
+      const du = dphi * A.R; const n = Math.floor(F.w / du); const pad = (F.w - n * du) / 2;
+      const P = (u: number, d: number) => toWorld(z, { x: u, y: yw + dir * d });
+      const fwd = sd.side === 'n' ? 1 : -1;                      // sides run clockwise: north west to east, south east to west
+      const u0 = sd.side === 'n' ? F.x : F.x + F.w;
+      // landside: a processing module stands against this wall
+      const against = (o: { z: Zone; pts: Pt[] }) => { for (let k = 0; k <= 12; k++) { const p = P(F.x + (F.w * k) / 12, 3); if (pointInPoly(p, o.pts)) return true; } return false; };
+      if (outlines.some(o => o.z.id !== z.id && LANDSIDE.has(o.z.type) && against(o))) { guide.land = true; continue; }
+      for (let i = 0; i < n; i++) {
+        const u = u0 + fwd * (pad + (i + 0.5) * du), h = (fwd * du) / 2;
+        const ep = P(u, 0), front = P(u, D); const out = norm(sub(front, ep));
+        const cell = [P(u - h, 0.5), P(u + h, 0.5), P(u + h, D), P(u - h, D)];
+        const tan = norm(sub(cell[2], cell[3]));
+        const cb = polyBox(cell); const hitsBox = (r: Rect, m = 0) => r.x - m <= cb.x + cb.w && r.x + r.w + m >= cb.x && r.y - m <= cb.y + cb.h && r.y + r.h + m >= cb.y;
+        const over = (pts: Pt[]) => { const c = polyClip(pts, cell); return c.length >= 3 && polyArea(c) > 3; };
+        // its own building is tested exactly (by `inZone`), at points through the cell beyond the wall: the outline is
+        // only chords of the true wall, and clipping against it would find the wall itself in the way
+        const own = () => { for (const d of [6, D / 3, (2 * D) / 3, D]) for (const k of [-0.5, 0, 0.5]) if (inZone(P(u + 2 * k * h * 0.96, d), z)) return true; return false; };
+        const free = [cell[2], cell[3], front].every(p => onSite(p) && !nearRunway(p))
+          && !outlines.some(o => o.z.id !== z.id && hitsBox(o.box) && zoneParts(o.z).some(over))
+          && !own()                                              // a tight horseshoe: its own other arm is in the way
+          && !aprons.some(ap => hitsBox(ap.rect) && over(ap.pts))
+          && !keep.some(k => hitsBox({ x: Math.min(k.a.x, k.b.x), y: Math.min(k.a.y, k.b.y), w: Math.abs(k.b.x - k.a.x), h: Math.abs(k.b.y - k.a.y) }, 8) && over(fat(k.a, k.b, 8)))
+          && !taxis.some(w => over(fat(w.a, w.b, (w.cls >= 3 ? TAXI_CLASSES[1].width : TAXI_CLASSES[0].width) / 2 + 4)))
+          && !(world.rounds ?? []).some(rd => over(roundBox(rd)))
+          && !outlines.some(o => nearBox(front, o.box, clear) && polyDist(front, o.pts) < clear - 0.5)
+          && !keep.some(k => segDist(front, k.a, k.b) < 12);
+        cands.push({ i, ep, out, tan, cell, front, free });
+      }
+    } else {
+      const out = sd.out;
+      const quad = (d0: number, d1: number) => [add(sd.a, add(mul(al, 1), mul(out, d0))), add(sd.b, add(mul(al, -1), mul(out, d0))), add(sd.b, add(mul(al, -1), mul(out, d1))), add(sd.a, add(mul(al, 1), mul(out, d1)))];
+      if (L < sp) continue;
+      // a processing module stands against this face: it is the landside of the building
+      const thin = quad(0.5, 6);
+      if (outlines.some(o => o.z.id !== z.id && LANDSIDE.has(o.z.type) && polyArea(polyClip(o.pts, thin)) > 2)) { guide.land = true; continue; }
+      const strip = quad(1, D);
+      const blocked: [number, number][] = [];
+      const cut = (pts: Pt[]) => {
+        const c = polyClip(pts, strip); if (c.length < 3 || polyArea(c) <= 2) return;
+        const t = c.map(p => dot(sub(p, sd.a), al)); blocked.push([Math.min(...t), Math.max(...t)]);
+      };
+      for (const o of outlines) if (o.z.id !== z.id) cut(o.pts);
+      for (const ap of aprons) cut(ap.pts);
+      for (const k of keep) cut(fat(k.a, k.b, 8));
+      for (const w of taxis) cut(fat(w.a, w.b, (w.cls >= 3 ? TAXI_CLASSES[1].width : TAXI_CLASSES[0].width) / 2 + 4));
+      for (const rd of world.rounds ?? []) cut(roundBox(rd));
+      const n = Math.floor(L / sp); const pad = (L - n * sp) / 2;
+      for (let i = 0; i < n; i++) {
+        const s = pad + (i + 0.5) * sp; const ep = add(sd.a, mul(al, s)); const front = add(ep, mul(out, D));
+        const h = mul(al, sp / 2);
+        const cell = [sub(ep, h), add(ep, h), add(add(ep, h), mul(out, D)), add(sub(ep, h), mul(out, D))];
+        const free = !blocked.some(([b0, b1]) => b1 > s - sp / 2 + 1 && b0 < s + sp / 2 - 1)
+          && [cell[2], cell[3], front].every(p => onSite(p) && !nearRunway(p))
+          && !outlines.some(o => o.z.id !== z.id && nearBox(front, o.box, clear) && polyDist(front, o.pts) < clear - 0.5)
+          && !keep.some(k => segDist(front, k.a, k.b) < 12);
+        cands.push({ i, ep, out, tan: al, cell, front, free });
+      }
+    }
+    // ---- runs of free stands become aprons, each with a taxilane along its tails
+    let run: (GateSlot & { tan: Pt })[] = [];
     const flush = () => {
       if (!run.length) return;
       const first = run[0], last = run[run.length - 1];
-      const pts = [first.cell[0], last.cell[1], last.cell[2], first.cell[3]];
-      const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-      const rect = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
-      const ap: Apron = { zone: z, rect, pts, outward: out, laneA: first.front, laneB: last.front, mouth: lerpPt(first.front, last.front, 0.5), cls: zc, letter, self: true };
+      const pts = A ? [first.cell[0], ...run.map(q => q.cell[1]), ...[...run].reverse().map(q => q.cell[2]), first.cell[3]] : [first.cell[0], last.cell[1], last.cell[2], first.cell[3]];
+      const rect = polyBox(pts); const midOut = run[Math.floor(run.length / 2)].outward;
+      const ap: Apron = { zone: z, rect, pts, outward: midOut, laneA: first.front, laneB: last.front, mouth: run[Math.floor(run.length / 2)].front, cls: zc, letter, self: true };
       aprons.push(ap);
       for (const sl of run) if (sl.on) {
         cnt.k++;
-        gates.push({ id: sl.id, key: sl.key, num: `${letter}${cnt.k}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
+        gates.push({ id: sl.id, key: sl.key, num: `${letter}${cnt.k}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
       }
       // the taxilane runs half a stand past each end where there is room, so the end stands can push back
       const room = (p: Pt) => onSite(p) && !outlines.some(o => o.z.id !== z.id && nearBox(p, o.box, 10) && polyDist(p, o.pts) < 10) && !aprons.some(o => o !== ap && nearBox(p, o.rect, 0) && within(p, o.pts, 1)) && !keep.some(k => segDist(p, k.a, k.b) < 10);
-      const e0 = room(add(first.front, mul(al, -sp / 2))) ? sp / 2 : 2, e1 = room(add(last.front, mul(al, sp / 2))) ? sp / 2 : 2;
-      runs.push({ lane: { a: add(first.front, mul(al, -e0)), b: add(last.front, mul(al, e1)), cls: zc, zone: z.id }, al, out, ap, ext: [e0, e1], joined: [false, false], T: D + sp });
+      const e0 = room(add(first.front, mul(first.tan, -sp / 2))) ? sp / 2 : 2, e1 = room(add(last.front, mul(last.tan, sp / 2))) ? sp / 2 : 2;
+      const lane = [add(first.front, mul(first.tan, -e0)), ...(A ? run.map(q => q.front) : []), add(last.front, mul(last.tan, e1))];
+      runs.push({ pts: lane, cls: zc, zone: z.id, outs: [first.outward, last.outward, midOut], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [e0, e1], joined: [false, false], T: D + sp });
       run = [];
     };
-    for (let i = 0; i < n; i++) {
-      const s = pad + (i + 0.5) * sp; const ep = add(sd.a, mul(al, s)); const front = add(ep, mul(out, D));
-      const h = mul(al, sp / 2);
-      const cell = [sub(ep, h), add(ep, h), add(add(ep, h), mul(out, D)), add(sub(ep, h), mul(out, D))];
-      const free = !blocked.some(([b0, b1]) => b1 > s - sp / 2 + 1 && b0 < s + sp / 2 - 1)
-        && [cell[2], cell[3], front].every(p => onSite(p) && !nearRunway(p))
-        && !outlines.some(o => o.z.id !== z.id && nearBox(front, o.box, clear) && polyDist(front, o.pts) < clear - 0.5)
-        && !keep.some(k => segDist(front, k.a, k.b) < 12);
-      if (!free) { flush(); continue; }
-      const key = `${sd.side}${i}`;
-      const sl: GateSlot = {
-        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: zc, on: !(z.off ?? []).includes(key),
-        door: add(ep, mul(out, -7)), stand: add(ep, mul(out, C.length / 2 + APRON.nose)), front, ang: Math.atan2(-out.y, -out.x), outward: out, cell,
+    for (const c of cands) {
+      if (!c.free) { flush(); continue; }
+      const key = `${sd.side}${c.i}`;
+      const sl = {
+        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i: c.i, cls: zc, on: !(z.off ?? []).includes(key),
+        door: add(c.ep, mul(c.out, -7)), stand: add(c.ep, mul(c.out, C.length / 2 + APRON.nose)), front: c.front, ang: Math.atan2(-c.out.y, -c.out.x), outward: c.out, cell: c.cell, tan: c.tan,
       };
       slots.push(sl); cnt.n++; guide.served = true; guide.self = true; guide.d = D; guide.cls = zc;
       run.push(sl);
@@ -284,8 +354,8 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     for (const rd of world.rounds ?? []) if (segDist(rd, a, b) < roundOuter(rd) + 10) return false;
     return true;
   };
-  const endPt = (r: Run, e: 0 | 1) => (e ? r.lane.b : r.lane.a);
-  const endDir = (r: Run, e: 0 | 1) => (e ? r.al : mul(r.al, -1));
+  const endPt = (r: Run, e: 0 | 1) => (e ? r.pts[r.pts.length - 1] : r.pts[0]);
+  const endDir = (r: Run, e: 0 | 1) => (e ? norm(sub(r.pts[r.pts.length - 1], r.pts[r.pts.length - 2])) : norm(sub(r.pts[0], r.pts[1])));
 
   // ---- lanes on neighbouring faces meet at the corner
   const joins: { i: number; j: number; ei: 0 | 1; ej: 0 | 1; X: Pt; cost: number }[] = [];
@@ -297,23 +367,23 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     joins.push({ i, j, ei, ej, X: add(endPt(A, ei), mul(ua, ta)), cost: Math.max(0, ta) + Math.max(0, tb) });
   }
   joins.sort((p, q) => p.cost - q.cost || p.i - q.i || p.j - q.j);
-  const setEnd = (r: Run, e: 0 | 1, X: Pt) => { if (e) r.lane.b = X; else r.lane.a = X; r.joined[e] = true; };
+  const setEnd = (r: Run, e: 0 | 1, X: Pt) => { if (e) r.pts[r.pts.length - 1] = X; else r.pts[0] = X; r.joined[e] = true; };
   for (const J of joins) {
     const A = runs[J.i], B = runs[J.j];
     if (A.joined[J.ei] || B.joined[J.ej]) continue;
     if (!clearLine(endPt(A, J.ei), J.X) || !clearLine(endPt(B, J.ej), J.X)) continue;
     setEnd(A, J.ei, J.X); setEnd(B, J.ej, J.X);
     // pave the corner between the two aprons
-    pads.push([A.ap.pts[J.ei ? 1 : 0], A.ap.pts[J.ei ? 2 : 3], J.X, B.ap.pts[J.ej ? 2 : 3], B.ap.pts[J.ej ? 1 : 0]]);
+    pads.push([A.corner[J.ei][0], A.corner[J.ei][1], J.X, B.corner[J.ej][1], B.corner[J.ej][0]]);
   }
 
   // ---- lanes on opposite sides of a building whose end has no stand (it is narrower than one stand) meet round that end
   const round: Lane[] = [];
   for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
     const A = runs[i], B = runs[j];
-    if (A.lane.zone !== B.lane.zone || dot(A.out, B.out) > -0.9) continue;
+    if (A.zone !== B.zone) continue;
     for (const ei of [0, 1] as const) for (const ej of [0, 1] as const) {
-      if (A.joined[ei] || B.joined[ej]) continue;
+      if (A.joined[ei] || B.joined[ej] || dot(A.outs[ei], B.outs[ej]) > -0.9) continue;
       const u = endDir(A, ei); if (dot(u, endDir(B, ej)) < 0.9) continue;
       const sa = dot(endPt(A, ei), u), sb = dot(endPt(B, ej), u);
       if (Math.abs(sa - sb) > A.T) continue;          // the two sides end at very different places: not one building end
@@ -322,21 +392,23 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
         const pa = add(endPt(A, ei), mul(u, s - sa)), pb = add(endPt(B, ej), mul(endDir(B, ej), s - sb));
         if (!clearLine(endPt(A, ei), pa) || !clearLine(endPt(B, ej), pb) || !clearLine(pa, pb)) continue;
         setEnd(A, ei, pa); setEnd(B, ej, pb);
-        round.push({ a: pa, b: pb, cls: A.lane.cls, zone: A.lane.zone });
+        round.push({ a: pa, b: pb, cls: A.cls, zone: A.zone });
         break;
       }
     }
   }
 
   // ---- loose ends reach for the airfield
-  const lanes: Lane[] = [...runs.map(r => r.lane), ...round];
+  const lanes: LaneR[] = [];
+  for (const r of runs) for (let i = 1; i < r.pts.length; i++) lanes.push({ a: r.pts[i - 1], b: r.pts[i], cls: r.cls, zone: r.zone, run: r });
+  lanes.push(...round);
   /** The nearest taxiway, runway or taxilane a ray meets within reach. `ok` limits taxilanes to those already joined to the airfield. */
   const rayTo = (from: Pt, u: Pt, self: Run | null, ok?: boolean[]) => {
     let best: { t: number; rwy: boolean } | null = null;
     const tryHit = (a: Pt, b: Pt, rwy: boolean) => { const t = rayHit(from, u, a, b); if (t >= 0 && t <= APRON.reach && (!best || t < best.t)) best = { t, rwy }; };
     for (const w of taxis) tryHit(w.a, w.b, false);
     for (const r of runways) tryHit(r.rw.a, r.rw.b, true);
-    lanes.forEach((l, k) => { if (runs[k] !== self && (!ok || ok[k])) tryHit(l.a, l.b, false); });
+    lanes.forEach((l, k) => { if ((!self || l.run !== self) && (!ok || ok[k])) tryHit(l.a, l.b, false); });
     return best as { t: number; rwy: boolean } | null;
   };
   interface Way2 { pts: Pt[]; cost: number }
@@ -358,11 +430,11 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     }
     return best as Way2 | null;
   };
-  const lay = (w: Way2, r: Run) => { for (let i = 1; i < w.pts.length; i++) if (dist(w.pts[i - 1], w.pts[i]) >= 1) lanes.push({ a: w.pts[i - 1], b: w.pts[i], cls: r.lane.cls, zone: r.lane.zone, link: true }); };
+  const lay = (w: Way2, r: Run) => { for (let i = 1; i < w.pts.length; i++) if (dist(w.pts[i - 1], w.pts[i]) >= 1) lanes.push({ a: w.pts[i - 1], b: w.pts[i], cls: r.cls, zone: r.zone, link: true }); };
   for (const r of runs) for (const e of [0, 1] as const) {
     if (r.joined[e]) continue;
     // straight on, straight out from the building, or on a little and then out or round the end of the building
-    const w = waysOut(endPt(r, e), endDir(r, e), [r.out, mul(r.out, -1)], r);
+    const w = waysOut(endPt(r, e), endDir(r, e), [r.outs[e], mul(r.outs[e], -1)], r);
     if (w) lay(w, r);
   }
 
@@ -375,18 +447,19 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     for (let grew = true; grew;) { grew = false; for (let i = 0; i < lanes.length; i++) if (!ok[i] && lanes.some((l, j) => ok[j] && touch(lanes[i], l))) { ok[i] = grew = true; } }
     if (ok.every(Boolean)) break;
     let best: { w: Way2; r: Run } | null = null;
-    runs.forEach((r, k) => {
-      if (ok[k]) return;
+    for (const r of runs) {
+      if (lanes.some((l, k) => l.run === r && ok[k])) continue;
       const cands: (Way2 | null)[] = [];
-      for (const e of [0, 1] as const) if (!r.joined[e]) cands.push(waysOut(endPt(r, e), endDir(r, e), [r.out, mul(r.out, -1)], r, ok));
-      for (const from of [r.lane.a, r.lane.b, lerpPt(r.lane.a, r.lane.b, 0.5)]) cands.push(waysOut(from, r.out, [], r, ok));
+      for (const e of [0, 1] as const) if (!r.joined[e]) cands.push(waysOut(endPt(r, e), endDir(r, e), [r.outs[e], mul(r.outs[e], -1)], r, ok));
+      const mid = r.pts.length > 2 ? r.pts[Math.floor(r.pts.length / 2)] : lerpPt(r.pts[0], r.pts[1], 0.5);
+      for (const [from, out] of [[r.pts[0], r.outs[0]], [r.pts[r.pts.length - 1], r.outs[1]], [mid, r.outs[2]]] as const) cands.push(waysOut(from, out, [], r, ok));
       for (const w of cands) if (w && (!best || w.cost < best.w.cost)) best = { w, r };
-    });
+    }
     if (!best) break;
     const B = best as { w: Way2; r: Run };
     lay(B.w, B.r);
   }
-  return { lanes, pads };
+  return { lanes: lanes.map(l => ({ a: l.a, b: l.b, cls: l.cls, zone: l.zone, link: l.link })), pads };
 }
 
 /** Which slot (on or off) is under a point, if any. */

@@ -85,6 +85,7 @@ export function scenery(world: World, d: Derived): Scenery {
   // apron floodlight masts: along each apron's building edge, between stands
   const masts: Pt[] = [];
   for (const ap of d.aprons) {
+    if (ap.pts.length > 4) continue;   // a curved apron (v0.20): its bounding box says nothing about where its building edge is
     const o = ap.outward; const r = ap.rect;
     const along = Math.abs(o.x) > 0.5 ? { x: 0, y: 1 } : { x: 1, y: 0 };
     const len = Math.abs(o.x) > 0.5 ? r.h : r.w;
