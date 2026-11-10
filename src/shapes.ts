@@ -12,9 +12,15 @@ import { Pt, Rect, snap } from './geom';
 /** `sides`: a regular polygon with that many sides, inscribed in the circle that fits the box (v0.18). 24 or more is drawn round.
  *  `bend` (v0.20): the rectangle is bent into an arc. Its ends stay where they are (x, y, w, h is the frame of the
  *  chord between them) and the middle of its centreline is pushed `bend` metres towards its own south (north if negative). */
-export interface Shaped extends Rect { rot?: number; sides?: number; bend?: number }
+export interface Shaped extends Rect { rot?: number; sides?: number; bend?: number;
+  /** v0.21: the bar tapers. `h` is its width half way along; its east end is `taper` metres wider than its west end
+   *  (narrower if negative). Both walls move, so the centreline stays where it is. */
+  taper?: number }
 /** Anything that is not an upright rectangle. */
-export const shaped = (z: Shaped) => !!(z.rot || z.sides || z.bend);
+export const shaped = (z: Shaped) => !!(z.rot || z.sides || z.bend || z.taper);
+/** The width of a bar at each end, and how much wider or narrower than its middle it is a fraction `t` of the way along. */
+export const endWidths = (z: Shaped): [number, number] => [z.h - (z.taper ?? 0) / 2, z.h + (z.taper ?? 0) / 2];
+const widthK = (z: Shaped, t: number) => (z.taper && !z.sides ? 1 + (z.taper / z.h) * (t - 0.5) : 1);
 /** How many straight facets a hall's outline has: a round one is drawn with 32. */
 export const facetsOf = (z: Shaped) => (!z.sides ? 4 : z.sides >= 24 ? 32 : Math.max(3, Math.round(z.sides)));
 /** A hall's outline, `grow` metres outside (or inside, if negative) the real one, with `n` facets. Clockwise on screen, first facet at the top. */
@@ -70,21 +76,30 @@ export function turn(p: Pt, c: Pt, ang: number): Pt {
 }
 /** A point in the zone's own straight, upright frame (`frameOf`), and back. */
 export function toLocal(z: Shaped, p: Pt): Pt {
-  const q = z.rot ? turn(p, centreOf(z), -z.rot) : p;
-  const A = arcOf(z); if (!A) return q;
-  const dx = q.x - A.c.x, dy = A.sg * (q.y - A.c.y); const r = Math.hypot(dx, dy), phi = Math.atan2(dx, dy);
-  return { x: z.x + z.w / 2 + (phi / (2 * A.th)) * A.La, y: z.y + z.h / 2 + A.sg * (r - A.R) };
+  let q = z.rot ? turn(p, centreOf(z), -z.rot) : p;
+  const A = arcOf(z);
+  if (A) {
+    const dx = q.x - A.c.x, dy = A.sg * (q.y - A.c.y); const r = Math.hypot(dx, dy), phi = Math.atan2(dx, dy);
+    q = { x: z.x + z.w / 2 + (phi / (2 * A.th)) * A.La, y: z.y + z.h / 2 + A.sg * (r - A.R) };
+  }
+  if (!z.taper || z.sides) return q;
+  // a tapered bar: across the building, the frame is as wide as its middle everywhere
+  const F = frameOf(z); const k = Math.max(0.05, widthK(z, (q.x - F.x) / F.w)); const mid = z.y + z.h / 2;
+  return { x: q.x, y: mid + (q.y - mid) / k };
 }
 export function toWorld(z: Shaped, p: Pt): Pt {
   const A = arcOf(z); let q = p;
+  if (z.taper && !z.sides) { const F = frameOf(z); const k = Math.max(0.05, widthK(z, (p.x - F.x) / F.w)); const mid = z.y + z.h / 2; q = { x: p.x, y: mid + (p.y - mid) * k }; }
   if (A) {
-    const phi = ((p.x - (z.x + z.w / 2)) / A.La) * 2 * A.th, r = A.R + A.sg * (p.y - (z.y + z.h / 2));
+    const phi = ((q.x - (z.x + z.w / 2)) / A.La) * 2 * A.th, r = A.R + A.sg * (q.y - (z.y + z.h / 2));
     q = { x: A.c.x + r * Math.sin(phi), y: A.c.y + A.sg * r * Math.cos(phi) };
   }
   return z.rot ? turn(q, centreOf(z), z.rot) : q;
 }
 /** The middle of the building itself. For a bent bar the centre of its box may lie outside it; this never does. */
 export const heart = (z: Shaped): Pt => (arcOf(z) ? toWorld(z, centreOf(frameOf(z))) : centreOf(z));
+/** The widest and narrowest an end of a tapered bar may be. */
+export const END_WIDTH = { min: 24, max: 160 };
 /** A line or outline given in the zone's straight frame, carried into the world. On a bent bar long edges are cut
  *  into short ones first, so they follow the curve. */
 export function bendPath(z: Shaped, pts: Pt[], closed = false): Pt[] {
@@ -99,13 +114,13 @@ export function bendPath(z: Shaped, pts: Pt[], closed = false): Pt[] {
 }
 /** A bent bar as a row of short turned rectangles, each standing on its own centre: what the 3D model is built from. */
 export function barPieces(z: Shaped): Shaped[] {
-  const A = arcOf(z); if (!A) return [z];
-  // (the model can be coarser than the outline: a length every 7 degrees or so, and never shorter than the bar is wide if that can be helped)
-  const n = Math.max(3, Math.min(48, Math.ceil((2 * A.th) / 0.12))); const F = frameOf(z); const out: Shaped[] = [];
+  const A = arcOf(z); if (!A && !z.taper) return [z];
+  // (the model can be coarser than the outline: a length every 7 degrees or so; a taper steps by a metre and a half at most)
+  const n = Math.max(A ? 3 : 1, Math.min(48, Math.max(A ? Math.ceil((2 * A.th) / 0.12) : 0, Math.ceil(Math.abs(z.taper ?? 0) / 1.5)))); const F = frameOf(z); const out: Shaped[] = [];
   for (let i = 0; i < n; i++) {
-    const u = F.x + ((i + 0.5) / n) * F.w; const m = toWorld(z, { x: u, y: F.y + F.h / 2 });
-    const phi = (((i + 0.5) / n) - 0.5) * 2 * A.th; const w = ((A.R + z.h / 2) * 2 * A.th) / n + 0.4;
-    out.push({ x: m.x - w / 2, y: m.y - z.h / 2, w, h: z.h, rot: (z.rot ?? 0) - A.sg * phi || 1e-6 });
+    const t = (i + 0.5) / n; const u = F.x + t * F.w; const m = toWorld(z, { x: u, y: F.y + F.h / 2 }); const h = z.h * widthK(z, t);
+    const phi = A ? (t - 0.5) * 2 * A.th : 0; const w = (A ? ((A.R + h / 2) * 2 * A.th) / n : F.w / n) + 0.4;
+    out.push({ x: m.x - w / 2, y: m.y - h / 2, w, h, rot: (z.rot ?? 0) - (A ? A.sg * phi : 0) || 1e-6 });
   }
   return out;
 }
@@ -124,7 +139,7 @@ export function zonePts(z: Shaped): Pt[] {
     return out;
   }
   const c = [{ x: z.x, y: z.y }, { x: z.x + z.w, y: z.y }, { x: z.x + z.w, y: z.y + z.h }, { x: z.x, y: z.y + z.h }];
-  return z.rot ? c.map(p => toWorld(z, p)) : c;
+  return z.rot || z.taper ? c.map(p => toWorld(z, p)) : c;
 }
 /** The zone's outline as convex pieces: itself, or for a bent bar (which is not convex) the wedges along its arc. */
 export function zoneParts(z: Shaped): Pt[][] {
@@ -206,22 +221,29 @@ export const zonesOverlap = (a: Shaped, b: Shaped, min = 1) => !!overlapOf(a, b,
 //   swung in one move. A hub has one on its rim: it sets the diameter, and turns a polygonal hub.
 //   v0.20: a pier or satellite also has one in its middle (`m`): pull it sideways and the pier bends into an arc
 //   while both ends stay where they are.
-export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm';
-export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; off?: string[] }
-export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, off: z.off ? [...z.off] : undefined });
+//   v0.21: and one on a corner of each end (`ta`, `tb`): it sets the width of that end alone, so the pier tapers.
+export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm' | 'ta' | 'tb';
+export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; off?: string[] }
+export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, off: z.off ? [...z.off] : undefined });
 export function setGeom(z: Geom, g: Geom) {
   z.x = g.x; z.y = g.y; z.w = g.w; z.h = g.h;
   if (g.rot) z.rot = g.rot; else delete z.rot;
   if (g.bend) z.bend = g.bend; else delete z.bend;
+  if (g.taper) z.taper = g.taper; else delete z.taper;
   if (g.off && g.off.length) z.off = [...g.off]; else delete z.off;
 }
 /** Does the long axis of a pier run along its own x? (A turned one always does; an upright one may stand on end.) */
-const alongX = (z: Geom) => !!z.rot || !!z.bend || z.w >= z.h;
+const alongX = (z: Geom) => !!z.rot || !!z.bend || !!z.taper || z.w >= z.h;
 /** A pier in the form the Pier tool draws them: long side along its own x. An upright one standing on end is turned a quarter. */
 function asPier(z: Geom): Geom {
   if (alongX(z)) return geomOf(z);
   const c = centreOf(z);
   return { x: c.x - z.h / 2, y: c.y - z.w / 2, w: z.h, h: z.w, rot: Math.PI / 2, off: turnKeys(z.off, -1) };
+}
+/** A width and taper that keep both ends within `END_WIDTH`. */
+function fitEnds(wa: number, wb: number): { h: number; taper: number | undefined } {
+  const c = (v: number) => Math.min(END_WIDTH.max, Math.max(END_WIDTH.min, v)); const a = c(wa), b = c(wb);
+  return { h: (a + b) / 2, taper: Math.abs(b - a) < 2 ? undefined : b - a };
 }
 const clampBend = (w: number, h: number, bend: number | undefined) => { const m = maxBend(w, h); const b = Math.max(-m, Math.min(m, bend ?? 0)); return Math.abs(b) < 4 ? undefined : b; };
 export function gripsOf(z: Geom, turns: boolean): { grip: Grip; p: Pt }[] {
@@ -231,8 +253,9 @@ export function gripsOf(z: Geom, turns: boolean): { grip: Grip; p: Pt }[] {
   if (!turns) return [{ grip: 'n', p: n }, { grip: 'e', p: e }, { grip: 's', p: s }, { grip: 'w', p: w }];
   if (arcOf(z)) {
     const F = frameOf(z); const fc = centreOf(F); const at = (x: number, y: number) => toWorld(z, { x, y });
-    return [{ grip: 'a', p: at(F.x, fc.y) }, { grip: 'b', p: at(F.x + F.w, fc.y) }, { grip: 'n', p: at(fc.x, F.y) }, { grip: 's', p: at(fc.x, F.y + F.h) }, { grip: 'm', p: at(fc.x, fc.y) }];
+    return [{ grip: 'a', p: at(F.x, fc.y) }, { grip: 'b', p: at(F.x + F.w, fc.y) }, { grip: 'n', p: at(fc.x, F.y) }, { grip: 's', p: at(fc.x, F.y + F.h) }, { grip: 'm', p: at(fc.x, fc.y) }, { grip: 'ta', p: at(F.x, F.y) }, { grip: 'tb', p: at(F.x + F.w, F.y) }];
   }
+  if (alongX(z)) { const nw = toWorld(z, { x: z.x, y: z.y }), ne = toWorld(z, { x: z.x + z.w, y: z.y }); return [{ grip: 'a', p: w }, { grip: 'b', p: e }, { grip: 'n', p: n }, { grip: 's', p: s }, { grip: 'm', p: c }, { grip: 'ta', p: nw }, { grip: 'tb', p: ne }]; }
   return alongX(z) ? [{ grip: 'a', p: w }, { grip: 'b', p: e }, { grip: 'n', p: n }, { grip: 's', p: s }, { grip: 'm', p: c }]
     : [{ grip: 'a', p: n }, { grip: 'b', p: s }, { grip: 'e', p: e }, { grip: 'w', p: w }, { grip: 'm', p: c }];
 }
@@ -256,15 +279,26 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     // bend: both ends stay put and the middle follows the cursor, square to the line between them
     const P = asPier(z0); const c = centreOf(P);
     const q = P.rot ? turn(p, c, -P.rot) : p;
-    const bend = clampBend(P.w, P.h, snap(q.y - c.y, 5));
-    if (!bend) return z0.bend ? { ...P, bend: undefined } : geomOf(z0);   // pulled straight again: as it was
+    const bend = clampBend(P.w, P.h + Math.abs(P.taper ?? 0) / 2, snap(q.y - c.y, 5));
+    if (!bend) return z0.bend || z0.taper ? { ...P, bend: undefined } : geomOf(z0);   // pulled straight again: as it was
     return { ...P, bend };
   }
-  if (z0.bend && (grip === 'n' || grip === 's')) {
+  if (grip === 'ta' || grip === 'tb') {
+    // one end's width alone: both its corners move, about the centreline
+    const P = asPier(z0); const F = frameOf(P); const [wa, wb] = endWidths(P);
+    // (measured square off the centreline at that end; a bend does not change which way that is in the frame)
+    const flat = { ...P, taper: undefined }; const d = Math.abs(toLocal(flat, p).y - (F.y + F.h / 2));
+    const wNew = snap(2 * d, 2); const fit = grip === 'ta' ? fitEnds(wNew, wb) : fitEnds(wa, wNew); const c = centreOf(P);
+    if (!fit.taper && !z0.taper && !P.bend && Math.abs(fit.h - z0.h) < 1e-9 && alongX(z0)) return geomOf(z0);
+    return { ...P, y: c.y - fit.h / 2, h: fit.h, taper: fit.taper, bend: clampBend(P.w, Math.max(fit.h + Math.abs(fit.taper ?? 0) / 2, fit.h), P.bend) };
+  }
+  if ((z0.bend || z0.taper) && (grip === 'n' || grip === 's')) {
     // a bent bar widens about its centreline, so the curve of its spine stays where it is
-    const F = frameOf(z0); const d = Math.abs(toLocal(z0, p).y - (F.y + F.h / 2));
-    const h = Math.min(Math.max(z0.h, lim.maxWide), Math.max(Math.min(z0.h, lim.minWide), snap(2 * d, 5))); const c = centreOf(z0);
-    return { ...geomOf(z0), y: c.y - h / 2, h, bend: clampBend(z0.w, h, z0.bend) };
+    const F = frameOf(z0); const d = Math.abs(toLocal({ ...z0, taper: undefined }, p).y - (F.y + F.h / 2));
+    let h = Math.min(Math.max(z0.h, lim.maxWide), Math.max(Math.min(z0.h, lim.minWide), snap(2 * d, 5))); const c = centreOf(z0);
+    // the taper is kept: both ends widen by the same amount, within what an end may be
+    const t = z0.taper ?? 0; h = Math.min(END_WIDTH.max - Math.abs(t) / 2, Math.max(END_WIDTH.min + Math.abs(t) / 2, h));
+    return { ...geomOf(z0), y: c.y - h / 2, h, bend: clampBend(z0.w, h + Math.abs(t) / 2, z0.bend) };
   }
   if (grip === 'a' || grip === 'b') {
     // stretch and swing: the far end is fixed, the near end follows the cursor
@@ -280,8 +314,8 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     dir = Math.atan2(Math.sin(dir), Math.cos(dir));
     const level = Math.abs(Math.sin(dir)) < 1e-6 && Math.cos(dir) > 0, plumb = Math.abs(Math.cos(dir)) < 1e-6 && Math.sin(dir) > 0;
     // still square to the grid the way it started: it stays an upright rectangle, and keeps its shared walls
-    if (!z0.rot && !z0.bend && ax && level) return { ...geomOf(z0), x: c.x - L / 2, y: c.y - W / 2, w: L, h: W };
-    if (!z0.rot && !z0.bend && !ax && plumb) return { ...geomOf(z0), x: c.x - W / 2, y: c.y - L / 2, w: W, h: L };
+    if (!z0.rot && !z0.bend && !z0.taper && ax && level) return { ...geomOf(z0), x: c.x - L / 2, y: c.y - W / 2, w: L, h: W };
+    if (!z0.rot && !z0.bend && !z0.taper && !ax && plumb) return { ...geomOf(z0), x: c.x - W / 2, y: c.y - L / 2, w: W, h: L };
     // otherwise it is a turned rectangle, long side along its own x, with its north kept roughly up (as the Pier tool draws them)
     // (end a to end b is the frame's own west to east; if keeping north up turns the frame over, the side names swap)
     let quarters = !z0.rot && !ax ? -1 : 0;
@@ -289,8 +323,10 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     if (rot > Math.PI / 2 + 1e-6) { rot -= Math.PI; quarters += 2; } else if (rot <= -Math.PI / 2 + 1e-6) { rot += Math.PI; quarters += 2; }
     if (Math.abs(Math.sin(2 * rot)) < 1e-6) rot += 1e-4;
     // a bend keeps its depth (as far as the new length allows); if the frame turned over, it now bulges the other way in that frame
-    const bend = clampBend(L, W, z0.bend && (quarters % 4 === 2 || quarters % 4 === -2 || quarters === 1 ? -z0.bend : z0.bend));
-    return { x: c.x - L / 2, y: c.y - W / 2, w: L, h: W, rot, sides: undefined, bend, off: turnKeys(z0.off, quarters) };
+    const bend = clampBend(L, W + Math.abs(z0.taper ?? 0) / 2, z0.bend && (quarters % 4 === 2 || quarters % 4 === -2 || quarters === 1 ? -z0.bend : z0.bend));
+    // (and a taper turns round with the frame: the wide end stays the wide end)
+    const flip = quarters % 4 === 2 || quarters % 4 === -2 || quarters === 1;
+    return { x: c.x - L / 2, y: c.y - W / 2, w: L, h: W, rot, sides: undefined, bend, taper: z0.taper ? (flip ? -z0.taper : z0.taper) : undefined, off: turnKeys(z0.off, quarters) };
   }
   // an edge: it moves square to itself, in the shape's own frame, and the opposite edge stays where it is
   const q = toLocal(z0, p); let x0 = z0.x, y0 = z0.y, x1 = z0.x + z0.w, y1 = z0.y + z0.h;

@@ -433,11 +433,11 @@ export class Renderer3D {
         add3(prism(hallPts({ ...z, x: c0.x - R * 0.42, y: c0.y - R * 0.42, w: R * 0.84, h: R * 0.84 }), top, top + 3.2, GLASS.concourse, this.glassMat));
         continue;
       }
-      if (z.bend) {
+      if (z.bend || z.taper) {
         // v0.20: a bent pier is modelled as a row of short straight lengths, each turned to the curve
         for (const q of barPieces(z)) {
           const n0 = [solid.length, glazing.length, roofs.length];
-          massing({ ...z, x: q.x, y: q.y, w: q.w, h: q.h, rot: undefined, bend: undefined }, L.z0, L.z1, sel, solid, glazing, roofs, true);
+          massing({ ...z, x: q.x, y: q.y, w: q.w, h: q.h, rot: undefined, bend: undefined, taper: undefined }, L.z0, L.z1, sel, solid, glazing, roofs, true);
           const pv = centreOf(q); [solid, glazing, roofs].forEach((arr, k) => { for (let i = n0[k]; i < arr.length; i++) { arr[i].rot = q.rot; arr[i].px = pv.x; arr[i].py = pv.y; } });
         }
         continue;

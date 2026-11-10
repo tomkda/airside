@@ -35,9 +35,17 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Levels | `[` Ground · `]` Level 1 |
 | View | `T` 3D view · `H` queue and road-congestion heatmap · `C` commercial heatmap (footfall and revenue per lot) |
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
-| Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it, or one of its grips to stretch, swing, resize or (the filled middle grip on a pier) bend it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
+| Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.20)
+## What's in the alpha (v0.21)
+
+- **Tapered piers (v0.21):** a pier or satellite can be wider at one end than the other, so it can be a wedge, a fan or a finger that narrows to its tip.
+  - **The end grips.** A selected pier or satellite has a diamond grip on a corner of each end. Drag one off the centreline and that end gets wider; drag it in and it gets narrower. The other end keeps its width and the centreline stays where it is, so the pier tapers evenly from one end to the other. An end can be from 24 to 160 m wide. Pull an end back to the other end's width and it is a plain pier again.
+  - **It works with everything else.** A tapered pier can also be bent, stretched, swung and moved, and the side grips widen it as a whole, keeping its taper. Like every grip, the building follows as you drag, one drag is one undo step, and `Esc` puts it back.
+  - **Stands** are square to each wall, so on a tapered pier the two rows splay apart slightly towards the wide end.
+  - **Inside,** the layout is that of a pier of the middle width, squeezed towards the narrow end and stretched towards the wide one: holdrooms, spine and shop lots all get shallower or deeper with the building.
+  - It is drawn as a wedge in the plan, and in 3D as a row of short lengths stepping in width.
+
 
 - **Bent piers (v0.20):** a pier or satellite can be bent into a curve, so terminals no longer have to be made of straight bars.
   - **The bend grip.** A selected pier or satellite has a filled grip in its middle. Pull it sideways and the pier bends into an arc; both ends stay exactly where they are. Pull it back to the line between the ends and the pier is straight again. Like every grip, the building and everything on it follow as you drag, one drag is one undo step, and `Esc` puts it back.
@@ -278,7 +286,8 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
-- Shapes so far are piers at any angle, straight or bent into one arc, and regular hubs (round, six or eight sides). A bend is a single circular arc: there are no S-curves, tapered piers, free-drawn outlines or ellipses yet. Halls, security and concourses built inside a terminal site stay upright and straight (their edges move, but they do not turn or bend). Where buildings overlap, both roofs are drawn.
+- Shapes so far are piers at any angle, straight or bent into one arc, of even width or tapering evenly from one end to the other, and regular hubs (round, six or eight sides). There are no S-curves, free-drawn outlines or ellipses yet, and a pier cannot bulge in the middle. Halls, security and concourses built inside a terminal site stay upright, straight and of even width (their edges move, but they do not turn, bend or taper). Where buildings overlap, both roofs are drawn.
+- On a tapered pier the interior is not re-planned for the width at each point: it is the middle-width layout scaled across, so at a narrow end the holdrooms, spine and lots are all shallower than the planning rules would make them, and a lot's kind (kiosk, shop, restaurant) is chosen from its depth at the middle width. On a bent and tapered pier the stand spacing along a curved wall is set from the wall's radius half way along.
 - On a bent pier: shop lots keep straight walls (each is short), so on a tight bend neighbouring lots meet at a slight angle; the 3D model is a row of short straight lengths, and its opened-up interior is not drawn (it shows as a closed building); the starter guides for drawing a taxiway do not follow a curved wall, since a straight taxiway cannot run parallel to one. A taxiway cannot be curved to follow a bent pier: its stands are always self-laid.
 - Self-laid aprons are simple: one depth per building (its aircraft size), stands square to each side, straight taxilanes with one bend at most in a link. A link does not find its way round an obstacle, cross a road, or join two aprons across a gap wider than 400 m; then the design check says the apron is cut off and a drawn taxiway is the fix. Where two buildings make an inside corner, the one built first takes the corner. A car park or facility beside a pier can cut an apron off with the sidewalk or drive it lays for itself. A side with a taxiway drawn along only part of it gets drawn-taxiway gates on that part and none on the rest. Self-laid aprons and taxilanes cost nothing to build.
 - Dragging rebuilds the whole layout each frame: a few milliseconds on a small airport, about 30 on one with fifteen buildings and 150 gates, so very large airports will drag less smoothly. The 3D view does not rebuild live. Grips are in the plan only.
