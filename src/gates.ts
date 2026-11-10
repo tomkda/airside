@@ -6,9 +6,11 @@
 //   and each slot can be switched off or back on by the player.
 //
 // The ideal taxiway line for each side (one stand depth out) is exported as a guide for drawing and snapping.
-import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rectsOverlap, rectSegDist, inRect } from './geom';
+import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rectsOverlap, rectSegDist } from './geom';
 import { CLASSES, Cls } from './config';
 import type { World, Zone, Way, Apron, Gate, RunwayInfo } from './world';
+import { zonePts, toWorld, dirWorld, polyClip, polyArea, polyBox } from './shapes';
+import { pointInPoly } from './geom';
 
 export type SideKey = 'n' | 'e' | 's' | 'w';
 export interface GateSlot {
@@ -27,12 +29,14 @@ export const SIDE_NAMES: Record<SideKey, string> = { n: 'North', e: 'East', s: '
 const inset = (r: Rect, k: number): Rect => ({ x: r.x + k, y: r.y + k, w: Math.max(0, r.w - 2 * k), h: Math.max(0, r.h - 2 * k) });
 
 export function sidesOf(z: Zone) {
-  return [
+  const sides = [
     { side: 'n' as SideKey, a: { x: z.x, y: z.y }, b: { x: z.x + z.w, y: z.y }, out: { x: 0, y: -1 } },
     { side: 'e' as SideKey, a: { x: z.x + z.w, y: z.y }, b: { x: z.x + z.w, y: z.y + z.h }, out: { x: 1, y: 0 } },
     { side: 's' as SideKey, a: { x: z.x + z.w, y: z.y + z.h }, b: { x: z.x, y: z.y + z.h }, out: { x: 0, y: 1 } },
     { side: 'w' as SideKey, a: { x: z.x, y: z.y + z.h }, b: { x: z.x, y: z.y }, out: { x: -1, y: 0 } },
   ];
+  // v0.17: a turned zone keeps its side names (north is the north of its own frame); the geometry turns with it
+  return z.rot ? sides.map(sd => ({ side: sd.side, a: toWorld(z, sd.a), b: toWorld(z, sd.b), out: dirWorld(z, sd.out) })) : sides;
 }
 
 export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number) {
@@ -78,10 +82,19 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
       if (runways.some(r => rectSegDist(strip, r.rw.a, r.rw.b) < runwayWidth(r.length) / 2 + 40)) { guide.note = 'the apron would reach into the runway strip'; continue; }
       const blocked: [number, number][] = [];
       const proj = (pts: Pt[]) => { const s = pts.map(p => dot(sub(p, sd.a), al)); return [Math.min(...s), Math.max(...s)] as [number, number]; };
-      for (const o of world.zones) if (o.id !== z.id && rectsOverlap(inset(o, 1), strip))
-        blocked.push(proj([{ x: o.x, y: o.y }, { x: o.x + o.w, y: o.y + o.h }, { x: o.x + o.w, y: o.y }, { x: o.x, y: o.y + o.h }]));
-      for (const ap of aprons) if (rectsOverlap(inset(ap.rect, 1), strip))
-        blocked.push(proj([{ x: ap.rect.x, y: ap.rect.y }, { x: ap.rect.x + ap.rect.w, y: ap.rect.y + ap.rect.h }, { x: ap.rect.x + ap.rect.w, y: ap.rect.y }, { x: ap.rect.x, y: ap.rect.y + ap.rect.h }]));
+      // v0.17: where either building is turned, the test is on the true outlines, and only the part of the other
+      // building that is actually in the strip blocks gates. That is what lets a pier run into a concourse and
+      // keep gates on the rest of its length, and the concourse keep gates either side of the pier.
+      const stripPts = [add(sd.a, add(mul(al, 1), mul(sd.out, 1))), add(sd.b, add(mul(al, -1), mul(sd.out, 1))), add(sd.b, add(mul(al, -1), mul(sd.out, D))), add(sd.a, add(mul(al, 1), mul(sd.out, D)))];
+      const cut = (pts: Pt[]) => { const c = polyClip(pts, stripPts); if (c.length >= 3 && polyArea(c) > 2) blocked.push(proj(c)); };
+      for (const o of world.zones) if (o.id !== z.id) {
+        if (z.rot || o.rot) cut(zonePts(o));
+        else if (rectsOverlap(inset(o, 1), strip)) blocked.push(proj([{ x: o.x, y: o.y }, { x: o.x + o.w, y: o.y + o.h }, { x: o.x + o.w, y: o.y }, { x: o.x, y: o.y + o.h }]));
+      }
+      for (const ap of aprons) {
+        if (z.rot || ap.zone.rot) cut(ap.pts);
+        else if (rectsOverlap(inset(ap.rect, 1), strip)) blocked.push(proj([{ x: ap.rect.x, y: ap.rect.y }, { x: ap.rect.x + ap.rect.w, y: ap.rect.y + ap.rect.h }, { x: ap.rect.x + ap.rect.w, y: ap.rect.y }, { x: ap.rect.x, y: ap.rect.y + ap.rect.h }]));
+      }
       for (const w of world.ways) if (w.kind !== 'taxi' && rectSegDist(inset(strip, 2), w.a, w.b) === 0) blocked.push(proj([w.a, w.b]));
       const wn = perpLeft(norm(sub(best.w.b, best.w.a)));
       const meet = (p: Pt) => add(p, mul(sd.out, dot(sub(best!.w.a, p), wn) / dot(sd.out, wn)));
@@ -93,7 +106,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
         const pts = [...first.cell, ...last.cell];
         const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
         const rect = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
-        const ap: Apron = { zone: z, rect, outward: sd.out, laneA: first.front, laneB: last.front, mouth: lerpPt(first.front, last.front, 0.5), cls: cls as Cls, letter };
+        const ap: Apron = { zone: z, rect, pts: [first.cell[0], last.cell[1], last.cell[2], first.cell[3]], outward: sd.out, laneA: first.front, laneB: last.front, mouth: lerpPt(first.front, last.front, 0.5), cls: cls as Cls, letter };
         aprons.push(ap);
         for (const sl of run) if (sl.on) {
           k++;
@@ -127,8 +140,5 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
 
 /** Which slot (on or off) is under a point, if any. */
 export function slotAt(slots: GateSlot[], p: Pt): GateSlot | undefined {
-  return slots.find(s => {
-    const xs = s.cell.map(q => q.x), ys = s.cell.map(q => q.y);
-    return inRect(p, { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) });
-  });
+  return slots.find(s => pointInPoly(p, s.cell));
 }

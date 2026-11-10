@@ -11,6 +11,7 @@ import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
+import { turn, centreOf } from './shapes';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -23,7 +24,7 @@ export function heatRamp(v: number, alpha = 1) {
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Ghost {
-  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
+  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect & { rot?: number }; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
   way?: { kind: WayKind; cls: number; lanes: number }; snapA?: boolean; snapB?: boolean;
   extras?: { a: Pt; b: Pt; cls: number }[];
   /** v0.15: the modules a new terminal would be laid out with. */
@@ -109,7 +110,13 @@ export class Renderer {
     pts.forEach((p, i) => { const [x, y] = this.P(p.x, p.y, z); i ? g.lineTo(x, y) : g.moveTo(x, y); });
     if (close) g.closePath();
   }
-  rectPts(r: Rect): Pt[] { return [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }]; }
+  /** The corners of a rectangle. A turned zone (v0.17) gives its turned corners; `pivot` turns a part of one about the zone's centre. */
+  rectPts(r: Rect & { rot?: number; pivot?: Pt }): Pt[] {
+    const c = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
+    if (!r.rot) return c;
+    const pv = r.pivot ?? { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+    return c.map(p => turn(p, pv, r.rot!));
+  }
   line(a: Pt, b: Pt, wM: number, color: string, z = 0, cap: CanvasLineCap = 'butt', minPx = 0.6) {
     const g = this.ctx; g.strokeStyle = color; g.lineWidth = Math.max(minPx, wM * this.cam.zoom); g.lineCap = cap;
     this.path([a, b], z, false); g.stroke();
@@ -415,7 +422,7 @@ export class Renderer {
 
   drawAirfield(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom; const d = sim.d;
-    for (const a of d.aprons) this.poly(this.rectPts(a.rect), PAL.pave);
+    for (const a of d.aprons) this.poly(a.pts, PAL.pave);
     // Taxiways (player) plus generated stubs into aprons and onto runways
     g.lineJoin = 'round';
     const taxis = sim.world.ways.filter(w => w.kind === 'taxi');
@@ -754,7 +761,7 @@ export class Renderer {
       const v = f.w[i] / max; if (v < 0.03) continue;
       const u0 = i * bin, u1 = Math.min(B.long, u0 + bin); const h = 2 + 4 * v;
       const r = B.horiz ? { x: zn.x + u0, y: zn.y + vMid - h / 2, w: u1 - u0, h } : { x: zn.x + vMid - h / 2, y: zn.y + u0, w: h, h: u1 - u0 };
-      this.poly(this.rectPts(r), heatRamp(v, 0.9), top);
+      this.poly(this.rectPts({ ...r, rot: zn.rot, pivot: centreOf(zn) }), heatRamp(v, 0.9), top);
     }
   }
 
@@ -801,6 +808,7 @@ export class Renderer {
   shadow(r: Rect, h: number) {
     const k = h * 0.55; const g = this.ctx;
     g.fillStyle = 'rgba(40,36,30,0.13)';
+    if ((r as { rot?: number }).rot) { this.path(this.rectPts(r).map(p => ({ x: p.x + k, y: p.y + k }))); g.fill(); return; }
     this.path([{ x: r.x + r.w, y: r.y }, { x: r.x + r.w + k, y: r.y + k }, { x: r.x + r.w + k, y: r.y + r.h + k }, { x: r.x + k, y: r.y + r.h + k }, { x: r.x, y: r.y + r.h }, { x: r.x + r.w, y: r.y + r.h }]); g.fill();
   }
 
@@ -894,7 +902,7 @@ export class Renderer {
   drawApronJoints(sim: Sim) {
     const z = this.cam.zoom; if (z < 0.9) return;
     const g = this.ctx; g.strokeStyle = 'rgba(40,36,30,0.07)'; g.lineWidth = 1; g.beginPath();
-    for (const ap of sim.d.aprons) { const r = ap.rect;
+    for (const ap of sim.d.aprons) { if (ap.zone.rot) continue; const r = ap.rect;
       for (let x = r.x + 7.5; x < r.x + r.w; x += 7.5) { const [x0, y0] = this.P(x, r.y), [x1, y1] = this.P(x, r.y + r.h); g.moveTo(x0, y0); g.lineTo(x1, y1); }
       for (let y = r.y + 7.5; y < r.y + r.h; y += 7.5) { const [x0, y0] = this.P(r.x, y), [x1, y1] = this.P(r.x + r.w, y); g.moveTo(x0, y0); g.lineTo(x1, y1); } }
     g.stroke();
@@ -941,14 +949,15 @@ export class Renderer {
     const z = this.cam.zoom; if (z < 0.2) return;
     const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
     g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
-    this.path(this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k }), top); g.stroke();
+    this.path(this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, pivot: centreOf(zn) }), top); g.stroke();
     if (zn.type === 'concourse') {
       const horiz = zn.w >= zn.h; const wC = Math.min(12, (horiz ? zn.h : zn.w) * 0.28);
-      const r = horiz ? { x: zn.x + 8, y: zn.y + zn.h / 2 - wC / 2, w: zn.w - 16, h: wC } : { x: zn.x + zn.w / 2 - wC / 2, y: zn.y + 8, w: wC, h: zn.h - 16 };
+      const r0 = horiz ? { x: zn.x + 8, y: zn.y + zn.h / 2 - wC / 2, w: zn.w - 16, h: wC } : { x: zn.x + zn.w / 2 - wC / 2, y: zn.y + 8, w: wC, h: zn.h - 16 };
+      const r = { ...r0, rot: zn.rot, pivot: centreOf(zn) };
       if (zn.mezz) { const m = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; this.shadow(m, 5); this.poly(this.rectPts(m), 'rgba(244,237,223,0.55)', top); g.strokeStyle = 'rgba(40,36,30,0.3)'; this.path(this.rectPts(m), top); g.stroke(); }
       this.poly(this.rectPts(r), 'rgba(176,192,196,0.45)', top);
       g.strokeStyle = 'rgba(40,36,30,0.25)'; this.path(this.rectPts(r), top); g.stroke();
-      if (z > 0.6) { const n = Math.floor((horiz ? r.w : r.h) / 7.5); g.beginPath(); for (let i = 1; i < n; i++) { const a = horiz ? { x: r.x + i * 7.5, y: r.y } : { x: r.x, y: r.y + i * 7.5 }, b = horiz ? { x: a.x, y: r.y + r.h } : { x: r.x + r.w, y: a.y }; const [x0, y0] = this.P(a.x, a.y, top), [x1, y1] = this.P(b.x, b.y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); }
+      if (z > 0.6) { const n = Math.floor((horiz ? r.w : r.h) / 7.5); g.beginPath(); for (let i = 1; i < n; i++) { const a = horiz ? { x: r.x + i * 7.5, y: r.y } : { x: r.x, y: r.y + i * 7.5 }, b = horiz ? { x: a.x, y: r.y + r.h } : { x: r.x + r.w, y: a.y }; const ta = zn.rot ? turn(a, centreOf(zn), zn.rot) : a, tb = zn.rot ? turn(b, centreOf(zn), zn.rot) : b; const [x0, y0] = this.P(ta.x, ta.y, top), [x1, y1] = this.P(tb.x, tb.y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); }
     } else if (z > 0.35) {
       const h = Math.sin(zn.x * 12.9898 + zn.y * 78.233) * 43758.5453; const kk = h - Math.floor(h);
       for (let i = 0; i < 2; i++) {

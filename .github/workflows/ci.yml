@@ -21,3 +21,4 @@ jobs:
       - run: node scripts/roads.mjs
       - run: node scripts/halls.mjs
       - run: node scripts/satellites.mjs
+      - run: node scripts/piers.mjs

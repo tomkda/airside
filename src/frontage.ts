@@ -16,6 +16,7 @@ import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way } from './world';
 import { sidesOf } from './gates';
 import { waySegs, wayPts } from './ways';
+import { zonesOverlap } from './shapes';
 
 export type Deck = 'dep' | 'arr' | 'both';
 export interface AutoTag { road: number; module: number; deck: Deck; gap: number }
@@ -63,7 +64,7 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
     const p0 = { x: c.a.x + al.x * t0, y: c.a.y + al.y * t0 }, p1 = { x: c.a.x + al.x * t1, y: c.a.y + al.y * t1 };
     const r = boxOf(p0, p1, c.out, c.gap - 0.5, 0);
     // never on top of something the player built on that level
-    if (world.zones.some(o => o.level === level && o.id !== c.m.id && rectsOverlap(shrink(r, 0.6), o))) return;
+    if (world.zones.some(o => o.level === level && o.id !== c.m.id && (o.rot ? zonesOverlap(shrink(r, 0.6), o) : rectsOverlap(shrink(r, 0.6), o)))) return;
     const id = -(c.road.id * 100000 + c.m.id * 2 + level);
     if (curbs.some(z => z.id === id)) return;
     curbs.push({ id, type: 'curb', level, ...r, tier: 0, auto: { road: c.road.id, module: c.m.id, deck, gap: c.gap } });
@@ -143,7 +144,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     for (const { sd, L, al } of sidesOf(m).map(sd => ({ sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) }))) {
       if (L < FRONTAGE.minLen) continue;
       const probe: Rect = boxOf(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
-      if (world.zones.some(o => !fam.includes(o) && TERMINAL_SET.has(o.type) && rectsOverlap(probe, o))) continue;   // an interior face
+      if (world.zones.some(o => !fam.includes(o) && TERMINAL_SET.has(o.type) && (o.rot ? zonesOverlap(probe, o) : rectsOverlap(probe, o)))) continue;   // an interior face
       const at = (t: number, k: number): Pt => ({ x: sd.a.x + al.x * t + sd.out.x * k, y: sd.a.y + al.y * t + sd.out.y * k });
       const a = at(-ext, off), b = at(L + ext, off);
       if (blocked(a, b, fam) || blocked(at(-ext, off - half), at(L + ext, off - half), fam)) continue;

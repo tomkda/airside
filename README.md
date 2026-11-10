@@ -13,12 +13,13 @@ npm run simtest      # headless: runs 3 sim days and prints the daily report
 node scripts/roads.mjs     # curves, roundabouts and one-way loops
 node scripts/halls.mjs     # stacked halls and self-laid forecourts
 node scripts/satellites.mjs # satellite concourses and people movers
+node scripts/piers.mjs      # piers at any angle, merged and standing apart
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
 node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
-npm test                  # all seven sims
+npm test                  # all eight sims
 ```
 
-CI runs the type-check, build and all seven sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
+CI runs the type-check, build and all eight sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
 There is no server. The build is one self-contained HTML file (~840 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
@@ -26,7 +27,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 | Action | Input |
 | --- | --- |
-| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` hall (check-in over bag claim) · `4` security · `5` concourse · `6` satellite concourse · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
+| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` hall (check-in over bag claim) · `4` security · `5` concourse · `6` satellite concourse · `9` pier at any angle · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
 | Pan / zoom | drag empty space (or Shift-drag, right-drag) · scroll wheel · pinch on touch · in 3D: drag to orbit, right-drag to pan, scroll to zoom |
 | Detail | `A` airfield · `L` landside · `Enter` (or double-click a terminal) open a terminal · `Esc` step back out · zooming moves between them too |
 | Levels | `[` Ground · `]` Level 1 |
@@ -34,7 +35,15 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.16)
+## What's in the alpha (v0.17)
+
+- **Piers at any angle, and buildings that merge (v0.17):** the foundation for terminals that are not made of upright boxes.
+  - **Pier tool (`9`).** Drag a line from where the pier starts to where it ends. It can run at any angle (it snaps to 5° steps), any length from 60 m, in a width of 40, 50 or 60 m.
+  - **Shapes merge.** Start the pier inside a concourse and it becomes part of that building: people walk straight through where the two overlap, with no door to line up. Two piers drawn into the same end make a fork. A pier that touches nothing is a satellite and links itself by people mover, like any other.
+  - **Gates follow the angle.** Draw a taxiway parallel to either long side (the dashed guides turn with the pier) and gates, stands, aprons and jet bridges grow at that angle. Where a pier runs into a building, only the part of each face that is actually covered loses its gates: the pier keeps gates along the rest of its length, and the concourse keeps gates either side of where the pier joins.
+  - **Inside, a pier is a full concourse:** holdrooms behind its gates, a spine, shops and restaurants bidding for lots, footfall counted along its own length. It is laid out as an upright building and turned into place.
+  - It can be moved (it keeps its angle), inspected and demolished like any module, in the plan and in 3D.
+
 
 - **Satellite concourses on a people mover (v0.16):** the first step towards airports shaped like Tampa, Orlando, Denver or Atlanta, where the gates stand out on the airfield away from the terminal.
   - **Satellite tool (`6`).** Drag a concourse anywhere on the airfield. It needs no terminal site and does not have to touch anything.
@@ -230,7 +239,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
-- Every building is still an upright rectangle. Angled piers and the X, Y and star shapes of terminals like Mumbai T2 or Calgary need modules that can turn to any angle; that is the next foundation to build. Until then, piers at right angles can be made by placing concourses so they touch.
+- Only concourses can turn, and only as straight piers. Round and polygonal halls (the hubs where piers meet at Mumbai T2 or Calgary) are next, on the same merge-by-overlap rule. A pier cannot yet be turned or stretched after it is built (demolish and redraw), halls and security stay upright, and the 3D view shows an opened pier as its roofed massing, not its interior. Where two buildings overlap, both roofs are drawn.
 - A people mover is a single shuttle link between two concourses, always in a tunnel, with no landside leg: it does not yet run from a landside terminal building to an airside hall with security in between, loop through several stations, or carry bags (arriving bags still appear at the terminal's claim).
 - The one-drag terminal is one shape: a concourse bar, security and the hall in a line. It does not yet place itself at the right distance from a taxiway for gates (the dashed guides show where), size itself to demand, or add a car park.
 - Sound has no volume control beyond on and off, and no per-vehicle sounds (cars, the AirTrain, announcements).
