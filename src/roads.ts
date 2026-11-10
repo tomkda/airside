@@ -14,7 +14,7 @@ import { isRingRef, roundR, roundDef, RING_REF } from './ways';
 
 export interface RoadSeg { a: Pt; b: Pt; w: number; lanes: number; hwy: boolean; ref: number; eid: number; trimA: number; trimB: number }
 /** v0.11: a run of road between junctions, as one polyline, so curves draw smooth and dashes keep their rhythm. */
-export interface RoadPath { pts: Pt[]; len: number; w: number; lanes: number; hwy: boolean; ow: boolean; ref: number; trimA: number; trimB: number }
+export interface RoadPath { pts: Pt[]; len: number; w: number; lanes: number; hwy: boolean; ow: boolean; ref: number; trimA: number; trimB: number; ramp: boolean }
 export interface Turn { p1: Pt; c: Pt; p2: Pt; w: number }
 export interface Arrow { p: Pt; ang: number; kind: 'ahead' | 'left' | 'right' }
 export interface Gate { p: Pt; dir: Pt; zone: Zone; twin: boolean }
@@ -46,7 +46,8 @@ export function roadPlan(d: Derived): RoadPlan {
     const legs = net.adj[n].map(id => net.edges[id]);
     const ring = ringAt(n);
     if (ring) { setback[n] = ring.w / 2 + 9; continue; }
-    if (legs.length < 3) { setback[n] = 0; continue; }
+    // where a deck ramp leaves or rejoins a road, traffic divides and merges without stopping: no junction markings
+    if (legs.length < 3 || legs.some(e => d.rampRefs.has(e.ref))) { setback[n] = 0; continue; }
     setback[n] = Math.max(...legs.map(e => widthOf(e.kind, e.lanes))) / 2 + 5;
   }
   for (const e of net.edges) {
@@ -75,7 +76,7 @@ export function roadPlan(d: Derived): RoadPlan {
     const ns = [...back.reverse(), e0.u, ...fwd];
     const pts = ns.map(n => net.nodes[n]); const len = polyLen(pts);
     const n0 = ns[0], n1 = ns[ns.length - 1];
-    paths.push({ pts, len, w: widthOf(e0.kind, e0.lanes), lanes: e0.kind === 'hwy' ? 6 : e0.lanes, hwy: e0.kind === 'hwy', ow: e0.ow, ref: e0.ref, trimA: Math.min(setback[n0], len * 0.45), trimB: Math.min(setback[n1], len * 0.45) });
+    paths.push({ pts, len, w: widthOf(e0.kind, e0.lanes), lanes: e0.kind === 'hwy' ? 6 : e0.lanes, hwy: e0.kind === 'hwy', ow: e0.ow, ref: e0.ref, ramp: d.rampRefs.has(e0.ref), trimA: Math.min(setback[n0], len * 0.45), trimB: Math.min(setback[n1], len * 0.45) });
   }
   for (let n = 0; n < N; n++) {
     const P = net.nodes[n];
@@ -104,6 +105,7 @@ export function roadPlan(d: Derived): RoadPlan {
     }
     const legs = all;
     if (legs.length < 2) continue;
+    const rampHere = legs.some(l => d.rampRefs.has(l.e.ref));
     const hwyHere = legs.some(l => l.e.kind === 'hwy');
     for (let i = 0; i < legs.length; i++) for (let j = i + 1; j < legs.length; j++) {
       const A = legs[i], B = legs[j];
@@ -111,6 +113,7 @@ export function roadPlan(d: Derived): RoadPlan {
       if (c < -0.985 || c > 0.86) continue;                 // straight through, or a hairpin
       if (legs.length === 2 && A.e.ref === B.e.ref && c < -0.9) continue;   // along a curve: the path itself is smooth
       if (A.e.kind === 'hwy' && B.e.kind === 'hwy') continue;
+      if (rampHere) continue;
       const w = Math.min(A.w, B.w);
       if (hwyHere && (A.e.kind === 'hwy' || B.e.kind === 'hwy')) {
         // slip ramps: leave the highway early and join the side road well up it
@@ -121,7 +124,7 @@ export function roadPlan(d: Derived): RoadPlan {
       const R = Math.min(w * 0.5 + (legs.length > 2 ? 11 : 16) * (1.1 - 0.4 * c), A.e.len * 0.45, B.e.len * 0.45);
       turns.push({ p1: add(P, mul(A.d, R)), c: P, p2: add(P, mul(B.d, R)), w });
     }
-    if (legs.length < 3) continue;
+    if (legs.length < 3 || rampHere) continue;
     // approaches: a stop bar across the inbound side, and arrows a little further back
     for (const L of legs) {
       if (L.e.kind === 'hwy' || !L.inb) continue;

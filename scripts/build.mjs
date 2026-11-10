@@ -16,7 +16,8 @@ function emit(js) {
   console.log(`built dist/index.html (${(body.length / 1024).toFixed(0)} KB)`);
 }
 
-const opts = { entryPoints: ['src/main.ts'], bundle: true, format: 'iife', target: 'es2020', minify: !watch, write: false, logLevel: 'warning' };
+const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+const opts = { define: { __VERSION__: JSON.stringify(version) }, entryPoints: ['src/main.ts'], bundle: true, format: 'iife', target: 'es2020', minify: !watch, write: false, logLevel: 'warning' };
 
 if (watch) {
   const ctx = await context({ ...opts, plugins: [{ name: 'emit', setup(b) { b.onEnd(r => { if (r.outputFiles?.[0]) emit(r.outputFiles[0].text); }); } }] });

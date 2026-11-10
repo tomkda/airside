@@ -11,10 +11,11 @@ const run = (name, edit, days = 2) => {
   const d = sim.d; const fore = d.autoRoads.filter(r => r.fore);
   const curbs = d.zones.filter(z => z.auto).map(z => (z.level ? 'L1 ' : 'G ') + z.auto.deck).sort().join(', ') || 'none';
   console.log(name + ':', d.terminals.map(t => t.name + (t.active ? ' open' : ' CLOSED (' + t.problems.join('; ') + ')')).join(' | '),
-    '| forecourt: ' + fore.filter(r => r.fore === 'face').length + ' frontage, ' + fore.filter(r => r.fore === 'link').length + ' links | curbs: ' + curbs + ' | decks ' + d.decks.length,
+    '| forecourt: ' + fore.filter(r => r.fore === 'face').length + ' frontage, ' + fore.filter(r => r.fore === 'link').length + ' links, ' + fore.filter(r => r.fore === 'ramp').length + ' ramps | curbs: ' + curbs + ' | decks ' + d.decks.length,
     '| issues:', d.issues.filter(i => i.level === 'error').map(i => i.text));
-  sim.onDayEnd = r => { const s = r.stats; console.log('  ' + r.label, '| flights', s.flights, 'pax', s.paxDep + s.paxArr, 'missed', s.missed, 'stranded', s.stranded, '| sat', r.sat.toFixed(0)); };
-  while (sim.day < days) sim.step(0.25);
+  let onRamp = 0, wrongRamp = 0; const seen = new Set(); const E = sim.d.road.edges;
+  sim.onDayEnd = r => { const s = r.stats; console.log('  ' + r.label, '| flights', s.flights, 'pax', s.paxDep + s.paxArr, 'missed', s.missed, 'stranded', s.stranded, '| sat', r.sat.toFixed(0), '| cars up a ramp', onRamp, '(not for the deck: ' + wrongRamp + ')'); onRamp = 0; };
+  while (sim.day < days) { sim.step(0.25); for (const c of sim.cars) if (!seen.has(c.id + c.stage)) { seen.add(c.id + c.stage); if (c.eids.some(e => e >= 0 && E[e] && sim.d.rampRefs.has(E[e].ref))) { onRamp++; if (c.curb?.zone.auto?.deck !== 'dep') wrongRamp++; } } }
   return sim;
 };
 const noFrontage = w => { w.ways = w.ways.filter(q => !(q.kind === 'road' && q.a.y === q.b.y && q.a.y < 2960)); };

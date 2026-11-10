@@ -1,7 +1,7 @@
 // Canvas renderer. Reads sim state, never writes it.
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
-import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along } from './geom';
+import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon } from './geom';
 import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind } from './config';
 import type { Sim, Flight } from './sim';
 import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
@@ -1006,29 +1006,41 @@ export class Renderer {
   drawDecks(sim: Sim) {
     const z = this.cam.zoom; const g = this.ctx;
     for (const dk of sim.d.decks) {
-      const n = norm({ x: -(dk.b.y - dk.a.y), y: dk.b.x - dk.a.x }); const d = norm(sub(dk.b, dk.a)); const L = dist(dk.a, dk.b);
-      const ramp = FRONTAGE.ramp;
-      const pts = [add(dk.a, mul(n, -dk.width / 2)), add(dk.b, mul(n, -dk.width / 2)), add(dk.b, mul(n, dk.width / 2)), add(dk.a, mul(n, dk.width / 2))];
+      // v0.13: the deck is drawn along its own path, so a ramp that curves off the approach road reads as the road dividing
+      const pts = ribbon(dk.pts, dk.ws.map(w => Math.max(11, w)));
       g.save(); g.shadowColor = 'rgba(40,36,30,0.35)'; g.shadowBlur = 6; g.shadowOffsetY = 3;
       this.poly(pts, '#B4AEA2'); g.restore();
-      g.strokeStyle = PAL.roadEdge; g.lineWidth = 1.2; this.path(pts); g.stroke();
+      g.strokeStyle = PAL.roadEdge; g.lineWidth = 1.2; g.lineJoin = 'round'; this.path(pts); g.stroke();
+      const cum = [0]; for (let i = 1; i < dk.pts.length; i++) cum.push(cum[i - 1] + dist(dk.pts[i - 1], dk.pts[i]));
+      const L = cum[cum.length - 1];
+      const i0 = dk.zs.findIndex(v => v >= 1), i1 = dk.zs.length - 1 - [...dk.zs].reverse().findIndex(v => v >= 1);
       if (z > 0.35) {
         g.setLineDash([Math.max(2, 4 * z), Math.max(3, 7 * z)]);
-        this.line(dk.a, dk.b, 0.3, PAL.roadLine, 0, 'butt', 0.6);
+        this.pline(dk.pts, 0.3, PAL.roadLine, 'butt', 0.6);
         g.setLineDash([]);
-        // ramps: where the deck meets the ground road
-        for (const [e, s] of [[dk.a, 1], [dk.b, -1]] as const) {
-          const r0 = e, r1 = add(e, mul(d, s * ramp));
-          for (const k of [0.25, 0.5, 0.75]) { const q = lerp2(r0, r1, k); this.line(add(q, mul(n, -dk.width / 2)), add(q, mul(n, dk.width / 2)), 0.2, 'rgba(40,36,30,0.25)', 0, 'butt', 0.5); }
+        // ramps: cross lines that close up as the deck climbs, from where it leaves the ground to deck level
+        for (const [s0, s1] of [[0, cum[i0]], [cum[i1], L]]) for (let u = s0 + 6; u < s1 - 2; u += 9) {
+          const a = along(dk.pts, u); const n = { x: -Math.sin(a.ang), y: Math.cos(a.ang) };
+          const k = (s1 === L ? (L - u) / (L - s0 || 1) : (u - s0) / (s1 - s0 || 1)); const hw = (10 + (dk.width - 10) * Math.min(1, k * 1.6)) / 2 - 0.8;
+          this.line(add(a.p, mul(n, -hw)), add(a.p, mul(n, hw)), 0.2, `rgba(40,36,30,${0.12 + 0.2 * k})`, 0, 'butt', 0.5);
         }
       }
-      if (z > 0.6) for (let s = ramp; s < L - ramp; s += 30) for (const side of [-1, 1]) {
-        const c = add(add(dk.a, mul(d, s)), mul(n, side * (dk.width / 2 - 1.5)));
-        const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3);
+      // columns under the level part and the upper half of each ramp
+      if (z > 0.6) for (let u = 0; u < L; u += 30) {
+        const a = along(dk.pts, u); const n = { x: -Math.sin(a.ang), y: Math.cos(a.ang) };
+        let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
+        const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * ((u - cum[k]) / (cum[k + 1] - cum[k] || 1)); if (zk < 0.5) continue;
+        for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.width / 2 - 1.5))); const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
       }
       if (z > 0.45 && this.lod !== 'airfield') {
-        const rot = Math.atan2((dk.b.y - dk.a.y) * this.yScale, dk.b.x - dk.a.x); const up = Math.cos(rot) < 0;
-        this.label('UPPER DECK · DEPARTURES', lerp2(dk.a, dk.b, 0.5), 0, 8, '#F4EDDF', { weight: 800, spacing: 1.4, rot: up ? rot + Math.PI : rot });
+        const a = dk.pts[i0], b = dk.pts[i1];
+        const rot = Math.atan2((b.y - a.y) * this.yScale, b.x - a.x); const up = Math.cos(rot) < 0;
+        this.label('UPPER DECK · DEPARTURES', lerp2(a, b, 0.5), 0, 8, '#F4EDDF', { weight: 800, spacing: 1.4, rot: up ? rot + Math.PI : rot });
+        // say what the fork is, once per ramp, where it leaves the ground
+        if (z > 0.9) for (const [p, q] of [[dk.pts[0], dk.pts[1]], [dk.pts[dk.pts.length - 1], dk.pts[dk.pts.length - 2]]]) if (dk.pts.length > 4) {
+          const r2 = Math.atan2((q.y - p.y) * this.yScale, q.x - p.x); const m = lerp2(p, q, 2.2);
+          this.label('RAMP', m, 0, 6.5, '#F4EDDF', { weight: 800, spacing: 1, rot: Math.cos(r2) < 0 ? r2 + Math.PI : r2 });
+        }
       }
     }
   }

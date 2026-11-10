@@ -12,7 +12,8 @@ import type { Sim, Car } from './sim';
 import type { Edge } from './net';
 import { isRingRef, RING_REF, roundDef } from './ways';
 
-export interface Pose { x: number; y: number; ang: number; brake: boolean; moving: boolean }
+/** `up`: 0 on the ground, 1 at deck level, for a car on a ramp or an upper deck (v0.13). */
+export interface Pose { x: number; y: number; ang: number; brake: boolean; moving: boolean; up: number }
 export const CAR_COLS = ['#3A352D', '#8C8576', '#E9E4DA', '#B0472B', '#2F4E78', '#6E7F86', '#CFC6B4', '#5E7A55', '#1F1C18'];
 export const CAR_GAP = 6.8;
 
@@ -98,7 +99,7 @@ export function carPoses(sim: Sim): Map<Car, Pose> {
     } else {
       // waiting for a bay, or stopped in one: the sim has placed it; a waiting car sits in the kerb lane
       const k = c.stage === 'queue' ? 2.25 : 0;
-      out.set(c, { x: c.x - Math.sin(c.ang) * k, y: c.y + Math.cos(c.ang) * k, ang: c.ang, brake: c.stage === 'queue', moving: false });
+      out.set(c, { x: c.x - Math.sin(c.ang) * k, y: c.y + Math.cos(c.ang) * k, ang: c.ang, brake: c.stage === 'queue', moving: false, up: c.curb?.zone.level === 1 ? 1 : 0 });
     }
   }
   for (const g of groups.values()) {
@@ -110,11 +111,25 @@ export function carPoses(sim: Sim): Map<Car, Pose> {
       const d = Math.max(0, it.c.d - held) * it.lane.ratio;
       const a = along(it.lane.pts, Math.min(d, it.lane.len));
       const e = it.c.eids[it.c.si];
-      out.set(it.c, { x: a.p.x, y: a.p.y, ang: a.ang, brake: held > 1.5 || (e >= 0 && sim.congestion(e) < 0.55), moving: true });
+      out.set(it.c, { x: a.p.x, y: a.p.y, ang: a.ang, brake: held > 1.5 || (e >= 0 && sim.congestion(e) < 0.55), moving: true, up: deckHeight(sim, it.c, a.p) });
     }
   }
   memo = { sim, t: sim.t, n: sim.cars.length, d: sim.d, out };
   return out;
+}
+
+/** How high a car bound for (or leaving) a departures deck is: it climbs with the ramp it is on. */
+function deckHeight(sim: Sim, c: Car, p: Pt): number {
+  const tag = c.curb?.zone.auto; if (!tag || tag.deck !== 'dep') return 0;
+  const dk = sim.d.decks.find(q => q.road === tag.road); if (!dk) return 0;
+  let best = 0, bd = 9;
+  for (let i = 1; i < dk.pts.length; i++) {
+    const a = dk.pts[i - 1], b = dk.pts[i]; const dx = b.x - a.x, dy = b.y - a.y; const l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
+    const dd = Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t);
+    if (dd < bd) { bd = dd; best = dk.zs[i - 1] + (dk.zs[i] - dk.zs[i - 1]) * t; }
+  }
+  return best;
 }
 
 function laneKey(sim: Sim, c: Car, eid: number): number {

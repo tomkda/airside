@@ -6,6 +6,7 @@ import { World, newWorld, migrateWorld } from './world';
 import { sampleWorld } from './sample';
 import type { UnlockId, Offer, Deal } from './config';
 
+declare const __VERSION__: string;   // from package.json, set by scripts/build.mjs
 const KEY = 'airport-builder-alpha-v3';
 interface Save { world: World; staff: Sim['staff']; slotPrice: number; moneyOn: boolean; money: number; calDays: number; rep: number; goals?: string[]; unlocked?: string[]; bestPax?: number; offer?: Offer | null; deals?: Record<string, Deal> }
 
@@ -28,6 +29,7 @@ function start(restored: Save | null) {
     sim.staff.officers ??= 0; sim.offer = saved.offer ?? null; sim.deals = saved.deals ?? {};
     sim.relayout(); sim.startDay();
   }
+  const ver = document.getElementById('version'); if (ver) ver.textContent = `AIRSIDE v${typeof __VERSION__ === 'string' ? __VERSION__ : 'dev'}`;
   const canvas = document.getElementById('view') as HTMLCanvasElement;
   const ren = new Renderer(canvas);
   ren.resize();

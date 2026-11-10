@@ -11,16 +11,21 @@
 //
 // Generated curbs are ordinary Zone objects with negative ids and an `auto` tag. They are rebuilt on every
 // derive and never saved, so moving a road or a module moves its curb with it.
-import { Pt, Rect, sub, dot, dist, norm, lerpPt, rectsOverlap } from './geom';
+import { Pt, Rect, sub, dot, dist, norm, lerpPt, rectsOverlap, polyLen } from './geom';
 import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way } from './world';
 import { sidesOf } from './gates';
-import { waySegs } from './ways';
+import { waySegs, wayPts } from './ways';
 
 export type Deck = 'dep' | 'arr' | 'both';
 export interface AutoTag { road: number; module: number; deck: Deck; gap: number }
 /** An elevated stretch of road, drawn as an upper deck over the ground-level road. */
-export interface DeckSpan { road: number; a: Pt; b: Pt; width: number }
+export interface DeckSpan {
+  road: number; a: Pt; b: Pt; width: number;
+  /** v0.13: the deck's centreline from where it leaves the ground to where it lands again, with the height
+   *  (0 on the ground, 1 at deck level) and the width at each point. A ramp may curve away from the ground road. */
+  pts: Pt[]; zs: number[]; ws: number[];
+}
 /** Where a road would ideally run to front a module: the guide the road tool shows and snaps to. */
 export interface FrontGuide { zone: Zone; a: Pt; b: Pt; out: Pt }
 
@@ -72,7 +77,22 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         const al = norm(sub(c.b, c.a));
         const off = c.gap + roadWidth(c.road.lanes) / 2;
         const at = (t: number) => ({ x: c.a.x + al.x * t + c.out.x * off, y: c.a.y + al.y * t + c.out.y * off });
-        decks.push({ road: c.road.id, a: at(c.t0 - FRONTAGE.ramp), b: at(c.t1 + FRONTAGE.ramp), width: roadWidth(c.road.lanes) });
+        const W = roadWidth(c.road.lanes);
+        // each end: a ramp that splits off the approach road and curves up onto the deck (a forecourt has these),
+        // or else a straight ramp along the frontage road itself
+        const ramps = extra.filter(w => w.fore === 'ramp' && w.face === c.road.id);
+        const end = (p: Pt, straight: Pt): Pt[] => { const r = ramps.filter(w => dist(w.b, p) < dist(w.b, p === La ? Lb : La)).sort((u, v) => dist(u.b, p) - dist(v.b, p))[0]; return r ? wayPts(r) : [straight]; };
+        const La = at(c.t0), Lb = at(c.t1);
+        const up = end(La, at(c.t0 - FRONTAGE.ramp)), down = end(Lb, at(c.t1 + FRONTAGE.ramp)).reverse();
+        const pts = [...up, La, Lb, ...down];
+        const zs: number[] = [], ws: number[] = [];
+        const lenUp = polyLen([...up, La]), lenDown = polyLen([Lb, ...down]); let run = 0;
+        pts.forEach((p, i) => {
+          if (i) run += dist(pts[i - 1], p);
+          const k = i <= up.length ? run / (lenUp || 1) : 1 - (run - lenUp - dist(La, Lb)) / (lenDown || 1);
+          const zk = Math.max(0, Math.min(1, k)); zs.push(zk); ws.push(up.length > 1 || down.length > 1 ? 10 + (W - 10) * Math.min(1, zk * 1.6) : W);
+        });
+        decks.push({ road: c.road.id, a: at(c.t0 - FRONTAGE.ramp), b: at(c.t1 + FRONTAGE.ramp), width: W, pts, zs, ws });
       } else if (!ground(c).length) pushCurb(c, 0, 'both', c.t0, c.t1);   // a single-level road reaches the face through a frontage core
     } else {
       const above = cands.some(o => o.level === 1 && o.road === c.road && o.line === c.line && o.out.x === c.out.x && o.out.y === c.out.y && o.t1 > c.t0 && o.t0 < c.t1 && (o.m.type === 'checkin' || o.m.type === 'security'));
@@ -101,6 +121,9 @@ function fronts(r: Way, sd: { a: Pt; b: Pt; out: Pt }, L: number, al: Pt): { gap
  * where check-in sits over baggage claim. Generated, never saved; ids are above FORE.
  */
 export const FORE = 800000;
+export const RAMP_ID = 1600000;
+/** How far down the link a ramp leaves it, and how far along the frontage it lands (m). About 5% up to the deck. */
+const RAMP = { out: 120, along: 72 };
 export function autoForecourt(world: World, aprons: Rect[], highwayY: number, siteW: number): Way[] {
   const out: Way[] = [];
   const drawn = world.ways.filter(w => w.kind === 'road');
@@ -116,7 +139,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     const sides = fam.flatMap(z => sidesOf(z).map(sd => ({ z, sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) })));
     if (sides.some(q => q.L >= FRONTAGE.minLen && straight.some(r => fronts(r, q.sd, q.L, q.al)))) continue;   // the player drew its frontage
     if (out.some(w => w.fore === 'face' && sides.some(q => q.L >= FRONTAGE.minLen && fronts(w, q.sd, q.L, q.al)))) continue;   // a neighbour's forecourt already serves it
-    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number } | null = null;
+    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: { a: Pt; b: Pt; c: Pt }[] } | null = null;
     for (const { sd, L, al } of sidesOf(m).map(sd => ({ sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) }))) {
       if (L < FRONTAGE.minLen) continue;
       const probe: Rect = boxOf(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
@@ -127,7 +150,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       // the curb's own ground must be clear too
       const lot = boxOf(sd.a, sd.b, sd.out, off + half);
       if (world.zones.some(o => o.level === 0 && !fam.includes(o) && rectsOverlap(shrink(lot, 1), o))) continue;
-      const legs: { a: Pt; b: Pt }[] = []; let cost = 0;
+      const legs: { a: Pt; b: Pt }[] = []; let cost = 0; const rampsHere: { a: Pt; b: Pt; c: Pt }[] = [];
       for (const [E, away] of [[a, { x: -al.x, y: -al.y }], [b, al]] as const) {
         // straight out from the building first, else straight on along the frontage
         let leg: { a: Pt; b: Pt; d: number } | null = null;
@@ -138,14 +161,23 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
           if (!leg || d < leg.d) leg = { a: E, b: q, d };
         }
         if (leg) { legs.push(leg); cost += leg.d; } else cost += 700;
+        // v0.13: where the link comes straight out to the frontage, the upper deck gets its own ramp: it leaves the
+        // link before the corner and sweeps round inside it, so the road visibly divides and comes back together
+        const run = leg ? dist(leg.a, leg.b) : 0; const square = leg && Math.abs(dot(norm(sub(leg.b, leg.a)), sd.out)) > 0.99;
+        if (leg && square && run >= 45) {
+          const S = { x: E.x + sd.out.x * Math.min(RAMP.out, run - 12), y: E.y + sd.out.y * Math.min(RAMP.out, run - 12) };
+          const D = { x: E.x - away.x * RAMP.along, y: E.y - away.y * RAMP.along };
+          if (!blocked(S, D, fam)) rampsHere.push({ a: S, b: D, c: E });
+        }
       }
       if (!legs.length) continue;
-      if (!best || cost < best.cost) best = { a, b, legs, cost };
+      if (!best || cost < best.cost) best = { a, b, legs, cost, ramps: rampsHere };
     }
     if (!best) continue;
     const id = FORE + m.id * 4;
     out.push({ id, kind: 'road', a: best.a, b: best.b, cls: 0, lanes: 4, fore: 'face' });
     best.legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
+    best.ramps.forEach((r, i) => out.push({ id: RAMP_ID + m.id * 4 + i, kind: 'road', a: r.a, b: r.b, c: r.c, cls: 0, lanes: 2, fore: 'ramp', face: id }));
   }
   return out;
 }

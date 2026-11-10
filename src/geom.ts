@@ -160,3 +160,14 @@ export function sliceLine(pts: Pt[], d0: number, d1: number): Pt[] {
   }
   return out;
 }
+/** The outline of a strip along a polyline whose width changes from point to point. */
+export function ribbon(pts: Pt[], ws: number[]): Pt[] {
+  const L: Pt[] = [], R: Pt[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[Math.max(0, i - 1)], q = pts[Math.min(pts.length - 1, i + 1)];
+    const d0 = i > 0 ? norm(sub(pts[i], p)) : norm(sub(q, pts[i])), d1 = i < pts.length - 1 ? norm(sub(q, pts[i])) : d0;
+    const n = norm({ x: -(d0.y + d1.y), y: d0.x + d1.x }); const cs = Math.max(0.5, -d0.y * n.x + d0.x * n.y); const k = ws[i] / 2 / cs;
+    L.push({ x: pts[i].x - n.x * k, y: pts[i].y - n.y * k }); R.push({ x: pts[i].x + n.x * k, y: pts[i].y + n.y * k });
+  }
+  return [...L, ...R.reverse()];
+}
