@@ -140,6 +140,9 @@ const RAMP = { out: 120, along: 72 };
 /** v0.27: a ramp's width as it climbs (k from 0 on the ground to 1 at the deck): one lane where it leaves the road, two
  *  once it is clear of it, and the deck's own width over its last third. Lane and two-lane ramp widths are the usual
  *  3.6 m lane with shoulders (AASHTO Green Book: 3.6 m lanes; a two-lane ramp about 7.5–8 m between barriers). */
+/** v0.28: the radius the ground road takes round a forecourt corner. 35 m is a comfortable kerb radius for buses and
+ *  coaches at low speed (a 12 m bus needs about 12–13 m to its outer wheel; AASHTO's 30 km/h minimum curve is about 30 m). */
+export const CORNER = { radius: 35, min: 12 };
 export const DECK = { lane: 3.8, two: 7.8 };
 export function rampWidth(k: number, W: number) {
   if (k < 0.25) return DECK.lane + (DECK.two - DECK.lane) * (k / 0.25);
@@ -207,8 +210,22 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     }
     if (!best) continue;
     const id = FORE + m.id * 4;
-    out.push({ id, kind: 'road', a: best.a, b: best.b, cls: 0, lanes: 4, fore: 'face' });
-    best.legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
+    // v0.28: where a link comes square out of an end of the frontage road, the ground road sweeps round the corner
+    // on a curve of its own (a generated `corner` way) instead of turning it square: the frontage road and the link
+    // are each cut back by the radius. The deck's ramp still lands further along the frontage, inside the curve.
+    const face = { a: best.a, b: best.b }; const fdir = norm(sub(best.b, best.a)); const corners: { a: Pt; b: Pt; c: Pt }[] = [];
+    const legs = best.legs.map(l => ({ ...l }));
+    for (const end of ['a', 'b'] as const) {
+      const E = best[end]; const inward = end === 'a' ? fdir : { x: -fdir.x, y: -fdir.y };
+      const l = legs.find(q => dist(q.a, E) < 0.5); if (!l) continue;
+      const ld = norm(sub(l.b, l.a)); const len = dist(l.a, l.b); if (Math.abs(dot(ld, fdir)) > 0.02) continue;
+      const R = Math.min(CORNER.radius, len - 24, dist(best.a, best.b) / 2 - FRONTAGE.minLen); if (R < CORNER.min) continue;
+      const p = { x: E.x + inward.x * R, y: E.y + inward.y * R }, q = { x: E.x + ld.x * R, y: E.y + ld.y * R };
+      face[end] = p; l.a = q; corners.push({ a: p, b: q, c: E });
+    }
+    out.push({ id, kind: 'road', a: face.a, b: face.b, cls: 0, lanes: 4, fore: 'face' });
+    legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
+    corners.forEach((k, i) => out.push({ id: RAMP_ID + m.id * 4 + 2 + i, kind: 'road', a: k.a, b: k.b, c: k.c, cls: 0, lanes: 4, fore: 'corner' }));
     best.ramps.forEach((r, i) => out.push({ id: RAMP_ID + m.id * 4 + i, kind: 'road', a: r.a, b: r.b, c: r.c, cls: 0, lanes: 2, fore: 'ramp', face: id }));
   }
   return out;

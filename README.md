@@ -37,7 +37,10 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.27)
+## What's in the alpha (v0.28)
+
+- **A forecourt road that curves under its deck (v0.28):** where an approach road meets the frontage road, the ground-level road now sweeps round the corner on a 35 m curve instead of turning it square. The deck's ramp lands further along, inside the curve, so the two levels part and meet as two curves, not a curve over a corner. Cars follow the curve.
+
 
 - **Deck ramps that split and rejoin like real ones (v0.27):** the first step on the landside.
   - **A ramp peels off as a lane.** Where the upper deck leaves an approach road, it starts as that road's inside lane, one lane wide, swings away and climbs. It is two lanes once clear of the road and widens to the deck only as it lands. At the far end it comes back down and merges the same way. Before, the ramp was a wide slab laid across the whole approach road.
@@ -338,7 +341,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 
 - Construction is instant; no build time or disruption yet.
 - Shapes so far are piers at any angle, straight or bent into one arc, of even width or tapering evenly from one end to the other, and regular hubs (round, six or eight sides). There are no S-curves, free-drawn outlines or ellipses yet, and a pier cannot bulge in the middle. Halls, security and concourses built inside a terminal site stay upright, straight and of even width (their edges move, but they do not turn, bend or taper). Where buildings overlap, both roofs are drawn.
-- The ground-level frontage road still turns a square corner under the curved deck, the forecourt is still straight (it does not follow a curved or angled hall), and the deck has no lane markings in 3D. In 3D a road's surface can vanish when the camera is very close to it (an older fault).
+- A forecourt link that runs on in line with the frontage road, or turns a second corner on its way to a road, keeps its square corners. The forecourt is still straight (it does not follow a curved or angled hall), and the deck has no lane markings in 3D. In 3D a road's surface can vanish when the camera is very close to it (an older fault).
 - Junction spaces raise the value of the lots round them but have no trade of their own yet: a food court has no counters in it, and passengers do not sit or dwell there. A gate whose holdroom fell in a hall keeps its capacity but has no seats drawn. Halls, food courts and gardens under the roof are not shown in 3D or in the tilted plan view; courtyards are shown in 3D.
 - The merged outline carries the stands, but interiors, selection and the tilted plan view still work on the separate pieces, so a rounded corner can show a sliver of floor with nothing planned on it, a gate at a filled-in junction can have its door a few metres from its holdroom, roof glazing lines of two pieces cross at a junction, and the Operations panel still counts pieces as concourses. Halls and security keep their own square outlines.
 - On a building of several pieces a gate is named by where it is along its wall, so its name can change when that piece is reshaped, and gates switched off before v0.24 on such buildings may now refer to a different stand. The inspector's side-by-side gate list is empty for such pieces. A one-piece building keeps its gate names.

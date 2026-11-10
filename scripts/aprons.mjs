@@ -31,6 +31,10 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   const linkX = [offLink(dk.pts[0]), offLink(dk.pts[n - 1])];
   check('each ramp leaves its approach road one lane wide, off the centreline (' + dk.ws[0].toFixed(1) + ' m wide, ' + linkX[0].toFixed(1) + ' m off)', r.d.decks.length === 1 && Math.abs(dk.ws[0] - 3.8) < 0.01 && Math.abs(dk.ws[n - 1] - 3.8) < 0.01 && Math.min(...linkX) > 3 && Math.min(...linkX) < 7 && dk.zs[0] === 0 && dk.zs[n - 1] === 0);
   const top = dk.zs.indexOf(1); check('it widens as it climbs and is as wide as the deck where it lands', top > 5 && dk.ws.slice(0, top + 1).every((w, i, a) => !i || w >= a[i - 1] - 1e-9) && Math.abs(dk.ws[top] - dk.width) < 0.01);
+  // v0.28: the ground road curves round each forecourt corner, and the frontage road and links stop short of it
+  const cs = r.d.autoRoads.filter(w => w.fore === 'corner'), fc = r.d.autoRoads.find(w => w.fore === 'face');
+  check('the ground road rounds both forecourt corners on a 35 m curve', cs.length === 2 && cs.every(k => k.c && Math.abs(Math.hypot(k.a.x - k.c.x, k.a.y - k.c.y) - 35) < 0.01 && Math.abs(Math.hypot(k.b.x - k.c.x, k.b.y - k.c.y) - 35) < 0.01));
+  check('the frontage road and its links meet the curves end to end', cs.every(k => [fc.a, fc.b].some(p => Math.hypot(p.x - k.a.x, p.y - k.a.y) < 0.01) && links.some(w => Math.hypot(w.a.x - k.b.x, w.a.y - k.b.y) < 0.01)));
   check('a one-piece building has no junction spaces', r.d.junctions.length === 0 && ![...r.d.shops.values()].flat().some(sh => sh.plaza));
   check('the sample gains an end stand each side', r.d.gates.length === 14 && r.reach === 14);
   check('no stands on the landside face', !Object.keys(r.by).some(k => k.includes(':s')));

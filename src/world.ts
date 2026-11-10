@@ -47,7 +47,7 @@ export type WayKind = 'taxi' | 'road' | 'walk';
 /** v0.11: a road may curve (`c` is the control point of a quadratic curve) and may be one-way, from a to b. */
 export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lanes: number; c?: Pt; oneway?: boolean;
   /** Generated, never saved (v0.12): part of a hall's own forecourt, along its face or linking it to a road. */
-  fore?: 'face' | 'link' | 'ramp';
+  fore?: 'face' | 'link' | 'ramp' | 'corner';
   /** For a ramp: the id of the frontage road whose upper deck it climbs to. */
   face?: number }
 export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[] }
