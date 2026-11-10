@@ -62,6 +62,16 @@ export function carveConcourse(z: Zone, world: World, gates: Gate[]): Carved {
     if (s === sideA || s === sideB) { const u = U(g.door); (s === sideA ? runsA : runsB).push({ u0: u - half, u1: u + half, d }); }
     else if (s === end0) e0 = Math.max(e0, d); else e1 = Math.max(e1, d);
   }
+  // v0.20: on a curved wall the gates are not one spacing apart along the building (closer on the outside of the
+  // bend, farther on the inside). Neighbouring holdrooms meet halfway between their doors, so the band has no
+  // slivers or overlaps. On a straight wall the gap is exactly one spacing and nothing changes.
+  for (const runs of [runsA, runsB]) {
+    runs.sort((p, q) => p.u0 - q.u0);
+    for (let i = 0; i + 1 < runs.length; i++) {
+      const a = runs[i], b = runs[i + 1]; const gap = b.u0 - a.u1; const sp = a.u1 - a.u0;
+      if (Math.abs(gap) > 0.01 && Math.abs(gap) < sp * 0.6) { const m = (a.u1 + b.u0) / 2; a.u1 = m; b.u0 = m; }
+    }
+  }
   let hA = Math.max(0, ...runsA.map(r => r.d)), hB = Math.max(0, ...runsB.map(r => r.d));
   if (hA + hB > S - 4) { const k = (S - 4) / (hA + hB); hA *= k; hB *= k; for (const r of runsA) r.d *= k; for (const r of runsB) r.d *= k; }
   if (e0 + e1 > L - 20) { const k = Math.max(0, L - 20) / (e0 + e1); e0 *= k; e1 *= k; }

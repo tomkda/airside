@@ -15,12 +15,13 @@ node scripts/halls.mjs     # stacked halls and self-laid forecourts
 node scripts/satellites.mjs # satellite concourses and people movers
 node scripts/piers.mjs      # piers at any angle and round or polygonal hubs
 node scripts/aprons.mjs     # self-laid aprons and taxilanes, and reshaping by grips
+node scripts/curves.mjs     # bent piers: stands, interiors and walking routes round a curve
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
 node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
-npm test                  # all nine sims
+npm test                  # all ten sims
 ```
 
-CI runs the type-check, build and all nine sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
+CI runs the type-check, build and all ten sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
 There is no server. The build is one self-contained HTML file (~840 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
@@ -34,9 +35,19 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Levels | `[` Ground · `]` Level 1 |
 | View | `T` 3D view · `H` queue and road-congestion heatmap · `C` commercial heatmap (footfall and revenue per lot) |
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
-| Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it, or one of its grips to stretch, swing or resize it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
+| Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it, or one of its grips to stretch, swing, resize or (the filled middle grip on a pier) bend it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.19)
+## What's in the alpha (v0.20)
+
+- **Bent piers (v0.20):** a pier or satellite can be bent into a curve, so terminals no longer have to be made of straight bars.
+  - **The bend grip.** A selected pier or satellite has a filled grip in its middle. Pull it sideways and the pier bends into an arc; both ends stay exactly where they are. Pull it back to the line between the ends and the pier is straight again. Like every grip, the building and everything on it follow as you drag, one drag is one undo step, and `Esc` puts it back.
+  - **How far it bends.** The inner wall keeps a radius people can walk and furniture can follow: the centreline radius is at least one and a half times the width, and at least 30 m more than half the width (a 50 m pier bends no tighter than a 75 m radius). The grip stops there.
+  - **Stands follow the curve.** Each stand is square to its own piece of wall. On the outside of the bend aircraft fan out, so they stand closer together along the wall and the outside gets more gates; on the inside they close up, so each needs more wall and the inside gets fewer. Spacing is set where the wings are, and on the inside also where the tails meet. Where the inside is too tight for a taxilane behind the tails (under a 30 m radius) it gets no stands, and the inspector says so.
+  - **Curved aprons and taxilanes.** The apron is the band the stands sweep; the taxilane runs round behind their tails and joins the lanes at the pier's ends, round its tip, and on to the airfield, as on a straight pier.
+  - **Inside.** The interior is laid out as for a straight concourse as long as the arc, then carried onto it: holdrooms behind the gates (meeting halfway between doors, since doors are not evenly spaced on a curve), the spine, shop lots either side, restroom cores. Footfall is counted round the bend. People walk along the centreline, so nobody cuts across outside the building.
+  - **Everything else still works on it.** A bent pier drawn out of a concourse is part of that building; a pier or hub drawn into a bent pier joins it; one that stands apart links by people mover. It stretches and swings by its ends and widens about its centreline, keeping its bend. It is drawn curved in the plan and as a row of short straight lengths in 3D.
+  - Bending costs the floor area it adds (a 500 m pier bent 120 m is 574 m round the bend).
+
 
 - **Shapes you can pull about, and aprons that lay themselves (v0.19):** building is now a matter of drawing a shape and pulling it until it looks right, with everything that depends on it following as you drag.
   - **Stands lay themselves.** Every open side of a concourse, pier or hub lays its own apron: stands nose-in on the usual grid, a taxilane along their tails, and a link to the nearest taxiway, taxilane or runway within 400 m. No taxiway has to be drawn alongside. A round hub is ringed with aircraft; a pier has stands down both sides and round its tip; a runway and one concourse are already a working airfield.
@@ -245,7 +256,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | `src/geom.ts` | Geometry helpers and seeded RNG |
 | `src/net.ts` | Generic line networks: split drawn segments into graphs; Dijkstra, all-pairs routing |
 | `src/gates.ts` | Gate slots on each side of a concourse: along a drawn taxiway, or on an apron the side lays for itself, with its taxilane and link to the airfield |
-| `src/shapes.ts` | Turned rectangles and hubs: outlines, overlaps, and the grips that reshape them |
+| `src/shapes.ts` | Turned rectangles, bent bars and hubs: outlines, overlaps, the straight frame a bent pier is laid out on, and the grips that reshape them |
 | `src/frontage.ts` | Roads meeting terminals: curbs grown in the gap, two-level frontage roads, road guides; access drives, sidewalks and the AirTrain line that facilities lay for themselves |
 | `src/ways.ts` | Roads as drawn: curves cut into chords, one-way roads, roundabouts and how roads are cut back to their rings |
 | `src/traffic.ts` | Where each car is drawn: its lane, rounded corners, the gap to the car in front, brake lights |
@@ -267,7 +278,8 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
-- Shapes so far are straight piers at any angle and regular hubs (round, six or eight sides). There are no free-drawn outlines, curved or tapered piers, or ellipses yet: bending a pier with a middle grip is next. Halls, security and concourses built inside a terminal site stay upright (their edges move, but they do not turn). Where buildings overlap, both roofs are drawn.
+- Shapes so far are piers at any angle, straight or bent into one arc, and regular hubs (round, six or eight sides). A bend is a single circular arc: there are no S-curves, tapered piers, free-drawn outlines or ellipses yet. Halls, security and concourses built inside a terminal site stay upright and straight (their edges move, but they do not turn or bend). Where buildings overlap, both roofs are drawn.
+- On a bent pier: shop lots keep straight walls (each is short), so on a tight bend neighbouring lots meet at a slight angle; the 3D model is a row of short straight lengths, and its opened-up interior is not drawn (it shows as a closed building); the starter guides for drawing a taxiway do not follow a curved wall, since a straight taxiway cannot run parallel to one. A taxiway cannot be curved to follow a bent pier: its stands are always self-laid.
 - Self-laid aprons are simple: one depth per building (its aircraft size), stands square to each side, straight taxilanes with one bend at most in a link. A link does not find its way round an obstacle, cross a road, or join two aprons across a gap wider than 400 m; then the design check says the apron is cut off and a drawn taxiway is the fix. Where two buildings make an inside corner, the one built first takes the corner. A car park or facility beside a pier can cut an apron off with the sidewalk or drive it lays for itself. A side with a taxiway drawn along only part of it gets drawn-taxiway gates on that part and none on the rest. Self-laid aprons and taxilanes cost nothing to build.
 - Dragging rebuilds the whole layout each frame: a few milliseconds on a small airport, about 30 on one with fifteen buildings and 150 gates, so very large airports will drag less smoothly. The 3D view does not rebuild live. Grips are in the plan only.
 - A people mover is a single shuttle link between two concourses, always in a tunnel, with no landside leg: it does not yet run from a landside terminal building to an airside hall with security in between, loop through several stations, or carry bags (arriving bags still appear at the terminal's claim).

@@ -17,7 +17,7 @@ import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
-import { turn, centreOf, shaped, hallPts } from './shapes';
+import { turn, centreOf, shaped, hallPts, barPieces } from './shapes';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -433,6 +433,15 @@ export class Renderer3D {
         add3(prism(hallPts({ ...z, x: c0.x - R * 0.42, y: c0.y - R * 0.42, w: R * 0.84, h: R * 0.84 }), top, top + 3.2, GLASS.concourse, this.glassMat));
         continue;
       }
+      if (z.bend) {
+        // v0.20: a bent pier is modelled as a row of short straight lengths, each turned to the curve
+        for (const q of barPieces(z)) {
+          const n0 = [solid.length, glazing.length, roofs.length];
+          massing({ ...z, x: q.x, y: q.y, w: q.w, h: q.h, rot: undefined, bend: undefined }, L.z0, L.z1, sel, solid, glazing, roofs);
+          const pv = centreOf(q); [solid, glazing, roofs].forEach((arr, k) => { for (let i = n0[k]; i < arr.length; i++) { arr[i].rot = q.rot; arr[i].px = pv.x; arr[i].py = pv.y; } });
+        }
+        continue;
+      }
       if (!openSite(z) || z.rot) {
         const n0 = [solid.length, glazing.length, roofs.length];
         massing(z, L.z0, L.z1, sel, solid, glazing, roofs);
@@ -541,7 +550,7 @@ export class Renderer3D {
     // jet bridges: a rotunda off the building face, a tunnel that docks at the forward door, or sits retracted
     for (const g of sim.d.gates) {
       if (nb >= 400 || dr >= 790) break;
-      const out = g.apron.outward; const face = add(g.door, mul(out, 7));
+      const out = g.outward; const face = add(g.door, mul(out, 7));
       const C = CLASSES[g.cls]; const pg = this.planeGeos[g.cls];
       const side = { x: -out.y, y: out.x };
       // the aircraft's forward door is on its `side`: the rotunda stands out there, on a fixed link from the face

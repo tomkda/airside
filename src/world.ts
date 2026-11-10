@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea } from './shapes';
+import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
@@ -28,6 +28,8 @@ export interface Zone {
   auto?: AutoTag;
   /** v0.17: turned about its centre by this many radians (an angled pier). x, y, w, h are its own upright frame. */
   rot?: number;
+  /** v0.20: the bar is bent into an arc: its ends stay, its middle moves this far to its own south (north if negative). See shapes.ts. */
+  bend?: number;
   /** v0.18: a round or polygonal hall: a regular polygon of this many sides in the circle that fits the box (24+ is round). */
   sides?: number;
   /** v0.12: the id of the module stacked with this one (check-in over baggage claim): they move and go together. */
@@ -65,6 +67,10 @@ export function migrateWorld(w: World): World {
   // v0.12: a hall's two halves point at each other; drop a pointer whose other half is gone.
   for (const z of w.zones) if (z.rot !== undefined && !(z.type === 'concourse' && isFinite(z.rot))) delete z.rot;   // v0.17: only concourses turn
   for (const z of w.zones) if (z.sides !== undefined && !(z.type === 'concourse' && z.sides >= 3 && z.sides <= 64)) delete z.sides;   // v0.18: or are round
+  for (const z of w.zones) if (z.bend !== undefined) {   // v0.20: or bend, and only as far as their width allows
+    if (z.type !== 'concourse' || z.sides || !isFinite(z.bend)) { delete z.bend; continue; }
+    const m = maxBend(z.w, z.h); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
+  }
   for (const z of w.zones) if (z.pair !== undefined && !w.zones.some(q => q.id === z.pair && q.pair === z.id)) delete z.pair;
   // v0.11: roundabouts, and roads that may curve or run one way. Drop anything malformed.
   w.rounds = (Array.isArray(w.rounds) ? w.rounds : []).filter(r => r && isFinite(r.x) && isFinite(r.y) && (r.size === 0 || r.size === 1));
@@ -131,6 +137,8 @@ export interface RunwayInfo {
 export interface Apron { zone: Zone; rect: Rect; pts: Pt[]; outward: Pt; laneA: Pt; laneB: Pt; mouth: Pt; cls: Cls; letter: string; self?: boolean }
 export interface Gate {
   id: string; key: string; num: string; zone: Zone; apron: Apron; cls: Cls; door: Pt; stand: Pt; front: Pt; ang: number;
+  /** The way this stand faces away from the building. On a curved wall each stand has its own (v0.20). */
+  outward: Pt;
   frontNode: number; rwys: Set<number>[];          // runways that reach this gate, per aircraft class
 }
 export interface Core { x: number; y: number; frontage: boolean }
@@ -335,7 +343,7 @@ export function canPlaceWay(world: World, kind: WayKind, a: Pt, b: Pt, aprons: A
  * v0.17: can a pier (a concourse at any angle) go here? It may overlap other concourses: that is how it joins a
  * building. It may not overlap anything else on its level, cross a taxiway, or reach into a runway strip.
  */
-export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; level: Level }, ignoreId = -1): PlaceCheck {
+export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; level: Level }, ignoreId = -1): PlaceCheck {
   if (z.sides && Math.min(z.w, z.h) < HALL.minDia) return { ok: false, reason: `Too small: a hall needs ${HALL.minDia} m across at least` };
   if (Math.max(z.w, z.h) < PIER.minLen) return { ok: false, reason: `Too short: a pier needs ${PIER.minLen} m at least` };
   const pts = zonePts(z); const edges = pts.map((p, i) => [p, pts[(i + 1) % pts.length]] as const);
@@ -353,7 +361,7 @@ export function canPlacePier(world: World, z: { x: number; y: number; w: number;
 }
 /** Does a segment pass through a turned zone (2 m inside its outline)? */
 function segInZone(z: Zone, a: Pt, b: Pt): boolean {
-  if (z.sides) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
+  if (z.sides || z.bend) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
   const la = toLocal(z, a), lb = toLocal(z, b);
   return rectSegDist(inset(z, 2), la, lb) === 0;
 }
@@ -393,7 +401,7 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
 }
 
 /** v0.19: can this shape be swung round by its ends? A pier or satellite can: a concourse that belongs to no site. */
-export const canTurn = (z: Zone) => z.type === 'concourse' && !z.sides && z.site === undefined;
+export const canTurn = (z: Zone) => z.type === 'concourse' && !z.sides && (z.site === undefined || !!z.rot || !!z.bend);
 
 // ------------------------------------------------------------ wind
 export interface Wind { from: number; kt: number }
@@ -452,12 +460,13 @@ export function derive(source: World): Derived {
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     let C;
     if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
-    else if (z.rot) {
+    else if (z.rot || z.bend) {
       // an angled pier is laid out in its own upright frame, then every piece is turned into place
       // (v0.19: its neighbours are brought into that frame too, as the box each one fills there, so the pier finds
       //  its entry and its windowless walls where they really are)
-      const zl = { ...z, rot: undefined };
-      const near = zonePts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot });   // the pier's outline, 2 m out
+      // (v0.20: a bent pier too: its frame is as long as its arc, and what is laid out on it is carried onto the curve)
+      const zl = { ...z, ...frameOf(z), rot: undefined, bend: undefined };
+      const near = zonePts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot, bend: z.bend });   // the pier's outline, 2 m out
       const local: World = { ...world, zones: world.zones.map(o => {
         if (o.id === z.id) return zl;
         // only the part of a neighbour that is at the pier counts, or its box would wall off stretches it never touches;
@@ -467,8 +476,10 @@ export function derive(source: World): Derived {
         return { ...o, ...box, rot: undefined, sides: undefined };
       }) };
       C = carveConcourse(zl, local, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
+      // a lot keeps its four corners (the sim and the renderers count on them; a lot is short enough that its walls
+      // can stay straight). Floors, and the long lines down the building, are cut into short pieces that follow a bend.
       for (const sh of C.shops) { sh.zone = z; sh.pts = sh.pts.map(p => toWorld(z, p)); sh.door = toWorld(z, sh.door); }
-      for (const it of C.items) it.pts = it.pts.map(p => toWorld(z, p));
+      for (const it of C.items) it.pts = it.closed || it.k === 'spine' || it.k === 'lane' ? bendPath(z, it.pts, !!it.closed) : it.pts.map(p => toWorld(z, p));
     } else C = carveConcourse(z, world, gates);
     shops.set(z.id, C.shops); budgets.set(z.id, C.budget); bandItems.set(z.id, C.items);
   }
@@ -651,8 +662,8 @@ export function derive(source: World): Derived {
       }
       if (!best) break;
       const inset = (z: Zone) => Math.min(12, z.w / 2 - 1, z.h / 2 - 1);
-      const station = (z: Zone, to: Pt) => (z.sides ? centreOf(z) : toWorld(z, clampToRect(toLocal(z, to), z, inset(z))));
-      const pa = station(best.s, centreOf(best.m)), pb = station(best.m, pa);
+      const station = (z: Zone, to: Pt) => (z.sides ? centreOf(z) : toWorld(z, clampToRect(toLocal(z, to), frameOf(z), inset(z))));
+      const pa = station(best.s, heart(best.m)), pb = station(best.m, pa);
       const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.m.level, zones: [best.m.id] }) - 1;
       pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
       tKeys.add(tKey(pa)); tKeys.add(tKey(pb));
@@ -684,9 +695,27 @@ export function derive(source: World): Derived {
     ped.forEach((q, i) => { if (q.level === lv) { const d0 = dist(p, q.p); if (d0 < 120) out.push({ n: i, c: d0 }); } });
     return out.sort((a, b) => a.c - b.c).slice(0, 4);
   };
+  // v0.20: inside a bent pier a straight line from one point to another can leave the building. Wherever two
+  // points of a route in a row are in the same bent pier, the walk between them is laid along its centreline.
+  const bent = zs.filter(z => arcOf(z));
+  const thread = (from: Pt, lv0: Level, r: Route): Route => {
+    if (!bent.length) return r;
+    const pts: Pt[] = [], lvs: Level[] = []; let a = from, la = lv0;
+    for (let i = 0; i < r.pts.length; i++) {
+      const b = r.pts[i], lb = r.lvs[i];
+      const z = la === lb ? bent.find(q => q.level === la && inZone(a, q, 1) && inZone(b, q, 1)) : undefined;
+      if (z) {
+        const ua = toLocal(z, a), ub = toLocal(z, b); const F = frameOf(z); const k = Math.floor(Math.abs(ub.x - ua.x) / 24);
+        // drift to the centreline over the first and last stretch, and keep to it in between
+        for (let j = 1; j <= k; j++) { const t = j / (k + 1); const w = Math.min(1, t * (k + 1) / 2, (1 - t) * (k + 1) / 2); const y0 = ua.y + (ub.y - ua.y) * t; pts.push(toWorld(z, { x: ua.x + (ub.x - ua.x) * t, y: y0 + (F.y + F.h / 2 - y0) * w })); lvs.push(lb); }
+      }
+      pts.push(b); lvs.push(lb); a = b; la = lb;
+    }
+    return { pts, lvs, len: r.len };
+  };
   const pedRoute = (p: Pt, lv: Level, q: Pt, lvq: Level): Route | null => {
     const za = zoneAt(p, lv), zb = zoneAt(q, lvq);
-    if (za && zb && za.id === zb.id) return { pts: [q], lvs: [lvq], len: dist(p, q) };
+    if (za && zb && za.id === zb.id) return thread(p, lv, { pts: [q], lvs: [lvq], len: dist(p, q) });
     const S = za ? (byZone.get(za.id) ?? []).map(n => ({ n, c: dist(p, ped[n].p) })) : nearPed(p, lv);
     const T = zb ? (byZone.get(zb.id) ?? []).map(n => ({ n, c: dist(q, ped[n].p) })) : nearPed(q, lvq);
     let best = Infinity, bs = -1, bt = -1;
@@ -696,7 +725,7 @@ export function derive(source: World): Derived {
     let i = bs, guard = 0;
     while (i !== bt && guard++ < 2000) { i = nxt[i * N + bt]; pts.push(ped[i].p); lvs.push(ped[i].level); }
     pts.push(q); lvs.push(lvq);
-    return { pts, lvs, len: best };
+    return thread(p, lv, { pts, lvs, len: best });
   };
 
   // ---- Road network: the highway plus player roads; curbs and lots attach where a road ends.

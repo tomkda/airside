@@ -11,7 +11,7 @@ import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
-import { turn, centreOf, hallPts, shaped, gripsOf, Grip } from './shapes';
+import { turn, centreOf, hallPts, shaped, gripsOf, Grip, zonePts, frameOf, bendPath, toWorld as shapeToWorld, heart, Shaped } from './shapes';
 import { canTurn } from './world';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
@@ -114,12 +114,17 @@ export class Renderer {
     if (close) g.closePath();
   }
   /** The corners of a rectangle. A turned zone (v0.17) gives its turned corners; `pivot` turns a part of one about the zone's centre. */
-  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number }): Pt[] {
+  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number; bend?: number }): Pt[] {
     if (r.sides) return hallPts(r);   // a round or polygonal hall (v0.18)
+    if (r.bend) return zonePts(r);    // a bent pier (v0.20)
     const c = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
     if (!r.rot) return c;
     const pv = r.pivot ?? { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     return c.map(p => turn(p, pv, r.rot!));
+  }
+  /** A rectangle given in a zone's own straight frame (`frameOf`), as it stands in the world: turned with the zone and, on a bent pier, following its curve. */
+  part(zn: Shaped, r: Rect): Pt[] {
+    return bendPath(zn, [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }], true);
   }
   line(a: Pt, b: Pt, wM: number, color: string, z = 0, cap: CanvasLineCap = 'butt', minPx = 0.6) {
     const g = this.ctx; g.strokeStyle = color; g.lineWidth = Math.max(minPx, wM * this.cam.zoom); g.lineCap = cap;
@@ -208,7 +213,7 @@ export class Renderer {
       const zn = sim.d.zones.find(q => q.id === id); if (!zn) continue;
       const grow = (8 + 22 * k) / this.cam.zoom;
       g.strokeStyle = zn.auto ? `rgba(194,133,46,${1 - k})` : `rgba(47,93,124,${1 - k})`; g.lineWidth = 3 * (1 - k) + 1;
-      this.path(this.rectPts({ x: zn.x - grow, y: zn.y - grow, w: zn.w + 2 * grow, h: zn.h + 2 * grow, rot: zn.rot, sides: zn.sides, pivot: centreOf(zn) }), 0); g.stroke();
+      this.path(this.rectPts({ x: zn.x - grow, y: zn.y - grow, w: zn.w + 2 * grow, h: zn.h + 2 * grow, rot: zn.rot, sides: zn.sides, bend: zn.bend, pivot: centreOf(zn) }), 0); g.stroke();
       if (k < 0.5) this.poly(this.rectPts(zn), `rgba(255,248,230,${0.5 - k})`, 0);
     }
   }
@@ -714,7 +719,7 @@ export class Renderer {
       const p = sim.procs.get(zn.id);
       f.slots.forEach((c, i) => { const fl = p?.carousels?.[i]; if (fl) this.label(fl.code, c, top, 8, PAL.ink, { weight: 700, spacing: 0.5, bg: 'rgba(240,232,215,0.85)' }); });
     } else if (zn.type === 'concourse') {
-      if (z > 1.1) for (const gt of sim.d.gates) if (gt.zone.id === zn.id) this.label(gt.num, add(gt.door, mul(gt.apron.outward, -3)), top, 9, PAL.ink, { weight: 700, spacing: 1, bg: 'rgba(240,232,215,0.85)' });
+      if (z > 1.1) for (const gt of sim.d.gates) if (gt.zone.id === zn.id) this.label(gt.num, add(gt.door, mul(gt.outward, -3)), top, 9, PAL.ink, { weight: 700, spacing: 1, bg: 'rgba(240,232,215,0.85)' });
       // commercial lots: leased ones filled by type, vacant ones dashed ("for lease"). The commercial heatmap
       // fills every lot by footfall instead and labels it with its revenue.
       const list = sim.d.shops.get(zn.id) ?? [];
@@ -763,12 +768,13 @@ export class Renderer {
     const B = sim.d.budgets.get(zn.id); const f = sim.flowDay.get(zn.id) ?? zn.flow; if (!B || !f) return;
     const max = Math.max(1, ...f.w);
     const bin = COMMERCE.binM;
-    const vMid = B.horiz ? zn.h / 2 : zn.w / 2;
+    const F = frameOf(zn);   // the bins lie along the building's own length, round its bend if it has one
+    const vMid = B.horiz ? F.h / 2 : F.w / 2;
     for (let i = 0; i < f.w.length; i++) {
       const v = f.w[i] / max; if (v < 0.03) continue;
       const u0 = i * bin, u1 = Math.min(B.long, u0 + bin); const h = 2 + 4 * v;
-      const r = B.horiz ? { x: zn.x + u0, y: zn.y + vMid - h / 2, w: u1 - u0, h } : { x: zn.x + vMid - h / 2, y: zn.y + u0, w: h, h: u1 - u0 };
-      this.poly(this.rectPts({ ...r, rot: zn.rot, pivot: centreOf(zn) }), heatRamp(v, 0.9), top);
+      const r = B.horiz ? { x: F.x + u0, y: F.y + vMid - h / 2, w: u1 - u0, h } : { x: F.x + vMid - h / 2, y: F.y + u0, w: h, h: u1 - u0 };
+      this.poly(this.part(zn, r), heatRamp(v, 0.9), top);
     }
   }
 
@@ -787,7 +793,7 @@ export class Renderer {
         case 'belt': case 'divest': case 'recompose': this.poly(it.pts, mid, top); break;
         case 'kiosk': if (z > 0.6) this.poly(it.pts, ink, top); break;
         case 'stanchion': if (z > 0.7) { g.setLineDash([2, 2]); this.line(it.pts[0], it.pts[1], 0.15, mid, top, 'butt', 0.6); g.setLineDash([]); } break;
-        case 'lane': if (z > 0.6) this.line(it.pts[0], it.pts[1], 0.15, soft, top, 'butt', 0.5); break;
+        case 'lane': if (z > 0.6) for (let i = 1; i < it.pts.length; i++) this.line(it.pts[i - 1], it.pts[i], 0.15, soft, top, 'butt', 0.5); break;   // (a polyline round a bent pier)
         case 'carousel': {
           const busy = p?.carousels?.[it.slot ?? -1];
           g.strokeStyle = busy ? 'rgba(40,36,30,0.85)' : mid; g.lineWidth = Math.max(1.2, 1.6 * z);
@@ -798,7 +804,7 @@ export class Renderer {
         case 'carousel-off': if (z > 0.5) { g.setLineDash([3, 4]); g.strokeStyle = soft; g.lineWidth = 1; this.path(it.pts, top); g.stroke(); g.setLineDash([]); } break;
         case 'feed': if (z > 0.6) this.line(it.pts[0], it.pts[1], 0.9, mid, top); break;
         case 'seat': if (z > 0.55) this.line(it.pts[0], it.pts[1], 0.6, mid, top, 'butt', 0.6); break;
-        case 'spine': if (z > 0.5) { g.setLineDash([6, 4]); this.line(it.pts[0], it.pts[1], 0.3, soft, top, 'butt', 0.6); g.setLineDash([]); } break;
+        case 'spine': if (z > 0.5) { g.setLineDash([6, 4]); for (let i = 1; i < it.pts.length; i++) this.line(it.pts[i - 1], it.pts[i], 0.3, soft, top, 'butt', 0.6); g.setLineDash([]); } break;
         case 'wc': case 'office':
           this.poly(it.pts, 'rgba(40,36,30,0.12)', top);
           g.strokeStyle = mid; g.lineWidth = 1; this.path(it.pts, top); g.stroke();
@@ -956,7 +962,7 @@ export class Renderer {
     const z = this.cam.zoom; if (z < 0.2) return;
     const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
     g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
-    this.path(this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, pivot: centreOf(zn), sides: zn.sides }), top); g.stroke();
+    { const F = frameOf(zn); this.path(zn.sides ? this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, sides: zn.sides }) : this.part(zn, { x: F.x + k, y: F.y + k, w: F.w - 2 * k, h: F.h - 2 * k }), top); g.stroke(); }
     if (zn.sides) {
       // a hall's roof: a glazed lantern over the atrium, with ribs out to the wall
       const R = Math.min(zn.w, zn.h) / 2; const c = centreOf(zn); const lr = R * 0.42;
@@ -964,13 +970,13 @@ export class Renderer {
       this.poly(lan, 'rgba(176,192,196,0.5)', top); g.strokeStyle = 'rgba(40,36,30,0.25)'; this.path(lan, top); g.stroke();
       if (z > 0.5) { const out = hallPts(zn, -k, zn.sides >= 24 ? 16 : zn.sides), inn = hallPts({ ...zn, x: c.x - lr, y: c.y - lr, w: 2 * lr, h: 2 * lr }, 0, out.length); g.beginPath(); out.forEach((p, i) => { const [x0, y0] = this.P(p.x, p.y, top), [x1, y1] = this.P(inn[i].x, inn[i].y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); }); g.stroke(); }
     } else if (zn.type === 'concourse') {
-      const horiz = zn.w >= zn.h; const wC = Math.min(12, (horiz ? zn.h : zn.w) * 0.28);
-      const r0 = horiz ? { x: zn.x + 8, y: zn.y + zn.h / 2 - wC / 2, w: zn.w - 16, h: wC } : { x: zn.x + zn.w / 2 - wC / 2, y: zn.y + 8, w: wC, h: zn.h - 16 };
-      const r = { ...r0, rot: zn.rot, pivot: centreOf(zn) };
-      if (zn.mezz) { const m = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; this.shadow(m, 5); this.poly(this.rectPts(m), 'rgba(244,237,223,0.55)', top); g.strokeStyle = 'rgba(40,36,30,0.3)'; this.path(this.rectPts(m), top); g.stroke(); }
-      this.poly(this.rectPts(r), 'rgba(176,192,196,0.45)', top);
-      g.strokeStyle = 'rgba(40,36,30,0.25)'; this.path(this.rectPts(r), top); g.stroke();
-      if (z > 0.6) { const n = Math.floor((horiz ? r.w : r.h) / 7.5); g.beginPath(); for (let i = 1; i < n; i++) { const a = horiz ? { x: r.x + i * 7.5, y: r.y } : { x: r.x, y: r.y + i * 7.5 }, b = horiz ? { x: a.x, y: r.y + r.h } : { x: r.x + r.w, y: a.y }; const ta = zn.rot ? turn(a, centreOf(zn), zn.rot) : a, tb = zn.rot ? turn(b, centreOf(zn), zn.rot) : b; const [x0, y0] = this.P(ta.x, ta.y, top), [x1, y1] = this.P(tb.x, tb.y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); }
+      const F = frameOf(zn);
+      const horiz = F.w >= F.h; const wC = Math.min(12, (horiz ? F.h : F.w) * 0.28);
+      const r = horiz ? { x: F.x + 8, y: F.y + F.h / 2 - wC / 2, w: F.w - 16, h: wC } : { x: F.x + F.w / 2 - wC / 2, y: F.y + 8, w: wC, h: F.h - 16 };
+      if (zn.mezz) { const m = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; if (!shaped(zn)) this.shadow(m, 5); this.poly(this.part(zn, m), 'rgba(244,237,223,0.55)', top); g.strokeStyle = 'rgba(40,36,30,0.3)'; this.path(this.part(zn, m), top); g.stroke(); }
+      this.poly(this.part(zn, r), 'rgba(176,192,196,0.45)', top);
+      g.strokeStyle = 'rgba(40,36,30,0.25)'; this.path(this.part(zn, r), top); g.stroke();
+      if (z > 0.6) { const n = Math.floor((horiz ? r.w : r.h) / 7.5); g.beginPath(); for (let i = 1; i < n; i++) { const a = horiz ? { x: r.x + i * 7.5, y: r.y } : { x: r.x, y: r.y + i * 7.5 }, b = horiz ? { x: a.x, y: r.y + r.h } : { x: r.x + r.w, y: a.y }; const ta = shapeToWorld(zn, a), tb = shapeToWorld(zn, b); const [x0, y0] = this.P(ta.x, ta.y, top), [x1, y1] = this.P(tb.x, tb.y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); } g.stroke(); }
     } else if (z > 0.35) {
       const h = Math.sin(zn.x * 12.9898 + zn.y * 78.233) * 43758.5453; const kk = h - Math.floor(h);
       for (let i = 0; i < 2; i++) {
@@ -1130,7 +1136,7 @@ export class Renderer {
     for (const gd of sim.d.gateGuides) {
       const sel = this.selected?.kind === 'zone' && this.selected.id === gd.zone.id;
       // v0.19: stands lay themselves, so a guide is only worth showing while a taxiway is being drawn, on a side that has none
-      if (!all || gd.served || gd.land) continue;
+      if (!all || gd.served || gd.land || gd.curved) continue;
       const a = add(gd.a, mul(gd.out, gd.ideal)), b = add(gd.b, mul(gd.out, gd.ideal));
       const a2 = add(gd.a, mul(gd.out, gd.reach)), b2 = add(gd.b, mul(gd.out, gd.reach));
       this.poly([add(gd.a, mul(gd.out, gd.ideal - 6)), add(gd.b, mul(gd.out, gd.ideal - 6)), b2, a2], 'rgba(47,93,124,0.06)');
@@ -1147,7 +1153,7 @@ export class Renderer {
     if (z < 0.42) return;
     const u = sim.d.units.get(zn.id);
     const def = ZONES[zn.type];
-    let c = center(zn);
+    let c = heart(zn);   // (the middle of the building itself: a bent pier's box centre can lie outside it)
     const f = sim.d.frames.get(zn.id);
     for (const k of sim.d.cores) if (Math.abs(k.x - c.x) < 40 && Math.abs(k.y - c.y) < 18) c = { x: c.x, y: k.y + (c.y >= k.y ? 18 : -18) };
     const big = zn.type === 'curb' || zn.type === 'parking';
@@ -1338,9 +1344,10 @@ export class Renderer {
     const g = this.ctx; const top = this.tilt > 0.02 ? LEVELS[zn.level].z1 : 0;
     for (const gr of gripsOf(zn, canTurn(zn))) {
       const [x, y] = this.P(gr.p.x, gr.p.y, top); const hot = this.gripHot === gr.grip; const r = hot ? 7 : 5.5;
-      g.fillStyle = hot ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2;
+      // the bend grip is filled, like the one on a road
+      g.fillStyle = hot || gr.grip === 'm' ? PAL.select : '#FBF8F1'; g.strokeStyle = gr.grip === 'm' ? '#FBF8F1' : PAL.select; g.lineWidth = 2;
       g.beginPath();
-      if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r') g.arc(x, y, r, 0, Math.PI * 2); else g.rect(x - r, y - r, 2 * r, 2 * r);
+      if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r' || gr.grip === 'm') g.arc(x, y, r, 0, Math.PI * 2); else g.rect(x - r, y - r, 2 * r, 2 * r);
       g.fill(); g.stroke();
     }
   }

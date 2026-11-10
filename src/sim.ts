@@ -5,7 +5,7 @@ import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
 import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { wayLen, isRingRef } from './ways';
-import { toLocal, clampInto } from './shapes';
+import { toLocal, clampInto, frameOf } from './shapes';
 import { flowBins, newFlow, tenantsOf } from './commerce';
 import { Goal, checkGoals } from './goals';
 import { DJ, dijkstra, trace, nearestNode } from './net';
@@ -798,7 +798,7 @@ export class Sim {
       }
       case 'gate': {
         const g = p.flight.gate;
-        const inward = { x: -g.apron.outward.x, y: -g.apron.outward.y };
+        const inward = { x: -g.outward.x, y: -g.outward.y };
         const wd = CLASSES[g.cls].gateSpacing * 0.6;
         const target = clampIn(add(add(g.door, mul(inward, 1 + this.r() * 7)), { x: (this.r() - .5) * wd * Math.abs(inward.y), y: (this.r() - .5) * wd * Math.abs(inward.x) }), g.zone);
         route = go(target, g.zone.level);
@@ -881,7 +881,8 @@ export class Sim {
     let f = this.flowDay.get(z.id);
     if (!f || f.w.length !== n) { f = newFlow(n); this.flowDay.set(z.id, f); }
     const pl = toLocal(z, p);   // an angled pier counts along its own long axis
-    const u = B.horiz ? pl.x - z.x : pl.y - z.y;
+    const F = frameOf(z);       // (and a bent one along its curve)
+    const u = B.horiz ? pl.x - F.x : pl.y - F.y;
     const b = clamp(Math.floor(u / COMMERCE.binM), 0, n - 1);
     const spare = Math.max(0, p.flight.schedDep - COMMERCE.boardLead - this.t);
     const w = clamp(spare / COMMERCE.spareRef, COMMERCE.spareMin, COMMERCE.spareCap);
