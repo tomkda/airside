@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox } from './shapes';
+import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
@@ -425,8 +425,13 @@ export function derive(source: World): Derived {
 
   // ---- Concourse gates (see gates.ts): every side facing a parallel taxiway within reach grows gates.
   //      v0.19: and every other open face lays its own apron and taxilane, clear of the roads and sidewalks drawn or laid so far.
+  //      The sidewalks and drives that lots and facilities lay for themselves are laid first, against the aprons of
+  //      drawn taxiways only (as before v0.19), so the landside claims its ground and no taxilane is laid across it.
+  const rects1 = buildGateAreas(world, runways, runwayWidth).aprons.map(a => a.rect);
+  const laid = autoWalks(world, world.zones, rects1);
+  const laidDrives = autoRoads(world, world.zones, rects1, SITE.highwayY, SITE.width, GROWTH.autoRoadReach, fore);
   const keep: { a: Pt; b: Pt }[] = [];
-  for (const w of [...source.ways.filter(q => q.kind !== 'taxi'), ...fore]) for (const [a, b] of waySegs(w)) keep.push({ a, b });
+  for (const w of [...source.ways.filter(q => q.kind !== 'taxi'), ...fore, ...laid, ...laidDrives]) for (const [a, b] of waySegs(w)) keep.push({ a, b });
   const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
   for (const [id, u] of GA.units) units.set(id, u);
@@ -452,7 +457,15 @@ export function derive(source: World): Derived {
       // (v0.19: its neighbours are brought into that frame too, as the box each one fills there, so the pier finds
       //  its entry and its windowless walls where they really are)
       const zl = { ...z, rot: undefined };
-      const local: World = { ...world, zones: world.zones.map(o => (o.id === z.id ? zl : { ...o, ...polyBox(zonePts(o).map(p => toLocal(z, p))), rot: undefined, sides: undefined })) };
+      const near = zonePts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot });   // the pier's outline, 2 m out
+      const local: World = { ...world, zones: world.zones.map(o => {
+        if (o.id === z.id) return zl;
+        // only the part of a neighbour that is at the pier counts, or its box would wall off stretches it never touches;
+        // one that is nowhere near is kept as a dot at its centre, for "which end faces security"
+        const part = polyClip(zonePts(o), near); const c = toLocal(z, centreOf(o));
+        const box = part.length >= 3 && polyArea(part) > 1 ? polyBox(part.map(p => toLocal(z, p))) : { x: c.x - 0.5, y: c.y - 0.5, w: 1, h: 1 };
+        return { ...o, ...box, rot: undefined, sides: undefined };
+      }) };
       C = carveConcourse(zl, local, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
       for (const sh of C.shops) { sh.zone = z; sh.pts = sh.pts.map(p => toWorld(z, p)); sh.door = toWorld(z, sh.door); }
       for (const it of C.items) it.pts = it.pts.map(p => toWorld(z, p));
@@ -608,7 +621,7 @@ export function derive(source: World): Derived {
     vertical(c, zonesAt(c, 1), zonesAt(c, 0), false);
   }
   // v0.9: a lot that no sidewalk reaches lays its own to the nearest curb (frontage.ts)
-  const laid = autoWalks(world, zs, aprons.map(a => a.rect));
+  // (laid above, before the self-laid aprons: `laid`)
   // v0.10: AirTrain stations join into one line; riding it is a fast edge in the pedestrian network
   const tLinks = trainLinks(zs);
   const tNode = new Map<number, number>(); const tKeys = new Set<string>();
@@ -689,7 +702,7 @@ export function derive(source: World): Derived {
   // ---- Road network: the highway plus player roads; curbs and lots attach where a road ends.
   const HY = SITE.highwayY;
   // v0.10: facilities with no road at their edge lay their own access drive
-  const laidRoads = [...fore, ...autoRoads(world, zs, aprons.map(a => a.rect), HY, SITE.width, GROWTH.autoRoadReach, fore)];
+  const laidRoads = [...fore, ...laidDrives];
   const roads = [...world.ways.filter(w => w.kind === 'road'), ...laidRoads];
   const roadSegs: NSeg[] = [{ a: { x: 0, y: HY }, b: { x: SITE.width, y: HY }, kind: 'hwy', cls: 0, ref: -1, lanes: 6 }];
   // v0.11: curves become chords, straight roads split where generated curbs begin and end (so cars can pull in

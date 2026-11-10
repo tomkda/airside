@@ -339,7 +339,10 @@ export class UI {
     c.addEventListener('pointermove', e => this.move(e));
     c.addEventListener('pointerup', e => this.up(e));
     c.addEventListener('pointerleave', () => { if (!this.drag) this.ren.cursor = null; });
-    c.addEventListener('pointercancel', e => { this.pointers.delete(e.pointerId); this.drag = null; this.pinch = null; this.ren.ghost = null; });
+    // a drag the browser takes away (a cancelled touch, lost capture, the window losing focus) is put back like Esc
+    c.addEventListener('pointercancel', e => { this.pointers.delete(e.pointerId); this.cancelDrag(); this.drag = null; this.pinch = null; this.ren.ghost = null; });
+    c.addEventListener('lostpointercapture', e => { if (this.drag && this.pointers.has(e.pointerId)) { this.pointers.delete(e.pointerId); this.cancelDrag(); } });
+    window.addEventListener('blur', () => { if (this.drag) { this.pointers.clear(); this.pinch = null; this.cancelDrag(); } });
     window.addEventListener('keydown', e => this.key(e));
   }
 
@@ -418,7 +421,7 @@ export class UI {
         const a = { x: gd.a.x + gd.out.x * gd.ideal, y: gd.a.y + gd.out.y * gd.ideal }, b = { x: gd.b.x + gd.out.x * gd.ideal, y: gd.b.y + gd.out.y * gd.ideal };
         consider(a, 3); consider(b, 3); consider(onSeg(a, b), 3);
       }
-      for (const ap of this.sim.d.aprons) {
+      for (const ap of this.aprons) {
         if (inRect(p, ap.rect, tol)) consider(onSeg(ap.laneA, ap.laneB), 3);
         consider(ap.laneA, 3); consider(ap.laneB, 3);
       }
@@ -522,7 +525,7 @@ export class UI {
       }
       else if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; }
       else if (this.tool === 'round') {
-        const q = this.snapRound(p); const def = ROUNDS[this.opt.round]; const chk = canPlaceRound(this.world, q.p, this.opt.round, this.sim.d.aprons);
+        const q = this.snapRound(p); const def = ROUNDS[this.opt.round]; const chk = canPlaceRound(this.world, q.p, this.opt.round, this.aprons);
         const ok = chk.ok && this.sim.canAfford(def.cost);
         this.ren.ghost = { kind: 'round', a: q.p, r: def.icd / 2, ok, snapA: q.snapped };
         this.hint(chk.ok ? (ok ? `${def.name} roundabout · ${def.note} · ${money(def.cost)}${q.snapped ? ' · joins the roads here' : ''}` : `Not enough money: ${money(def.cost)}`) : chk.reason!, !ok);
@@ -558,7 +561,7 @@ export class UI {
       const w = dr.way; const o = dr.orig3; let a = o.a, b = o.b, c = o.c;
       if (dr.handle === 'm') c = bendThrough(a, b, { x: snap(p.x, 1), y: snap(p.y, 1) });
       else { const q = this.snapFor(w.kind, p).p; if (dr.handle === 'a') a = q; else b = q; }
-      const chk = canPlaceWay(this.world, w.kind, a, b, this.sim.d.aprons, c);
+      const chk = canPlaceWay(this.world, w.kind, a, b, this.aprons, c);
       const cost = Math.max(0, (wayLen({ a, b, c }) - wayLen(o)) * wayCostPerM(w.kind, w.cls, w.lanes));
       const ok = chk.ok && this.sim.canAfford(cost);
       dr.bend = { a, b, c, ok, cost, reason: chk.reason };
@@ -616,7 +619,7 @@ export class UI {
       const a = dr.end === 'a' ? ne : fixed, b = dr.end === 'a' ? fixed : ne;
       const chk = canPlaceRunway(this.world, a, b, dr.rw.id);
       const delta = runwayCost(a, b) - runwayCost(dr.orig.a, dr.orig.b);
-      const follow = this.opt.auto ? followRunwayEnd(this.world, fixed, moving, ne, this.sim.d.aprons) : null;
+      const follow = this.opt.auto ? followRunwayEnd(this.world, fixed, moving, ne, this.aprons) : null;
       const cost = Math.max(0, delta) + (follow?.cost ?? 0);
       const ok = chk.ok && this.sim.canAfford(cost);
       dr.pend = { a, b, ok, cost, delta, follow };
@@ -648,9 +651,9 @@ export class UI {
       const b = s.snapped ? s.p : curved ? { x: snap(p.x, 5), y: snap(p.y, 5) } : this.angled(dr.start, p, 10).b;
       const cls = kind === 'taxi' ? this.opt.taxi : 0, lanes = kind === 'road' ? this.opt.lanes : 0;
       const c = curved ? this.curveControl(dr.start, b) : undefined;
-      const chk = canPlaceWay(this.world, kind, dr.start, b, this.sim.d.aprons, c);
+      const chk = canPlaceWay(this.world, kind, dr.start, b, this.aprons, c);
       const cost = wayLen({ a: dr.start, b, c }) * wayCostPerM(kind, cls, lanes);
-      const extras = kind === 'taxi' && this.opt.auto && chk.ok ? autoConnectors(this.world, { a: dr.start, b, cls }, this.sim.d.aprons) : [];
+      const extras = kind === 'taxi' && this.opt.auto && chk.ok ? autoConnectors(this.world, { a: dr.start, b, cls }, this.aprons) : [];
       const xcost = extras.reduce((t, x) => t + dist(x.a, x.b) * wayCostPerM('taxi', cls, 0), 0);
       const ok = chk.ok && this.sim.canAfford(cost + xcost);
       dr.extras = extras;
@@ -668,7 +671,7 @@ export class UI {
       const level = ZONES[t].groundOnly ? 0 : hall || sat ? 1 : this.ren.level;
       const q = this.magnet(p, level);
       const r = { x: Math.min(dr.start.x, q.x), y: Math.min(dr.start.y, q.y), w: Math.abs(q.x - dr.start.x), h: Math.abs(q.y - dr.start.y) };
-      const chk = sat ? canPlaceZone(this.world, r, 'concourse', 1, -1, this.sim.d.aprons) : this.placeHall(r, t, level, -1);
+      const chk = sat ? canPlaceZone(this.world, r, 'concourse', 1, -1, this.aprons) : this.placeHall(r, t, level, -1);
       const cost = area(r) * (ZONES[t].costPerM2 + (hall ? ZONES.claim.costPerM2 : 0));
       const near = sat ? this.nearestConcourse(r) : null;
       const ok = chk.ok && this.sim.canAfford(cost);
@@ -715,6 +718,9 @@ export class UI {
     const tw = this.twin(z); if (tw) { tw.x = g.x; tw.y = g.y; tw.w = g.w; tw.h = g.h; }
     setGeom(z, g); this.live.dirty = true;
   }
+  /** Aprons for placement checks: those from before a drag began, so a shape being drawn or dragged is never refused
+   *  because of the apron it has just laid for itself. */
+  get aprons() { return (this.live?.d0 ?? this.sim.d).aprons; }
   /** Take the draft out of the world for a moment, so the next placement check does not find it in its own way. */
   liftDraft() { const lv = this.live; if (lv?.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z)); }
   /** Zones that exist only while the mouse is down: what a drawing tool is about to build. Call `liftDraft` first. */
@@ -774,8 +780,10 @@ export class UI {
     return chk.ok && tw ? this.placeModule(r, tw.type, tw.level, tw.id) : chk;
   }
   geomCost(z: Zone, g: Geom) {
+    // every square metre carries what was paid for it: the fit-out tier, a mezzanine, garage decks
+    const rate = (q: Zone) => ZONES[q.type].costPerM2 + (q.tier ? ZONES[q.type].tierCostPerM2 : 0) + (q.mezz ? GROWTH.mezzCostPerM2 * 0.3 : 0) + Math.max(0, (q.floors ?? 1) - 1) * GROWTH.deckCostPerM2;
     const tw = this.twin(z);
-    return (g.sides ? polyArea(zonePts(g)) : g.w * g.h) * (ZONES[z.type].costPerM2 + (tw ? ZONES[tw.type].costPerM2 : 0));
+    return (g.sides ? polyArea(zonePts(g)) : g.w * g.h) * (rate(z) + (tw ? rate(tw) : 0));
   }
   /** Stop whatever is being dragged and put it back (Esc). */
   cancelDrag() {
@@ -829,7 +837,7 @@ export class UI {
       else if (dist(g.a, g.b) > 50) this.toast(canPlaceRunway(this.world, g.a, g.b).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'way' && g?.a && g.b && g.way) {
       if (g.ok) this.buildWay(g.way.kind, g.a, g.b, g.way.cls, g.way.lanes, dr.extras ?? [], g.c, g.way.kind === 'road' && !!this.opt.oneway);
-      else if (dist(g.a, g.b) > 10) this.toast(canPlaceWay(this.world, g.way.kind, g.a, g.b, this.sim.d.aprons, g.c).reason ?? 'Not enough money', 'bad');
+      else if (dist(g.a, g.b) > 10) this.toast(canPlaceWay(this.world, g.way.kind, g.a, g.b, this.aprons, g.c).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'bend' && dr.way && dr.bend) {
       const bd = dr.bend; const w = dr.way;
       if (bd.ok) {
@@ -852,7 +860,7 @@ export class UI {
       const sat = this.tool === 'satellite';
       const t = (sat ? 'concourse' : this.tool) as ZoneType;
       if (g.ok) this.buildZone(t, g.rect, sat);
-      else if (sat) { if (g.rect.w > 5 || g.rect.h > 5) this.toast(canPlaceZone(this.world, g.rect, 'concourse', 1, -1, this.sim.d.aprons).reason ?? 'Not enough money', 'bad'); }
+      else if (sat) { if (g.rect.w > 5 || g.rect.h > 5) this.toast(canPlaceZone(this.world, g.rect, 'concourse', 1, -1, this.aprons).reason ?? 'Not enough money', 'bad'); }
       else if (g.rect.w > 5 || g.rect.h > 5) this.toast(this.placeHall(g.rect, t, ZONES[t].groundOnly ? 0 : t === 'checkin' ? 1 : this.ren.level, -1).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'pier') {
       if (dr.pier?.ok) this.buildPier(dr.pier.z, dr.pier.cost);
@@ -868,6 +876,8 @@ export class UI {
   key(e: KeyboardEvent) {
     if ((e.target as HTMLElement).closest('input, select, textarea')) return;
     const k = e.key;
+    // any key that edits or changes the view first puts back whatever is being dragged
+    if (this.drag && this.drag.mode !== 'pan' && !['Shift', 'Control', 'Alt', 'Meta', 'Escape', ' ', '+', '=', '-'].includes(k)) this.cancelDrag();
     if (e.ctrlKey || e.metaKey) { if (k === 'z' || k === 'Z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); } else if (k === 'y') { e.preventDefault(); this.redo(); } return; }
     const t = TOOLS.find(x => x.key.toLowerCase() === k.toLowerCase());
     if (t) { this.cancelDrag(); this.setTool(t.id); return; }
@@ -940,7 +950,7 @@ export class UI {
     const tol = Math.max(6, 12 / this.ren.cam.zoom);
     let dx = snap(r.x, 10) - r.x, dy = snap(r.y, 10) - r.y, bx = tol + 1, by = tol + 1;
     for (const z of this.world.zones) {
-      if (z.id === ignore || (z.level !== level && !isTerminalModule(z))) continue;
+      if (z.id === ignore || z.pair === ignore || (z.level !== level && !isTerminalModule(z))) continue;
       for (const [a, c] of [[r.x, z.x], [r.x, z.x + z.w], [r.x + r.w, z.x], [r.x + r.w, z.x + z.w]]) if (Math.abs(c - a) < bx) { bx = Math.abs(c - a); dx = c - a; }
       for (const [a, c] of [[r.y, z.y], [r.y, z.y + z.h], [r.y + r.h, z.y], [r.y + r.h, z.y + z.h]]) if (Math.abs(c - a) < by) { by = Math.abs(c - a); dy = c - a; }
     }
@@ -959,7 +969,7 @@ export class UI {
     return chk;
   }
   placeModule(r: Rect, t: ZoneType, level: Level, ignore: number) {
-    const chk = canPlaceZone(this.world, r, t, level, ignore, this.sim.d.aprons);
+    const chk = canPlaceZone(this.world, r, t, level, ignore, this.aprons);
     if (!chk.ok || !TERMINAL_TOOLS.has(t)) return chk;
     const mine = ignore >= 0 ? this.world.zones.find(z => z.id === ignore) : undefined;
     if (mine && mine.site === undefined && !siteOf(this.world, mine) && !(this.world.sites ?? []).some(o => rectsOverlap(r, o))) return chk;   // a satellite moves freely
@@ -984,7 +994,7 @@ export class UI {
   sitePlan(r: Rect): { parts: PlanPart[] | null; air: 'n' | 'e' | 's' | 'w'; ok: boolean; reason?: string } {
     const air = airsideOf(r, this.world); const parts = planTerminal(r, air);
     if (!parts) return { parts: null, air, ok: true };
-    for (const q of parts) { const c = canPlaceZone(this.world, q.rect, q.type, q.level, -1, this.sim.d.aprons); if (!c.ok) return { parts, air, ok: false, reason: `${ZONES[q.type].short}: ${c.reason}` }; }
+    for (const q of parts) { const c = canPlaceZone(this.world, q.rect, q.type, q.level, -1, this.aprons); if (!c.ok) return { parts, air, ok: false, reason: `${ZONES[q.type].short}: ${c.reason}` }; }
     return { parts, air, ok: true };
   }
 
@@ -1026,6 +1036,8 @@ export class UI {
 
   // ------------------------------------------------------------ edits
   changed() {
+    // an edit from anywhere else ends a drag in progress and puts its shape back: nothing unpaid is ever kept
+    if (this.live) { this.endLive(false); this.drag = null; this.ren.ghost = null; }
     this.liveStale = false;
     if (this.snap) { this.undoStack.push(this.snap); if (this.undoStack.length > 50) this.undoStack.shift(); this.redoStack = []; }
     this.sim.relayout(); this.refresh(true); this.ctl.save();
@@ -1108,7 +1120,7 @@ export class UI {
   }
 
   placeRound(q: { p: Pt }) {
-    const def = ROUNDS[this.opt.round]; const chk = canPlaceRound(this.world, q.p, this.opt.round, this.sim.d.aprons);
+    const def = ROUNDS[this.opt.round]; const chk = canPlaceRound(this.world, q.p, this.opt.round, this.aprons);
     if (!chk.ok) { this.toast(chk.reason!, 'bad'); return; }
     if (!this.sim.canAfford(def.cost)) { this.toast(`Not enough money: ${money(def.cost)}`, 'bad'); return; }
     const id = this.world.nextId++;

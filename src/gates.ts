@@ -307,8 +307,29 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     pads.push([A.ap.pts[J.ei ? 1 : 0], A.ap.pts[J.ei ? 2 : 3], J.X, B.ap.pts[J.ej ? 2 : 3], B.ap.pts[J.ej ? 1 : 0]]);
   }
 
+  // ---- lanes on opposite sides of a building whose end has no stand (it is narrower than one stand) meet round that end
+  const round: Lane[] = [];
+  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
+    const A = runs[i], B = runs[j];
+    if (A.lane.zone !== B.lane.zone || dot(A.out, B.out) > -0.9) continue;
+    for (const ei of [0, 1] as const) for (const ej of [0, 1] as const) {
+      if (A.joined[ei] || B.joined[ej]) continue;
+      const u = endDir(A, ei); if (dot(u, endDir(B, ej)) < 0.9) continue;
+      const sa = dot(endPt(A, ei), u), sb = dot(endPt(B, ej), u);
+      if (Math.abs(sa - sb) > A.T) continue;          // the two sides end at very different places: not one building end
+      for (const d of [30, 45, 60]) {
+        const s = Math.max(sa, sb) + d;
+        const pa = add(endPt(A, ei), mul(u, s - sa)), pb = add(endPt(B, ej), mul(endDir(B, ej), s - sb));
+        if (!clearLine(endPt(A, ei), pa) || !clearLine(endPt(B, ej), pb) || !clearLine(pa, pb)) continue;
+        setEnd(A, ei, pa); setEnd(B, ej, pb);
+        round.push({ a: pa, b: pb, cls: A.lane.cls, zone: A.lane.zone });
+        break;
+      }
+    }
+  }
+
   // ---- loose ends reach for the airfield
-  const lanes: Lane[] = runs.map(r => r.lane);
+  const lanes: Lane[] = [...runs.map(r => r.lane), ...round];
   /** The nearest taxiway, runway or taxilane a ray meets within reach. `ok` limits taxilanes to those already joined to the airfield. */
   const rayTo = (from: Pt, u: Pt, self: Run | null, ok?: boolean[]) => {
     let best: { t: number; rwy: boolean } | null = null;
@@ -348,7 +369,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
   // ---- anything still cut off (a ring has no loose end) takes the shortest clear way out to the airfield proper
   const anchors = [...taxis.map(w => ({ a: w.a, b: w.b })), ...runways.map(r => ({ a: r.rw.a, b: r.rw.b }))];
   const touch = (p: { a: Pt; b: Pt }, q: { a: Pt; b: Pt }) => segsIntersect(p.a, p.b, q.a, q.b) || segDist(p.a, q.a, q.b) < 4 || segDist(p.b, q.a, q.b) < 4 || segDist(q.a, p.a, p.b) < 4 || segDist(q.b, p.a, p.b) < 4;
-  for (let round = 0; round < 8; round++) {
+  for (let pass = 0; pass < 200; pass++) {   // one link a pass, until every apron is joined or nothing more can be
     // which lanes reach the drawn airfield, through each other
     const ok = lanes.map(l => anchors.some(a => touch(l, a)));
     for (let grew = true; grew;) { grew = false; for (let i = 0; i < lanes.length; i++) if (!ok[i] && lanes.some((l, j) => ok[j] && touch(lanes[i], l))) { ok[i] = grew = true; } }

@@ -31,6 +31,18 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   const mine = r.d.gates.filter(g => g.zone.id === z.id);
   check('the pier has stands on both long sides and its end', mine.length >= 14 && mine.every(g => g.apron.self));
   check('every pier gate reaches a runway', mine.every(g => g.rwys[0].size > 0)); }
+{ const w = sampleWorld(); const z = pier(w, 3568, 2718, 400, 40, 20); const r = rep('a 40 m pier (too narrow for a stand on its end)', w);
+  const mine = r.d.gates.filter(g => g.zone.id === z.id);
+  check('its two taxilanes meet round the end, so both sides reach a runway', mine.length >= 14 && mine.every(g => g.rwys[0].size > 0)); }
+{ const w = newWorld(); runway(w); const z = conc(w, 2800, 2700, 700, 50, { cls: 3 }); const r = rep('a runway and a 50 m A380 concourse', w);
+  check('the side away from the runway reaches it too', r.d.gates.length >= 14 && r.reach === r.d.gates.length); }
+{ const w = newWorld(); runway(w); for (let i = 0; i < 12; i++) conc(w, 1700 + (i % 6) * 480, 2700 + Math.floor(i / 6) * 420, 300, 60);
+  const r = rep('twelve satellites in two rows', w);
+  check('every one finds a way out, however many there are', r.reach === r.d.gates.length); }
+{ const w = sampleWorld(); pier(w, 3568, 2718, 400, 50, 20); w.zones.push({ id: w.nextId++, type: 'parking', level: 0, x: 3780, y: 2950, w: 200, h: 120, tier: 0 });
+  const r = rep('a car park beside the pier', w);
+  const walks = r.d.autoWalks.flatMap(x => [[x.a, x.b]]);
+  check('no generated taxilane crosses a sidewalk or drive a lot laid for itself', !r.d.airExtra.some(l => [...r.d.autoWalks, ...r.d.autoRoads].some(x => segsIntersect(l.a, l.b, x.a, x.b)))); }
 { const w = sampleWorld(); const z = conc(w, 2900, 1800, 400, 50); const r = rep('a satellite north of the runway', w);
   const mine = r.d.gates.filter(g => g.zone.id === z.id);
   check('stands on all four sides', ['n', 'e', 's', 'w'].every(s => mine.some(g => g.key[0] === s)));
@@ -79,6 +91,9 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   const g2 = regrip(z0, 's', { x: s0.x + (s0.x - n0.x), y: s0.y + (s0.y - n0.y) }, true, lim);
   const n2 = gripsOf(g2, true).find(g => g.grip === 'n').p;
   check('widening keeps the opposite side', g2.h === 100 && Math.hypot(n2.x - n0.x, n2.y - n0.y) < 0.01);
+  const wide = { x: 1000, y: 1000, w: 300, h: 150 };
+  const g6 = regrip(wide, 's', { x: 1150, y: 1156 }, true, lim);
+  check('a limit never shrinks what is already built', g6.h >= 150);
   const up = { x: 1000, y: 1000, w: 200, h: 60 };
   const g3 = regrip(up, 'e', { x: 1300, y: 1010 }, false, lim);
   check('an upright module resizes by its edge', g3.x === 1000 && g3.w === 300 && g3.h === 60 && !g3.rot);

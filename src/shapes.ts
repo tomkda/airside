@@ -153,7 +153,8 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     const ax = alongX(z0); const W = ax ? z0.h : z0.w;
     const endA = toWorld(z0, ax ? { x: z0.x, y: c0.y } : { x: c0.x, y: z0.y }), endB = toWorld(z0, ax ? { x: z0.x + z0.w, y: c0.y } : { x: c0.x, y: z0.y + z0.h });
     const F = grip === 'b' ? endA : endB;
-    const L = Math.max(lim.minLen, snap(Math.hypot(p.x - F.x, p.y - F.y), 5));
+    const L0 = ax ? z0.w : z0.h;
+    const L = Math.max(Math.min(lim.minLen, L0), snap(Math.hypot(p.x - F.x, p.y - F.y), 5));   // a limit never shrinks or grows what is already built
     const th = Math.round(Math.atan2(p.y - F.y, p.x - F.x) / step) * step;
     const c = { x: F.x + (Math.cos(th) * L) / 2, y: F.y + (Math.sin(th) * L) / 2 };
     let dir = grip === 'b' ? th : th + Math.PI;          // which way the axis runs from end a to end b
@@ -173,7 +174,12 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
   // an edge: it moves square to itself, in the shape's own frame, and the opposite edge stays where it is
   const q = toLocal(z0, p); let x0 = z0.x, y0 = z0.y, x1 = z0.x + z0.w, y1 = z0.y + z0.h;
   const longX = alongX(z0);
-  const size = (v: number, along: boolean) => (turns ? Math.min(along ? Infinity : lim.maxWide, Math.max(along ? lim.minLen : lim.minWide, snap(v, 5))) : Math.max(10, snap(v, 5)));
+  const size = (v: number, along: boolean) => {
+    if (!turns) return Math.max(10, snap(v, 5));
+    const cur = (grip === 'e' || grip === 'w') ? z0.w : z0.h;   // the limits apply to the drag, never to what is already built
+    const lo = Math.min(cur, along ? lim.minLen : lim.minWide), hi = along ? Infinity : Math.max(cur, lim.maxWide);
+    return Math.min(hi, Math.max(lo, snap(v, 5)));
+  };
   if (grip === 'e') x1 = x0 + size(q.x - x0, longX); else if (grip === 'w') x0 = x1 - size(x1 - q.x, longX);
   else if (grip === 's') y1 = y0 + size(q.y - y0, !longX); else if (grip === 'n') y0 = y1 - size(y1 - q.y, !longX);
   const c = toWorld(z0, { x: (x0 + x1) / 2, y: (y0 + y1) / 2 });
