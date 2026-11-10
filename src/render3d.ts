@@ -17,7 +17,7 @@ import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
-import { turn, centreOf } from './shapes';
+import { turn, centreOf, shaped, hallPts } from './shapes';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -248,7 +248,7 @@ export class Renderer3D {
     }
     add3(stripMesh(strips));
     const flats: Box[] = [];
-    for (const ap of d.aprons) { if (ap.zone.rot) add3(flatShape(ap.pts, 0.09, '#CDC4B0')); else flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' }); }
+    for (const ap of d.aprons) { if (shaped(ap.zone)) add3(flatShape(ap.pts, 0.09, '#CDC4B0')); else flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' }); }
     for (const z of d.zones) if (z.type === 'parking') flats.push({ ...z, z0: 0, z1: 0.11, c: '#A7A39A' });
     for (const z of d.zones) if (z.type === 'curb' && z.level === 0) flats.push({ ...z, z0: 0, z1: 0.16, c: '#8E8A83' });
     add3(instancedBoxes(flats, false));
@@ -423,6 +423,15 @@ export class Renderer3D {
       if (!ZONES[z.type].terminal || rising.has(z.id)) continue;
       const L = LEVELS[z.level];
       const sel = this.ren.selected?.kind === 'zone' && this.ren.selected.id === z.id;
+      if (z.sides) {
+        // a round or polygonal hall: plinth, a glazed drum, the roof, and a lantern over the atrium
+        const top = L.z1 - 0.4; const c0 = centreOf(z); const R = Math.min(z.w, z.h) / 2;
+        add3(prism(hallPts(z), L.z0, L.z0 + 0.7, PLINTH));
+        const gl = prism(hallPts(z, -0.6), L.z0 + 0.7, top - 1.1, sel ? '#8FB0C6' : GLASS[z.type], this.glassMat); add3(gl);
+        add3(prism(hallPts(z, 0.8), top - 1.1, top, sel ? '#CFE0EA' : ROOF));
+        add3(prism(hallPts({ ...z, x: c0.x - R * 0.42, y: c0.y - R * 0.42, w: R * 0.84, h: R * 0.84 }), top, top + 3.2, GLASS.concourse, this.glassMat));
+        continue;
+      }
       if (!openSite(z) || z.rot) {
         const n0 = [solid.length, glazing.length, roofs.length];
         massing(z, L.z0, L.z1, sel, solid, glazing, roofs);
@@ -766,6 +775,20 @@ function slab(a: Pt, b: Pt, w: number, z0: number, z1: number, c: string, ramp: 
   });
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
   const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide })); m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+/** An upright prism on a convex outline: walls and a flat top. */
+function prism(pts: Pt[], z0: number, z1: number, c: string, material?: THREE.Material) {
+  const pos: number[] = []; const idx: number[] = []; const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n]; const k = pos.length / 3;
+    pos.push(a.x, z0, a.y, b.x, z0, b.y, b.x, z1, b.y, a.x, z1, a.y); idx.push(k, k + 2, k + 1, k, k + 3, k + 2);
+  }
+  const t0 = pos.length / 3; let cx = 0, cy = 0; for (const p of pts) { cx += p.x / n; cy += p.y / n; }
+  pos.push(cx, z1, cy); for (const p of pts) pos.push(p.x, z1, p.y);
+  for (let i = 0; i < n; i++) idx.push(t0, t0 + 1 + ((i + 1) % n), t0 + 1 + i);
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, material ?? new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide })); m.castShadow = true; m.receiveShadow = true;
   return m;
 }
 function flatShape(pts: Pt[], z: number, c: string) {

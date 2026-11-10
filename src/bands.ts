@@ -11,7 +11,8 @@
 // back to commerce. This file carves the lots and scores what the plan alone decides: visibility from the spine,
 // distance from the security exit, the gate cluster nearby. Who leases each lot is settled in commerce.ts (v0.7).
 // With walk-through duty free on, the stretch in front of the security exit becomes one store everyone crosses.
-import { Pt, clamp, rectsOverlap, Rect } from './geom';
+import { Pt, clamp, rectsOverlap, Rect, dist } from './geom';
+import { centreOf, hallPts, inZone, toLocal, zonesOverlap, overlapOf, polyCentre } from './shapes';
 import { CLASSES, COMMERCE } from './config';
 import type { World, Zone, Gate, Shop } from './world';
 import { orient, LItem } from './layout';
@@ -252,6 +253,91 @@ export function carveConcourse(z: Zone, world: World, gates: Gate[]): Carved {
     budget: {
       hold, spine: sw * (uZ - uA), commerce, seats, spineW: sw, walkways, long: L, width: S, lots: shops.length, window: windowLots, kinds, depthA: dA, depthB: dB,
       horiz, entryU: eu, entrySide, uA, uZ, dutyFreeOK, gates: mine.length,
+    },
+  };
+}
+
+// ------------------------------------------------------------ round and polygonal halls (v0.18)
+/**
+ * A hall is a hub: an open atrium in the middle, where the piers and concourses that run into it meet, and a ring
+ * of commercial lots round the wall. A facet with gates gets a holdroom band along it, with the lots behind.
+ * Nothing is carved where another building runs into the hall: that stretch of wall is the way through.
+ *
+ * The ring is as deep as a concourse's shop band (8–16 m), and the atrium is never less than 24 m across, so a hall
+ * under about 60 m is all atrium (ACRP Report 25 gives 9–14 m for a main circulation width; a hub wants at least
+ * two of them crossing).
+ */
+export function carveHub(z: Zone, world: World, gates: Gate[]): Carved {
+  const c = centreOf(z); const R = Math.min(z.w, z.h) / 2;
+  const mine = gates.filter(g => g.zone.id === z.id);
+  const SC = COMMERCE;
+  const items: LItem[] = []; const shops: Shop[] = []; const kinds: Record<string, number> = {};
+  let hold = 0, commerce = 0, seats = 0, windowLots = 0;
+  const others = world.zones.filter(o => o.id !== z.id && o.level === z.level && (o.type === 'concourse' || o.type === 'security') && zonesOverlap(z, o, 24));
+  // where people come in: the middle of the overlap with security if there is one, else with the nearest building
+  const entryZ = others.find(o => o.type === 'security') ?? others[0];
+  const entry = entryZ ? polyCentre(overlapOf(z, entryZ, 1) ?? [c]) : c;
+  // the ring is laid out on fine facets so a round hall's lots follow the curve
+  const n = z.sides && z.sides >= 24 ? 24 : Math.max(3, z.sides ?? 4);
+  const per = z.sides && z.sides >= 24 ? 1 : Math.max(1, Math.round((2 * R * Math.sin(Math.PI / n)) / 16));   // lots per facet
+  const outline = hallPts(z, 0, n);
+  const gateFacet = (g: Gate) => Number(g.key.slice(1));
+  const nGate = z.sides && z.sides >= 24 ? 12 : n;
+  const holdOn = new Map<number, number>();   // ring facet -> holdroom depth
+  for (const g of mine) {
+    const k = gateFacet(g); const d = holdDepth(g.cls);
+    // a gate facet of a round hall covers two ring facets
+    for (const rk of nGate === n ? [k] : [k * 2, k * 2 + 1]) holdOn.set(rk, Math.max(holdOn.get(rk) ?? 0, d));
+    hold += CLASSES[g.cls].gateSpacing * d;
+  }
+  const ringDepth = clamp(R * 0.28, 8, 16);
+  const room = (hd: number) => R * Math.cos(Math.PI / n) - hd - ringDepth >= 12;
+  const inward = (p: Pt, d: number): Pt => { const l = Math.hypot(c.x - p.x, c.y - p.y) || 1; return { x: p.x + ((c.x - p.x) / l) * d, y: p.y + ((c.y - p.y) / l) * d }; };
+  const gateSeats = mine.reduce((s, g) => s + CLASSES[g.cls].seats, 0);
+  for (let k = 0; k < n; k++) {
+    const a = outline[k], b = outline[(k + 1) % n]; const hd = holdOn.get(k) ?? 0;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const open = others.some(o => inZone(inward(mid, 2), o, 1) || inZone(inward(a, 2), o) || inZone(inward(b, 2), o));
+    if (open) continue;
+    if (hd > 0) {
+      items.unshift({ k: 'hold', pts: [a, b, inward(b, hd), inward(a, hd)], closed: true });
+      for (let s = 2.8; s < hd - 1.4; s += 2.4) { items.push({ k: 'seat', pts: [inward({ x: a.x + (b.x - a.x) * 0.12, y: a.y + (b.y - a.y) * 0.12 }, s), inward({ x: a.x + (b.x - a.x) * 0.88, y: a.y + (b.y - a.y) * 0.88 }, s)] }); seats += Math.floor((dist(a, b) * 0.76) / 0.6); }
+    }
+    if (!room(hd)) continue;
+    for (let j = 0; j < per; j++) {
+      const p0 = { x: a.x + ((b.x - a.x) * j) / per, y: a.y + ((b.y - a.y) * j) / per }, p1 = { x: a.x + ((b.x - a.x) * (j + 1)) / per, y: a.y + ((b.y - a.y) * (j + 1)) / per };
+      const shrinkTo = (p: Pt, q: Pt, t: number): Pt => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+      const o0 = shrinkTo(p0, p1, 0.03), o1 = shrinkTo(p1, p0, 0.03);
+      const pts = [inward(o0, hd + 0.5), inward(o1, hd + 0.5), inward(o1, hd + ringDepth), inward(o0, hd + ringDepth)];
+      const front = { x: (pts[2].x + pts[3].x) / 2, y: (pts[2].y + pts[3].y) / 2 };
+      const door = inward(front, 1.4);
+      const area = ((dist(pts[0], pts[1]) + dist(pts[2], pts[3])) / 2) * (ringDepth - 0.5);
+      const xs = pts.map(q => toLocal(z, q).x - z.x); const u0 = Math.min(...xs), u1 = Math.max(...xs);
+      const dEntry = dist(front, entry); const key = `H${k}${per > 1 ? `_${j}` : ''}`;
+      shops.push({
+        zone: z, i: shops.length, key, id: `${z.id}:${key}`, pts, door, type: 'shop', kind: '', tenant: 'retail',
+        area, cap: 4, window: hd === 0, rank: 0, side: 'A', u0, u1, depth: ringDepth - 0.5, frontage: dist(pts[2], pts[3]),
+        // every shopfront faces the atrium, so the whole hall sees it; the far side of a big hall sees it less
+        vis: clamp(SC.straightScore + SC.hubBonus - (2 * R > SC.sightM ? 0.15 : 0), 0, 1), near: clamp(1 - dEntry / SC.nearSecurityM, 0, 1), far: clamp(dEntry / (2 * R), 0, 1),
+        gates: gateSeats * 0.6, gateScore: 0, prior: gateSeats * 0.8 * 2.4 * 0.5 + 400,
+        foot: 0, dwell: 0, measured: false, footScore: 0, dwellScore: 0, bids: {}, bid: 0, rent: 0,
+      });
+      commerce += area; if (hd === 0) windowLots++;
+    }
+  }
+  // the atrium: its edge, and seating round a planted centre
+  const atr = Math.max(8, R * Math.cos(Math.PI / n) - ringDepth - 1);
+  const ring = hallPts({ ...z, x: c.x - atr, y: c.y - atr, w: 2 * atr, h: 2 * atr }, 0, z.sides && z.sides >= 24 ? 32 : n);
+  items.push({ k: 'lane', pts: [...ring, ring[0]] });
+  if (atr > 14) {
+    const sr = Math.min(9, atr * 0.35);
+    for (let k = 0; k < 6; k++) { const a0 = (k / 6) * Math.PI * 2, a1 = a0 + 0.7; items.push({ k: 'seat', pts: [{ x: c.x + sr * Math.cos(a0), y: c.y + sr * Math.sin(a0) }, { x: c.x + sr * Math.cos(a1), y: c.y + sr * Math.sin(a1) }] }); seats += 10; }
+  }
+  return {
+    shops, items,
+    budget: {
+      hold, spine: Math.PI * atr * atr, commerce, seats, spineW: Math.min(13.4, atr), walkways: false, long: z.w, width: z.h, lots: shops.length, window: windowLots, kinds,
+      depthA: ringDepth, depthB: ringDepth, horiz: true, entryU: clamp(toLocal(z, entry).x - z.x, 0, z.w), entrySide: 'E', uA: 0, uZ: z.w, dutyFreeOK: false, gates: mine.length,
     },
   };
 }

@@ -5,7 +5,7 @@ import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
 import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { wayLen, isRingRef } from './ways';
-import { toLocal, toWorld } from './shapes';
+import { toLocal, clampInto } from './shapes';
 import { flowBins, newFlow, tenantsOf } from './commerce';
 import { Goal, checkGoals } from './goals';
 import { DJ, dijkstra, trace, nearestNode } from './net';
@@ -1369,4 +1369,4 @@ export class Sim {
 // ------------------------------------------------------------------ helpers
 function resize<T>(arr: T[], n: number, fill: T): T[] { const out = arr.slice(0, n); while (out.length < n) out.push(fill); return out; }
 function gauss(r: () => number) { let u = 0; for (let i = 0; i < 6; i++) u += r(); return u - 3; }
-function clampIn(p: Pt, z: Zone): Pt { const q = toLocal(z, p); return toWorld(z, { x: clamp(q.x, z.x + 3, z.x + z.w - 3), y: clamp(q.y, z.y + 3, z.y + z.h - 3) }); }
+function clampIn(p: Pt, z: Zone): Pt { return clampInto(z, p, 3); }

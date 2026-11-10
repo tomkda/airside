@@ -9,7 +9,26 @@
 //   That is what lets an angled pier be drawn straight into a concourse and become part of it.
 import { Pt, Rect } from './geom';
 
-export interface Shaped extends Rect { rot?: number }
+/** `sides`: a regular polygon with that many sides, inscribed in the circle that fits the box (v0.18). 24 or more is drawn round. */
+export interface Shaped extends Rect { rot?: number; sides?: number }
+/** Anything that is not an upright rectangle. */
+export const shaped = (z: Shaped) => !!(z.rot || z.sides);
+/** How many straight facets a hall's outline has: a round one is drawn with 32. */
+export const facetsOf = (z: Shaped) => (!z.sides ? 4 : z.sides >= 24 ? 32 : Math.max(3, Math.round(z.sides)));
+/** A hall's outline, `grow` metres outside (or inside, if negative) the real one, with `n` facets. Clockwise on screen, first facet at the top. */
+export function hallPts(z: Shaped, grow = 0, n = facetsOf(z)): Pt[] {
+  const c = centreOf(z); const R = Math.max(1, Math.min(z.w, z.h) / 2 + grow); const out: Pt[] = [];
+  for (let k = 0; k < n; k++) { const a = (z.rot ?? 0) - Math.PI / 2 - Math.PI / n + (k / n) * Math.PI * 2; out.push({ x: c.x + R * Math.cos(a), y: c.y + R * Math.sin(a) }); }
+  return out;
+}
+function inPoly(p: Pt, poly: Pt[]) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
 
 export const centreOf = (z: Rect): Pt => ({ x: z.x + z.w / 2, y: z.y + z.h / 2 });
 export function turn(p: Pt, c: Pt, ang: number): Pt {
@@ -24,17 +43,30 @@ export const dirWorld = (z: Shaped, d: Pt): Pt => (z.rot ? turn(d, { x: 0, y: 0 
 
 /** The zone's outline: its four corners in the order north-west, north-east, south-east, south-west of its own frame. */
 export function zonePts(z: Shaped): Pt[] {
+  if (z.sides) return hallPts(z);
   const c = [{ x: z.x, y: z.y }, { x: z.x + z.w, y: z.y }, { x: z.x + z.w, y: z.y + z.h }, { x: z.x, y: z.y + z.h }];
   return z.rot ? c.map(p => toWorld(z, p)) : c;
 }
 export function inZone(p: Pt, z: Shaped, pad = 0): boolean {
+  if (z.sides) return inPoly(p, hallPts(z, pad));
   const q = toLocal(z, p);
   return q.x >= z.x - pad && q.x <= z.x + z.w + pad && q.y >= z.y - pad && q.y <= z.y + z.h + pad;
 }
 /** The upright box that contains the zone. */
 export function zoneBox(z: Shaped): Rect {
-  if (!z.rot) return { x: z.x, y: z.y, w: z.w, h: z.h };
+  if (!shaped(z)) return { x: z.x, y: z.y, w: z.w, h: z.h };
   return polyBox(zonePts(z));
+}
+/** The nearest point to p that is at least `margin` inside the zone. */
+export function clampInto(z: Shaped, p: Pt, margin = 3): Pt {
+  if (z.sides) {
+    if (inPoly(p, hallPts(z, -margin))) return p;
+    const c = centreOf(z); const n = facetsOf(z); const apo = (Math.min(z.w, z.h) / 2) * Math.cos(Math.PI / n) - margin - 0.5;
+    const d = Math.hypot(p.x - c.x, p.y - c.y) || 1; const k = Math.max(0, apo) / d;
+    return k >= 1 ? p : { x: c.x + (p.x - c.x) * k, y: c.y + (p.y - c.y) * k };
+  }
+  const q = toLocal(z, p);
+  return toWorld(z, { x: Math.min(z.x + z.w - margin, Math.max(z.x + margin, q.x)), y: Math.min(z.y + z.h - margin, Math.max(z.y + margin, q.y)) });
 }
 export function polyBox(pts: Pt[]): Rect {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;

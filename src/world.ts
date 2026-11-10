@@ -5,15 +5,15 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox } from './shapes';
-import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES } from './gates';
+import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped } from './shapes';
+import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName } from './gates';
 import { layoutZone, LItem } from './layout';
-import { carveConcourse, Budget } from './bands';
+import { carveConcourse, carveHub, Budget } from './bands';
 import { letLots } from './commerce';
 
 export interface Zone {
@@ -28,6 +28,8 @@ export interface Zone {
   auto?: AutoTag;
   /** v0.17: turned about its centre by this many radians (an angled pier). x, y, w, h are its own upright frame. */
   rot?: number;
+  /** v0.18: a round or polygonal hall: a regular polygon of this many sides in the circle that fits the box (24+ is round). */
+  sides?: number;
   /** v0.12: the id of the module stacked with this one (check-in over baggage claim): they move and go together. */
   pair?: number;
 }
@@ -62,6 +64,7 @@ export function migrateWorld(w: World): World {
   }
   // v0.12: a hall's two halves point at each other; drop a pointer whose other half is gone.
   for (const z of w.zones) if (z.rot !== undefined && !(z.type === 'concourse' && isFinite(z.rot))) delete z.rot;   // v0.17: only concourses turn
+  for (const z of w.zones) if (z.sides !== undefined && !(z.type === 'concourse' && z.sides >= 3 && z.sides <= 64)) delete z.sides;   // v0.18: or are round
   for (const z of w.zones) if (z.pair !== undefined && !w.zones.some(q => q.id === z.pair && q.pair === z.id)) delete z.pair;
   // v0.11: roundabouts, and roads that may curve or run one way. Drop anything malformed.
   w.rounds = (Array.isArray(w.rounds) ? w.rounds : []).filter(r => r && isFinite(r.x) && isFinite(r.y) && (r.size === 0 || r.size === 1));
@@ -284,7 +287,7 @@ export function canPlaceZone(world: World, r: Rect, type: ZoneType, level: Level
   if (!inBuildable(r)) return { ok: false, reason: 'Outside the site boundary or in the lake' };
   for (const rw of world.runways) if (rectSegDist(r, rw.a, rw.b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip (150 m)' };
   for (const z of world.zones) {
-    if (z.id === ignoreId || !(z.rot ? zonesOverlap(r, z) : rectsOverlap(r, z))) continue;
+    if (z.id === ignoreId || !(shaped(z) ? zonesOverlap(r, z) : rectsOverlap(r, z))) continue;
     if (z.level === level) return { ok: false, reason: `Overlaps ${ZONES[z.type].short} on this level` };
     if (level === 1 && z.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
   }
@@ -329,7 +332,8 @@ export function canPlaceWay(world: World, kind: WayKind, a: Pt, b: Pt, aprons: A
  * v0.17: can a pier (a concourse at any angle) go here? It may overlap other concourses: that is how it joins a
  * building. It may not overlap anything else on its level, cross a taxiway, or reach into a runway strip.
  */
-export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; level: Level }, ignoreId = -1): PlaceCheck {
+export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; level: Level }, ignoreId = -1): PlaceCheck {
+  if (z.sides && Math.min(z.w, z.h) < HALL.minDia) return { ok: false, reason: `Too small: a hall needs ${HALL.minDia} m across at least` };
   if (Math.max(z.w, z.h) < PIER.minLen) return { ok: false, reason: `Too short: a pier needs ${PIER.minLen} m at least` };
   const pts = zonePts(z); const edges = pts.map((p, i) => [p, pts[(i + 1) % pts.length]] as const);
   for (const p of pts) if (!inRect(p, SITE.buildable) || pointInPoly(p, SITE.lake)) return { ok: false, reason: 'Outside the site boundary or in the lake' };
@@ -337,7 +341,7 @@ export function canPlacePier(world: World, z: { x: number; y: number; w: number;
     if (segsIntersect(a, b, rw.a, rw.b) || segDist(a, rw.a, rw.b) < TUNE.runwayClear || segDist(rw.a, a, b) < TUNE.runwayClear || segDist(rw.b, a, b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip (150 m)' };
   for (const o of world.zones) {
     if (o.id === ignoreId || !zonesOverlap(z, o, 4)) continue;
-    if (o.level === z.level && o.type !== 'concourse') return { ok: false, reason: `Overlaps ${ZONES[o.type].short}: a pier joins a concourse, not ${ZONES[o.type].short.toLowerCase()}` };
+    if (o.level === z.level && o.type !== 'concourse' && !(z.sides && o.type === 'security')) return { ok: false, reason: `Overlaps ${ZONES[o.type].short}: ${z.sides ? 'a hall joins concourses and security' : 'a pier joins a concourse'}, not ${ZONES[o.type].short.toLowerCase()}` };
     if (o.level !== z.level && o.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
   }
   for (const w of world.ways) if (w.kind === 'taxi' && (inZone(w.a, z) || inZone(w.b, z) || edges.some(([a, b]) => segsIntersect(a, b, w.a, w.b)))) return { ok: false, reason: 'Crosses a taxiway' };
@@ -346,6 +350,7 @@ export function canPlacePier(world: World, z: { x: number; y: number; w: number;
 }
 /** Does a segment pass through a turned zone (2 m inside its outline)? */
 function segInZone(z: Zone, a: Pt, b: Pt): boolean {
+  if (z.sides) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
   const la = toLocal(z, a), lb = toLocal(z, b);
   return rectSegDist(inset(z, 2), la, lb) === 0;
 }
@@ -366,7 +371,7 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
   const box = kind === 'taxi' ? SITE.buildable : { x: 0, y: 0, w: SITE.width, h: SITE.height };
   if (!segOnLand(a, b, box)) return { ok: false, reason: kind === 'taxi' ? 'Taxiways must stay on the airport site' : 'Must stay on land' };
   if (kind === 'taxi') {
-    for (const z of world.zones) if (z.rot ? segInZone(z, a, b) : rectSegDist(inset(z, 2), a, b) === 0) return { ok: false, reason: `Taxiways can't cross the ${ZONES[z.type].short.toLowerCase()}` };
+    for (const z of world.zones) if (shaped(z) ? segInZone(z, a, b) : rectSegDist(inset(z, 2), a, b) === 0) return { ok: false, reason: `Taxiways can't cross the ${ZONES[z.type].short.toLowerCase()}` };
     for (const w of world.ways) if (w.kind !== 'taxi' && waySegs(w).some(([p, q]) => segsIntersect(a, b, p, q))) return { ok: false, reason: `Taxiways can't cross a ${wayName(w.kind).toLowerCase()}` };
     for (const rd of world.rounds ?? []) if (segDist(rd, a, b) < roundOuter(rd) + 10) return { ok: false, reason: "Taxiways can't cross a roundabout" };
     return { ok: true };
@@ -432,7 +437,8 @@ export function derive(source: World): Derived {
   const lease = new Map<number, Units>();
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     let C;
-    if (z.rot) {
+    if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
+    else if (z.rot) {
       // an angled pier is laid out in its own upright frame, then every piece is turned into place
       const zl = { ...z, rot: undefined };
       C = carveConcourse(zl, world, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
@@ -555,7 +561,7 @@ export function derive(source: World): Derived {
   };
   for (let i = 0; i < zs.length; i++) for (let j = i + 1; j < zs.length; j++) {
     const A = zs[i], B = zs[j];
-    if (A.rot || B.rot) {
+    if (shaped(A) || shaped(B)) {
       // v0.17: shapes merge. Two turned buildings on a level that overlap are one building, joined where they
       // overlap; a turned one over a hall on the other level gets a core there.
       if (!TERMINAL_TYPES.has(A.type) || !TERMINAL_TYPES.has(B.type)) continue;
@@ -573,7 +579,7 @@ export function derive(source: World): Derived {
         for (const p of spread(sh, 2)) vertical(p, [...new Set([up.id, ...zonesAt(p, 1)])], [...new Set([dn.id, ...zonesAt(p, 0)])], true);
     }
   }
-  for (const u of zs.filter(z => z.level === 1 && !z.rot)) for (const l of zs.filter(z => z.level === 0 && !z.rot && (ZONES[z.type].terminal || z.type === 'curb'))) {
+  for (const u of zs.filter(z => z.level === 1 && !shaped(z))) for (const l of zs.filter(z => z.level === 0 && !shaped(z) && (ZONES[z.type].terminal || z.type === 'curb'))) {
     const ir = intersectRect(u, l);
     if (!ir || ir.w < 16 || ir.h < 16) continue;
     const c = center(ir);
@@ -597,8 +603,8 @@ export function derive(source: World): Derived {
     const par = new Map<number, number>(mods.map(z => [z.id, z.id]));
     const root = (i: number): number => { const q = par.get(i)!; return q === i ? i : (par.set(i, root(q)), par.get(i)!); };
     for (let i = 0; i < mods.length; i++) for (let j = i + 1; j < mods.length; j++) {
-      const A = mods[i], B = mods[j]; const ir = A.level !== B.level && !A.rot && !B.rot ? intersectRect(A, B) : null;
-      if (A.rot || B.rot ? zonesOverlap(A, B, A.level === B.level ? 24 : 256) : (A.level === B.level && shared(A, B)) || (ir && ir.w >= 16 && ir.h >= 16)) par.set(root(A.id), root(B.id));
+      const A = mods[i], B = mods[j]; const ir = A.level !== B.level && !shaped(A) && !shaped(B) ? intersectRect(A, B) : null;
+      if (shaped(A) || shaped(B) ? zonesOverlap(A, B, A.level === B.level ? 24 : 256) : (A.level === B.level && shared(A, B)) || (ir && ir.w >= 16 && ir.h >= 16)) par.set(root(A.id), root(B.id));
     }
     const linked = new Set<number>(mods.filter(z => z.type === 'security').map(z => root(z.id)));
     const concs = mods.filter(z => z.type === 'concourse');
@@ -611,7 +617,7 @@ export function derive(source: World): Derived {
       }
       if (!best) break;
       const inset = (z: Zone) => Math.min(12, z.w / 2 - 1, z.h / 2 - 1);
-      const station = (z: Zone, to: Pt) => toWorld(z, clampToRect(toLocal(z, to), z, inset(z)));
+      const station = (z: Zone, to: Pt) => (z.sides ? centreOf(z) : toWorld(z, clampToRect(toLocal(z, to), z, inset(z))));
       const pa = station(best.s, centreOf(best.m)), pb = station(best.m, pa);
       const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.m.level, zones: [best.m.id] }) - 1;
       pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
@@ -806,7 +812,7 @@ export function derive(source: World): Derived {
     if (!GA.slots.some(sl => sl.zone.id === z.id)) {
       const why = gs.find(g => g.note)?.note;
       issues.push({ level: 'info', zoneId: z.id, text: `Concourse ${gateLetter.get(z.id)} has no gates, so it is all shops and seating${why ? ` (${why})` : ''}. For gates, draw a taxiway along a side on the dashed guide, ${C.length + 22} m out (up to ${Math.max(150, 2 * (C.length + 22) + 40)} m).` });
-    } else for (const g of gs) if (g.served && g.note) issues.push({ level: 'info', zoneId: z.id, text: `Concourse ${gateLetter.get(z.id)}, ${SIDE_NAMES[g.side].toLowerCase()} side: ${g.note}.` });
+    } else for (const g of gs) if (g.served && g.note) issues.push({ level: 'info', zoneId: z.id, text: `Concourse ${gateLetter.get(z.id)}, ${sideName(g.side).toLowerCase()} side: ${g.note}.` });
   }
   for (const ap of aprons) {
     const gs = gates.filter(g => g.apron === ap);
