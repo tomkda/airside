@@ -17,6 +17,7 @@ import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
+import { turn, centreOf } from './shapes';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -247,7 +248,7 @@ export class Renderer3D {
     }
     add3(stripMesh(strips));
     const flats: Box[] = [];
-    for (const ap of d.aprons) flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' });
+    for (const ap of d.aprons) { if (ap.zone.rot) add3(flatShape(ap.pts, 0.09, '#CDC4B0')); else flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' }); }
     for (const z of d.zones) if (z.type === 'parking') flats.push({ ...z, z0: 0, z1: 0.11, c: '#A7A39A' });
     for (const z of d.zones) if (z.type === 'curb' && z.level === 0) flats.push({ ...z, z0: 0, z1: 0.16, c: '#8E8A83' });
     add3(instancedBoxes(flats, false));
@@ -422,7 +423,13 @@ export class Renderer3D {
       if (!ZONES[z.type].terminal || rising.has(z.id)) continue;
       const L = LEVELS[z.level];
       const sel = this.ren.selected?.kind === 'zone' && this.ren.selected.id === z.id;
-      if (!openSite(z)) { massing(z, L.z0, L.z1, sel, solid, glazing, roofs); continue; }
+      if (!openSite(z) || z.rot) {
+        const n0 = [solid.length, glazing.length, roofs.length];
+        massing(z, L.z0, L.z1, sel, solid, glazing, roofs);
+        // a turned building: every piece of its massing turns about the building's centre
+        if (z.rot) { const pv = centreOf(z); [solid, glazing, roofs].forEach((arr, k) => { for (let i = n0[k]; i < arr.length; i++) { arr[i].rot = z.rot; arr[i].px = pv.x; arr[i].py = pv.y; } }); }
+        continue;
+      }
       const c = sel ? '#8FB0C6' : MOD_COL[z.type];
       if (z.level > this.ren.level) { see.push({ ...z, z0: L.z0, z1: L.z1 - 0.4, c }); continue; }
       solid.push({ ...z, z0: L.z0, z1: L.z0 + 0.5, c });
@@ -651,7 +658,8 @@ export class Renderer3D {
 }
 
 // ------------------------------------------------------------ geometry helpers
-interface Box extends Rect { z0: number; z1: number; c: string }
+/** `rot` turns the box about (px, py), or about its own centre (v0.17: turned zones and their parts). */
+interface Box extends Rect { z0: number; z1: number; c: string; rot?: number; px?: number; py?: number }
 interface Strip { a: Pt; b: Pt; w: number; z: number; c: string }
 
 const hashN = (a: number, b: number) => { const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453; return h - Math.floor(h); };
@@ -707,7 +715,9 @@ function instancedBoxes(bs: Box[], shadows: boolean, material?: THREE.Material, 
   const m = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, Math.max(1, bs.length));
   const o = new THREE.Object3D(); const c = new THREE.Color();
   bs.forEach((b, i) => {
-    o.position.set(b.x + b.w / 2, (b.z0 + b.z1) / 2, b.y + b.h / 2); o.scale.set(Math.max(0.2, b.w), Math.max(0.05, b.z1 - b.z0), Math.max(0.2, b.h)); o.updateMatrix();
+    let cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    if (b.rot) { const q = turn({ x: cx, y: cy }, { x: b.px ?? cx, y: b.py ?? cy }, b.rot); cx = q.x; cy = q.y; }
+    o.position.set(cx, (b.z0 + b.z1) / 2, cy); o.rotation.set(0, b.rot ? -b.rot : 0, 0); o.scale.set(Math.max(0.2, b.w), Math.max(0.05, b.z1 - b.z0), Math.max(0.2, b.h)); o.updateMatrix();
     m.setMatrixAt(i, o.matrix); m.setColorAt(i, c.set(b.c));
   });
   m.count = bs.length; m.castShadow = shadows; m.receiveShadow = true;

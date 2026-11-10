@@ -297,6 +297,9 @@ export const FRONTAGE = {
   snap: 40,                // m: the road tool snaps to a frontage guide within this distance
   reach: 360,              // m: v0.12, a hall lays its own forecourt to any road this close to its landside face
 };
+// v0.17: piers at any angle. Widths are the usual single- and double-loaded pier widths (ACRP Report 25, vol. 2:
+// about 25–30 m for gates one side with a corridor, 40–60 m for gates both sides with shops between).
+export const PIER = { minLen: 60, widths: [40, 50, 60], snapDeg: 5 };
 // v0.16: the airside people mover that links a remote concourse to its terminal. ACRP Report 37 (Guidebook for
 // Planning and Implementing Automated People Mover Systems at Airports) gives airside shuttles cruising at
 // 40–55 km/h on headways of about two minutes; satellites sit 300–1,200 m from the terminal at Tampa, Orlando,

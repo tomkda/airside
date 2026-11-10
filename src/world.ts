@@ -5,11 +5,12 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
+import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, Budget } from './bands';
@@ -25,6 +26,8 @@ export interface Zone {
   site?: number;
   /** Generated, never saved: a curb grown by a road running along this terminal face (frontage.ts). */
   auto?: AutoTag;
+  /** v0.17: turned about its centre by this many radians (an angled pier). x, y, w, h are its own upright frame. */
+  rot?: number;
   /** v0.12: the id of the module stacked with this one (check-in over baggage claim): they move and go together. */
   pair?: number;
 }
@@ -58,6 +61,7 @@ export function migrateWorld(w: World): World {
     if (f && !(Array.isArray(f.w) && Array.isArray(f.n) && Array.isArray(f.s) && f.w.length === f.n.length && f.n.length === f.s.length)) delete z.flow;
   }
   // v0.12: a hall's two halves point at each other; drop a pointer whose other half is gone.
+  for (const z of w.zones) if (z.rot !== undefined && !(z.type === 'concourse' && isFinite(z.rot))) delete z.rot;   // v0.17: only concourses turn
   for (const z of w.zones) if (z.pair !== undefined && !w.zones.some(q => q.id === z.pair && q.pair === z.id)) delete z.pair;
   // v0.11: roundabouts, and roads that may curve or run one way. Drop anything malformed.
   w.rounds = (Array.isArray(w.rounds) ? w.rounds : []).filter(r => r && isFinite(r.x) && isFinite(r.y) && (r.size === 0 || r.size === 1));
@@ -119,7 +123,8 @@ export interface RunwayInfo {
   rw: Runway; length: number; dir: Pt; normal: Pt; heading: number; labels: [string, string];
   cls: Cls | -1; width: number; nodes: { n: number; s: number }[]; nodeA: number; nodeB: number;
 }
-export interface Apron { zone: Zone; rect: Rect; outward: Pt; laneA: Pt; laneB: Pt; mouth: Pt; cls: Cls; letter: string }
+/** `rect` is the apron's upright bounding box; `pts` its true outline (they differ beside a turned concourse). */
+export interface Apron { zone: Zone; rect: Rect; pts: Pt[]; outward: Pt; laneA: Pt; laneB: Pt; mouth: Pt; cls: Cls; letter: string }
 export interface Gate {
   id: string; key: string; num: string; zone: Zone; apron: Apron; cls: Cls; door: Pt; stand: Pt; front: Pt; ang: number;
   frontNode: number; rwys: Set<number>[];          // runways that reach this gate, per aircraft class
@@ -279,7 +284,7 @@ export function canPlaceZone(world: World, r: Rect, type: ZoneType, level: Level
   if (!inBuildable(r)) return { ok: false, reason: 'Outside the site boundary or in the lake' };
   for (const rw of world.runways) if (rectSegDist(r, rw.a, rw.b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip (150 m)' };
   for (const z of world.zones) {
-    if (z.id === ignoreId || !rectsOverlap(r, z)) continue;
+    if (z.id === ignoreId || !(z.rot ? zonesOverlap(r, z) : rectsOverlap(r, z))) continue;
     if (z.level === level) return { ok: false, reason: `Overlaps ${ZONES[z.type].short} on this level` };
     if (level === 1 && z.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
   }
@@ -297,7 +302,7 @@ export function canPlaceRunway(world: World, a: Pt, b: Pt, ignoreId = -1): Place
   const L = dist(a, b);
   if (L < TUNE.minRunway) return { ok: false, reason: `Runway too short (min ${TUNE.minRunway.toLocaleString()} m)` };
   for (const p of [a, b]) if (!inRect(p, SITE.buildable, -40) || pointInPoly(p, SITE.lake)) return { ok: false, reason: 'Runway ends must be on the site, out of the lake' };
-  for (const z of world.zones) if (rectSegDist(z, a, b) < TUNE.runwayClear) return { ok: false, reason: `Too close to ${ZONES[z.type].short} (150 m strip)` };
+  for (const z of world.zones) if (rectSegDist(zoneBox(z), a, b) < TUNE.runwayClear) return { ok: false, reason: `Too close to ${ZONES[z.type].short} (150 m strip)` };
   const half = runwayWidth(L) / 2 + 60;
   for (const w of world.ways) if (w.kind !== 'taxi' && waySegs(w).some(([p, q]) => segsIntersect(a, b, p, q) || segDist(p, a, b) < half || segDist(q, a, b) < half))
     return { ok: false, reason: `A ${wayName(w.kind).toLowerCase()} is in the runway strip` };
@@ -320,6 +325,30 @@ export function canPlaceWay(world: World, kind: WayKind, a: Pt, b: Pt, aprons: A
   for (const [p, q] of waySegs({ a, b, c })) { const r = placeSeg(world, kind, p, q, aprons); if (!r.ok) return r; }
   return { ok: true };
 }
+/**
+ * v0.17: can a pier (a concourse at any angle) go here? It may overlap other concourses: that is how it joins a
+ * building. It may not overlap anything else on its level, cross a taxiway, or reach into a runway strip.
+ */
+export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; level: Level }, ignoreId = -1): PlaceCheck {
+  if (Math.max(z.w, z.h) < PIER.minLen) return { ok: false, reason: `Too short: a pier needs ${PIER.minLen} m at least` };
+  const pts = zonePts(z); const edges = pts.map((p, i) => [p, pts[(i + 1) % pts.length]] as const);
+  for (const p of pts) if (!inRect(p, SITE.buildable) || pointInPoly(p, SITE.lake)) return { ok: false, reason: 'Outside the site boundary or in the lake' };
+  for (const rw of world.runways) for (const [a, b] of edges)
+    if (segsIntersect(a, b, rw.a, rw.b) || segDist(a, rw.a, rw.b) < TUNE.runwayClear || segDist(rw.a, a, b) < TUNE.runwayClear || segDist(rw.b, a, b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip (150 m)' };
+  for (const o of world.zones) {
+    if (o.id === ignoreId || !zonesOverlap(z, o, 4)) continue;
+    if (o.level === z.level && o.type !== 'concourse') return { ok: false, reason: `Overlaps ${ZONES[o.type].short}: a pier joins a concourse, not ${ZONES[o.type].short.toLowerCase()}` };
+    if (o.level !== z.level && o.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
+  }
+  for (const w of world.ways) if (w.kind === 'taxi' && (inZone(w.a, z) || inZone(w.b, z) || edges.some(([a, b]) => segsIntersect(a, b, w.a, w.b)))) return { ok: false, reason: 'Crosses a taxiway' };
+  for (const rd of world.rounds ?? []) if (inZone(rd, z, roundOuter(rd)) && z.level === 0) return { ok: false, reason: 'Overlaps a roundabout' };
+  return { ok: true };
+}
+/** Does a segment pass through a turned zone (2 m inside its outline)? */
+function segInZone(z: Zone, a: Pt, b: Pt): boolean {
+  const la = toLocal(z, a), lb = toLocal(z, b);
+  return rectSegDist(inset(z, 2), la, lb) === 0;
+}
 /** A roundabout needs clear ground: no building, apron, taxiway or runway strip under it. */
 export function canPlaceRound(world: World, p: Pt, size: number, aprons: Apron[], ignoreId = -1): PlaceCheck {
   const R = roundOuter({ id: 0, x: p.x, y: p.y, size });
@@ -337,7 +366,7 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
   const box = kind === 'taxi' ? SITE.buildable : { x: 0, y: 0, w: SITE.width, h: SITE.height };
   if (!segOnLand(a, b, box)) return { ok: false, reason: kind === 'taxi' ? 'Taxiways must stay on the airport site' : 'Must stay on land' };
   if (kind === 'taxi') {
-    for (const z of world.zones) if (rectSegDist(inset(z, 2), a, b) === 0) return { ok: false, reason: `Taxiways can't cross the ${ZONES[z.type].short.toLowerCase()}` };
+    for (const z of world.zones) if (z.rot ? segInZone(z, a, b) : rectSegDist(inset(z, 2), a, b) === 0) return { ok: false, reason: `Taxiways can't cross the ${ZONES[z.type].short.toLowerCase()}` };
     for (const w of world.ways) if (w.kind !== 'taxi' && waySegs(w).some(([p, q]) => segsIntersect(a, b, p, q))) return { ok: false, reason: `Taxiways can't cross a ${wayName(w.kind).toLowerCase()}` };
     for (const rd of world.rounds ?? []) if (segDist(rd, a, b) < roundOuter(rd) + 10) return { ok: false, reason: "Taxiways can't cross a roundabout" };
     return { ok: true };
@@ -402,7 +431,14 @@ export function derive(source: World): Derived {
   const bandItems = new Map<number, LItem[]>();
   const lease = new Map<number, Units>();
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
-    const C = carveConcourse(z, world, gates);
+    let C;
+    if (z.rot) {
+      // an angled pier is laid out in its own upright frame, then every piece is turned into place
+      const zl = { ...z, rot: undefined };
+      C = carveConcourse(zl, world, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
+      for (const sh of C.shops) { sh.zone = z; sh.pts = sh.pts.map(p => toWorld(z, p)); sh.door = toWorld(z, sh.door); }
+      for (const it of C.items) it.pts = it.pts.map(p => toWorld(z, p));
+    } else C = carveConcourse(z, world, gates);
     shops.set(z.id, C.shops); budgets.set(z.id, C.budget); bandItems.set(z.id, C.items);
   }
   // ---- Tenants bid for the lots by footfall, visibility, dwell and position (see commerce.ts); best lots lease first.
@@ -495,7 +531,7 @@ export function derive(source: World): Derived {
   const pedE: [number, number, number][] = [];
   const cores: Core[] = [];
   const vpairs: [number, number][] = [];
-  const zonesAt = (p: Pt, lv: Level, tol = 0.5) => zs.filter(z => z.level === lv && inRect(p, z, tol)).map(z => z.id);
+  const zonesAt = (p: Pt, lv: Level, tol = 0.5) => zs.filter(z => z.level === lv && inZone(p, z, tol)).map(z => z.id);
   const shared = (A: Rect, B: Rect): [Pt, Pt] | null => {
     for (const [ax, bx] of [[A.x + A.w, B.x], [B.x + B.w, A.x]]) if (Math.abs(ax - bx) <= 1) {
       const y0 = Math.max(A.y, B.y), y1 = Math.min(A.y + A.h, B.y + B.h);
@@ -519,6 +555,16 @@ export function derive(source: World): Derived {
   };
   for (let i = 0; i < zs.length; i++) for (let j = i + 1; j < zs.length; j++) {
     const A = zs[i], B = zs[j];
+    if (A.rot || B.rot) {
+      // v0.17: shapes merge. Two turned buildings on a level that overlap are one building, joined where they
+      // overlap; a turned one over a hall on the other level gets a core there.
+      if (!TERMINAL_TYPES.has(A.type) || !TERMINAL_TYPES.has(B.type)) continue;
+      const ov = overlapOf(A, B, A.level === B.level ? 24 : 256); if (!ov) continue;
+      const c = polyCentre(ov);
+      if (A.level === B.level) ped.push({ p: c, level: A.level, zones: [A.id, B.id] });
+      else vertical(c, zonesAt(c, 1), zonesAt(c, 0), false);
+      continue;
+    }
     const sh = shared(A, B); if (!sh) continue;
     if (A.level === B.level) { for (const p of spread(sh, 4)) ped.push({ p, level: A.level, zones: [A.id, B.id] }); }
     else {
@@ -527,7 +573,7 @@ export function derive(source: World): Derived {
         for (const p of spread(sh, 2)) vertical(p, [...new Set([up.id, ...zonesAt(p, 1)])], [...new Set([dn.id, ...zonesAt(p, 0)])], true);
     }
   }
-  for (const u of zs.filter(z => z.level === 1)) for (const l of zs.filter(z => z.level === 0 && (ZONES[z.type].terminal || z.type === 'curb'))) {
+  for (const u of zs.filter(z => z.level === 1 && !z.rot)) for (const l of zs.filter(z => z.level === 0 && !z.rot && (ZONES[z.type].terminal || z.type === 'curb'))) {
     const ir = intersectRect(u, l);
     if (!ir || ir.w < 16 || ir.h < 16) continue;
     const c = center(ir);
@@ -551,12 +597,13 @@ export function derive(source: World): Derived {
     const par = new Map<number, number>(mods.map(z => [z.id, z.id]));
     const root = (i: number): number => { const q = par.get(i)!; return q === i ? i : (par.set(i, root(q)), par.get(i)!); };
     for (let i = 0; i < mods.length; i++) for (let j = i + 1; j < mods.length; j++) {
-      const A = mods[i], B = mods[j]; const ir = A.level !== B.level ? intersectRect(A, B) : null;
-      if ((A.level === B.level && shared(A, B)) || (ir && ir.w >= 16 && ir.h >= 16)) par.set(root(A.id), root(B.id));
+      const A = mods[i], B = mods[j]; const ir = A.level !== B.level && !A.rot && !B.rot ? intersectRect(A, B) : null;
+      if (A.rot || B.rot ? zonesOverlap(A, B, A.level === B.level ? 24 : 256) : (A.level === B.level && shared(A, B)) || (ir && ir.w >= 16 && ir.h >= 16)) par.set(root(A.id), root(B.id));
     }
     const linked = new Set<number>(mods.filter(z => z.type === 'security').map(z => root(z.id)));
     const concs = mods.filter(z => z.type === 'concourse');
-    const gap = (A: Rect, B: Rect) => Math.hypot(Math.max(0, A.x - (B.x + B.w), B.x - (A.x + A.w)), Math.max(0, A.y - (B.y + B.h), B.y - (A.y + A.h)));
+    const gap0 = (A: Rect, B: Rect) => Math.hypot(Math.max(0, A.x - (B.x + B.w), B.x - (A.x + A.w)), Math.max(0, A.y - (B.y + B.h), B.y - (A.y + A.h)));
+    const gap = (A: Zone, B: Zone) => gap0(zoneBox(A), zoneBox(B));
     for (let guard = 0; guard < 40; guard++) {
       let best: { s: Zone; m: Zone; d: number } | null = null;
       for (const sz of concs) if (!linked.has(root(sz.id))) for (const m of concs) if (linked.has(root(m.id))) {
@@ -564,7 +611,8 @@ export function derive(source: World): Derived {
       }
       if (!best) break;
       const inset = (z: Zone) => Math.min(12, z.w / 2 - 1, z.h / 2 - 1);
-      const pa = clampToRect(center(best.m), best.s, inset(best.s)), pb = clampToRect(pa, best.m, inset(best.m));
+      const station = (z: Zone, to: Pt) => toWorld(z, clampToRect(toLocal(z, to), z, inset(z)));
+      const pa = station(best.s, centreOf(best.m)), pb = station(best.m, pa);
       const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.m.level, zones: [best.m.id] }) - 1;
       pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
       tKeys.add(tKey(pa)); tKeys.add(tKey(pb));
@@ -584,7 +632,7 @@ export function derive(source: World): Derived {
   const N = ped.length;
   const { D, nxt } = allPairs(N, pedE);
 
-  const zoneAt = (p: Pt, lv: Level) => zs.find(z => z.level === lv && inRect(p, z, 0.5));
+  const zoneAt = (p: Pt, lv: Level) => zs.find(z => z.level === lv && inZone(p, z, 0.5));
   const zoneReach = (a: number, b: number) => {
     if (a === b) return true;
     const A = byZone.get(a) ?? [], B = byZone.get(b) ?? [];
