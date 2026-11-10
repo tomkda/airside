@@ -1,7 +1,7 @@
 // Boot, save/load and the frame loop.
 import { Sim } from './sim';
 import { Renderer } from './render';
-import { UI, money } from './ui';
+import { UI, money, Controls } from './ui';
 import { World, newWorld, migrateWorld } from './world';
 import { sampleWorld } from './sample';
 import type { UnlockId, Offer, Deal } from './config';
@@ -35,7 +35,7 @@ function start(restored: Save | null) {
   ren.resize();
 
   const snapshot = (): Save => ({ world: sim.world, staff: sim.staff, slotPrice: sim.slotPrice, moneyOn: sim.moneyOn, money: sim.money, calDays: sim.calDays, rep: sim.rep, goals: [...sim.goalsDone], unlocked: [...sim.unlocked], bestPax: sim.bestPax, offer: sim.offer, deals: sim.deals });
-  const ctl = {
+  const ctl: Controls = {
     speed: 4, paused: false,
     save() { try { localStorage.setItem(KEY, JSON.stringify(snapshot())); } catch { /* storage unavailable: play on */ } },
     loadSample() { reset(sampleWorld()); ui.toast('Sample airport loaded'); },
@@ -80,7 +80,8 @@ function start(restored: Save | null) {
   let last = performance.now();
   const frame = (now: number) => {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    if (!ctl.paused) {
+    ui.frame();                                // v0.19: a shape being dragged rebuilds the layout once a frame
+    if (!ctl.paused && !ctl.hold) {
       let left = ctl.speed * dt;               // speed = sim minutes per real second
       while (left > 0) { const st = Math.min(0.25, left); sim.step(st); left -= st; }
     }

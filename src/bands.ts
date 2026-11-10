@@ -281,7 +281,8 @@ export function carveHub(z: Zone, world: World, gates: Gate[]): Carved {
   const n = z.sides && z.sides >= 24 ? 24 : Math.max(3, z.sides ?? 4);
   const per = z.sides && z.sides >= 24 ? 1 : Math.max(1, Math.round((2 * R * Math.sin(Math.PI / n)) / 16));   // lots per facet
   const outline = hallPts(z, 0, n);
-  const gateFacet = (g: Gate) => Number(g.key.slice(1));
+  // a key is `f3.1`: facet 3, second stand along it (parseInt stops at the dot; before v0.19 only the first stand counted)
+  const gateFacet = (g: Gate) => parseInt(g.key.slice(1), 10);
   const nGate = z.sides && z.sides >= 24 ? 12 : n;
   const holdOn = new Map<number, number>();   // ring facet -> holdroom depth
   for (const g of mine) {

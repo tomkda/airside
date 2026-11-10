@@ -249,6 +249,7 @@ export class Renderer3D {
     add3(stripMesh(strips));
     const flats: Box[] = [];
     for (const ap of d.aprons) { if (shaped(ap.zone)) add3(flatShape(ap.pts, 0.09, '#CDC4B0')); else flats.push({ ...ap.rect, z0: 0, z1: 0.09, c: '#CDC4B0' }); }
+    for (const p of d.pads) add3(flatShape(p, 0.09, '#CDC4B0'));
     for (const z of d.zones) if (z.type === 'parking') flats.push({ ...z, z0: 0, z1: 0.11, c: '#A7A39A' });
     for (const z of d.zones) if (z.type === 'curb' && z.level === 0) flats.push({ ...z, z0: 0, z1: 0.16, c: '#8E8A83' });
     add3(instancedBoxes(flats, false));

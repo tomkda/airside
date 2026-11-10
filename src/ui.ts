@@ -14,7 +14,9 @@ import {
 import { rectsOverlap, rectSegDist } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
 import { canPlacePier } from './world';
-import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts } from './shapes';
+import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip } from './shapes';
+import { canTurn, derive, Derived } from './world';
+import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
 import { roadPlan } from './roads';
@@ -62,14 +64,19 @@ const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: strin
 ];
 const isWay = (t: Tool): t is WayKind => t === 'taxi' || t === 'road' || t === 'walk';
 
-export interface Controls { speed: number; paused: boolean; save(): void; loadSample(): void; clearSite(): void }
+/** `hold`: the sim stands still while a shape is being dragged (v0.19). */
+export interface Controls { speed: number; paused: boolean; hold?: boolean; save(): void; loadSample(): void; clearSite(): void }
+/** How far a grip can take a shape. */
+const GRIP: GripLimits = { minLen: PIER.minLen, minWide: 30, maxWide: 120, minDia: HALL.minDia, maxDia: HALL.maxDia, snapDeg: PIER.snapDeg };
 
 export class UI {
   tool: Tool = 'select';
   tab: 'inspect' | 'ops' | 'report' = 'ops';
-  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 1, pierW: 50, hub: 32 };
+  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 0, pierW: 50, hub: 32 };
   private drag: null | {
-    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier';
+    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip';
+    /** v0.19: a grip on a built shape, the shape as it was when the drag began, and whether where it is now is allowed */
+    grip?: Grip; z0?: Geom; liveOk?: boolean; reason?: string;
     pier?: { z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; level: Level }; ok: boolean; cost: number; reason?: string };
     way?: Way; handle?: 'a' | 'b' | 'm'; orig3?: { a: Pt; b: Pt; c?: Pt }; bend?: { a: Pt; b: Pt; c?: Pt; ok: boolean; cost: number; reason?: string }; sx: number; sy: number; start: Pt; snapStart?: boolean;
     cam?: Pt; zone?: Zone; off?: Pt; moved?: boolean;
@@ -81,6 +88,10 @@ export class UI {
   private lastPanel = 0;
   private confirmClear = 0;
   private click3d: Pt | null = null;
+  /** v0.19: a live edit in progress: the layout as it was, the shapes as they were, and a zone that exists only while dragging. */
+  private live: null | { d0: Derived; saved: { z: Zone; g: Geom }[]; temp: Zone[]; dirty: boolean; touched: boolean } = null;
+  /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
+  private liveStale = false;
 
   /** v0.12: sound. `nextSound` lets an edit say what it sounded like before `changed()` plays it. */
   snd = new Sound(); nextSound: 'place' | 'demolish' | 'none' = 'place';
@@ -224,7 +235,7 @@ export class UI {
     if (t === 'taxi') html = `<span class="label">Taxiway</span>${seg('taxi', this.opt.taxi, TAXI_CLASSES.map(c => [c.cls, `${c.name}<span class="opt-note"> · ${c.note}</span>`]))}<span class="label">Runway links</span>${seg('auto', this.opt.auto, [[1, 'Auto'], [0, 'Manual']])}`;
     else if (t === 'select' && this.ren.selected?.kind === 'runway') html = `<span class="label">Extending</span>${seg('auto', this.opt.auto, [[1, 'Stretch parallel taxiways'], [0, 'Runway only']])}`;
     else if (t === 'road') html = `<span class="label">Road</span>${seg('lanes', this.opt.lanes, ROAD_LANES.map(c => [c.lanes, c.name]))}<span class="label">Shape</span>${seg('shape', this.opt.shape, [[0, 'Straight'], [1, 'Curve']])}<span class="label">Traffic</span>${seg('oneway', this.opt.oneway, [[0, 'Two-way'], [1, 'One-way']])}`;
-    else if (t === 'site') html = `<span class="label">New terminal</span>${seg('layout', this.opt.layout, [[1, 'Complete terminal<span class="opt-note"> · concourse, security and hall laid out for you</span>'], [0, 'Empty site']])}`;
+    else if (t === 'site') html = `<span class="label">New terminal</span>${seg('layout', this.opt.layout, [[0, 'Empty site<span class="opt-note"> · lay it out yourself</span>'], [1, 'With a starter layout']])}`;
     else if (t === 'round') html = `<span class="label">Roundabout</span>${seg('round', this.opt.round, ROUNDS.map((r, i) => [i, `${r.name}<span class="opt-note"> · ${r.note}</span>`]))}`;
     else if (t === 'hub') html = `<span class="label">Hub shape</span>${seg('hub', this.opt.hub, HALL.shapes.map(q => [q.sides, q.name]))}<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
     else if (t === 'pier') html = `<span class="label">Pier width</span>${seg('pierW', this.opt.pierW, PIER.widths.map(v => [v, `${v} m`]))}<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
@@ -270,7 +281,7 @@ export class UI {
     if (groundOnly && this.ren.level !== 0 && t !== 'runway' && t !== 'taxi') this.setLevel(0);
     this.ren.ghost = null; this.ren.cursor = null;
     this.renderToolOpts();
-    this.ren.showGuides = t === 'taxi' || t === 'concourse' || t === 'satellite' || t === 'pier' || t === 'hub';
+    this.ren.showGuides = t === 'taxi';   // v0.19: stands lay themselves, so the guides are for the taxiway tool alone
     this.ren.showFront = t === 'road' && !this.opt.shape;
     this.ren.setOrbitLeft(t === 'select');
     this.hint(this.toolHint());
@@ -298,14 +309,14 @@ export class UI {
     if (t === 'checkin') return `Drag the hall: check-in on Level 1 with baggage claim under it on Ground, as one building · put it against security · any road within ${FRONTAGE.reach} m of its open face and it lays its own two-level forecourt`;
     if (t === 'hub') return 'Drag a hub out from its centre: a round or polygonal hall with shops round an atrium · overlap a concourse or security and it joins that building · start piers inside it and they join too';
     if (t === 'pier') return 'Drag a pier at any angle, from where it starts to where it ends · start inside a concourse and it becomes part of that building · gates grow on any side with a taxiway running parallel';
-    if (t === 'satellite') return `Drag a satellite concourse anywhere on the airfield · within ${n0(MOVER.reach)} m of a terminal's concourse it links itself by people mover · sides with a parallel taxiway grow gates (dashed guides)`;
+    if (t === 'satellite') return `Drag a satellite concourse anywhere on the airfield · within ${n0(MOVER.reach)} m of a terminal's concourse it links itself by people mover · every open side lays its own stands and taxilane, and links itself to the nearest taxiway`;
     if (t === 'round') return 'Click to place a roundabout · on a junction, a road end or anywhere along a road: every road that reaches it joins the ring · traffic keeps moving where a crossroads would stop it';
     if (t === 'road' && this.opt.shape) return `Drag to draw a curved road · it leaves in line with the road it starts from, or sweeps round a corner on open ground · ${this.opt.oneway ? 'one-way, in the direction you draw · ' : ''}select a road later and drag its middle handle to bend it`;
     if (t === 'road') return `Drag to draw a road (for cars)${this.opt.oneway ? ', one-way in the direction you draw' : ''} · bring one within ${FRONTAGE.reach} m of a hall and the hall lays its own forecourt to it · run it along a terminal face, ${FRONTAGE.minGap}–${FRONTAGE.maxGap} m out, and a curb grows there; where departures sit over arrivals it becomes a two-level road · snaps to the dashed guides`;
     if (t === 'site') return `Drag to allocate a terminal site (at least ${SITES.minW} × ${SITES.minH} m) · then lay out check-in, security, a concourse and bag claim inside it · the site grows to fit`;
     if (t === 'walk') return 'Drag to draw a sidewalk (for people) · links ground-level modules, curbs and lots · can cross roads';
     if (t === 'demolish') return 'Click anything to demolish it (40% refund)';
-    if (t === 'concourse') return `Concourse on ${LEVELS[this.ren.level].short} · drag a rectangle · sides with a parallel taxiway ${standDepth(this.opt.conc)}–${sideReach(this.opt.conc)} m out grow gates (dashed guides); the rest of the width becomes shops, restaurants and lounges`;
+    if (t === 'concourse') return `Concourse on ${LEVELS[this.ren.level].short} · drag a rectangle · every open side lays its own stands and taxilane (a taxiway drawn alongside takes over); the rest of the width becomes shops, restaurants and lounges`;
     const d = ZONES[t];
     return `${d.label} on ${LEVELS[this.ren.level].short} · drag a rectangle · ${d.blurb}`;
   }
@@ -443,7 +454,7 @@ export class UI {
     this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
     if (this.pointers.size === 2) {
       const [a, b] = [...this.pointers.values()];
-      this.drag = null; this.ren.ghost = null;
+      this.endLive(false); this.settle(); this.drag = null; this.ren.ghost = null;
       this.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), zoom: this.ren.cam.zoom, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, cam: { x: this.ren.cam.x, y: this.ren.cam.y } };
       return;
     }
@@ -458,6 +469,14 @@ export class UI {
       const w = this.world.ways.find(q => q.id === this.ren.selected!.id);
       const h = w && this.wayHandleAt(w, e.offsetX, e.offsetY);
       if (w && h) { this.drag = { mode: 'bend', ...base, way: w, handle: h, orig3: { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined } }; return; }
+    }
+    if (t === 'select' && this.ren.selected?.kind === 'zone') {
+      const z = this.world.zones.find(q => q.id === this.ren.selected!.id);
+      const grip = z && this.gripAt(z, e.offsetX, e.offsetY);
+      if (z && grip) {
+        this.beginLive([z, ...(this.twin(z) ? [this.twin(z)!] : [])]);
+        this.drag = { mode: 'grip', ...base, zone: z, grip, z0: geomOf(z), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return;
+      }
     }
     if (t === 'satellite') { this.drag = { mode: 'zone', ...base, start: this.magnet(p, 1) }; return; }
     if (t === 'pier' || t === 'hub') { this.drag = { mode: 'pier', ...base, start: { x: snap(p.x, 5), y: snap(p.y, 5) } }; return; }
@@ -512,6 +531,27 @@ export class UI {
         const w = this.world.ways.find(q => q.id === this.ren.selected!.id);
         if (w && this.wayHandleAt(w, e.offsetX, e.offsetY)) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; }
       }
+      if (this.tool === 'select' && this.ren.selected?.kind === 'zone') {
+        const z = this.world.zones.find(q => q.id === this.ren.selected!.id);
+        const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null;
+        this.ren.gripHot = grip;
+        if (z && grip) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; this.hint(this.gripHint(z, grip)); }
+      } else this.ren.gripHot = null;
+      return;
+    }
+    if (dr.mode === 'grip' && dr.zone && dr.z0 && dr.grip) {
+      // v0.19: reshape what is built. The shape itself changes as you drag, and its gates, aprons, lots and roads with it.
+      const z = dr.zone; const z0 = dr.z0; const swing = dr.grip === 'a' || dr.grip === 'b' || dr.grip === 'r';
+      const q = swing || z0.rot ? p : this.magnet(p, z.level, z.id);
+      const g = regrip(z0, dr.grip, q, canTurn(z), GRIP);
+      const chk = this.placeGeom(z, g); const cost = this.geomCost(z, g) - this.geomCost(z, z0);
+      const ok = chk.ok && this.sim.canAfford(Math.max(0, cost));
+      dr.liveOk = ok; dr.reason = chk.ok ? `Not enough money: ${money(cost)}` : chk.reason;
+      if (ok) { this.liveSet(z, g); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: g, ok: false };
+      const u = this.sim.d.units.get(z.id); const deg = Math.round(((g.rot ?? 0) * 180) / Math.PI);
+      const size = g.sides ? `${n0(g.w)} m across` : `${n0(g.w)} × ${n0(g.h)} m${g.rot && Math.abs(g.rot) > 1e-3 ? ` at ${deg}°` : ''}`;
+      const count = z.type === 'concourse' ? ` · ${u?.count ?? 0} gates` : u ? ` · ${u.max} ${ZONES[z.type].unit}` : '';
+      this.hint(ok ? `${size}${count}${cost > 0 ? ` · ${money(cost)}` : cost < 0 ? ` · ${money(-cost * 0.4)} back` : ''} · release to keep, Esc to put it back` : dr.reason!, !ok);
       return;
     }
     if (dr.mode === 'bend' && dr.way && dr.orig3) {
@@ -527,19 +567,22 @@ export class UI {
       return;
     }
     if (dr.mode === 'pier') {
+      this.liftDraft();
       // v0.17: a pier is drawn as a line, at any angle. Start it inside a concourse and it becomes part of that building.
       const isHub = this.tool === 'hub';
       const z = isHub ? this.hubFrom(dr.start, p) : this.pierFrom(dr.start, p); const chk = z ? canPlacePier(this.world, z) : { ok: false, reason: `Drag the pier's length: ${PIER.minLen} m at least` };
       const cost = z ? (isHub ? polyArea(zonePts(z)) : z.w * z.h) * ZONES.concourse.costPerM2 : 0; const ok = chk.ok && this.sim.canAfford(cost);
       dr.pier = z ? { z, ok, cost, reason: chk.reason } : undefined;
       this.ren.ghost = z ? { kind: 'zone', rect: z, ok } : null;
+      // v0.19: it stands there as you draw it, with its stands and taxilanes, before you let go
+      this.liveDraft(z && ok ? [{ id: this.world.nextId, type: 'concourse', level: 1, x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, tier: 0, cls: this.opt.conc }] : []);
       if (z) {
         const joins = this.world.zones.filter(o => o.type === 'concourse' && zonesOverlap(z, o, 24));
         const deg = Math.round(((z.rot ?? 0) * 180) / Math.PI);
         const near = joins.length ? null : this.nearestConcourse(zoneBox(z));
         const joinsSec = isHub && this.world.zones.some(o => o.type === 'security' && o.level === 1 && zonesOverlap(z, o, 24));
         if (isHub) this.hint(chk.ok ? (ok ? `${HALL.shapes.find(q => q.sides === z.sides)?.name ?? 'Polygon'} hub · ${n0(z.w)} m across · ${joins.length || joinsSec ? `joins ${[joinsSec ? 'security' : '', ...joins.map(o => `Concourse ${this.sim.d.gateLetter.get(o.id)}`)].filter(Boolean).join(' and ')}` : near && near.d <= MOVER.reach ? `stands apart: people mover to ${near.name}, ${n0(near.d)} m` : 'stands apart'} · draw piers out of it and they join · ${money(cost)}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
-        else this.hint(chk.ok ? (ok ? `Pier · ${n0(z.w)} × ${n0(z.h)} m at ${deg}° · ${joins.length ? `joins Concourse ${joins.map(o => this.sim.d.gateLetter.get(o.id)).join(' and ')}` : near && near.d <= MOVER.reach ? `stands apart: people mover to ${near.name}, ${n0(near.d)} m` : 'stands apart, out of reach of a terminal'} · gates grow where a taxiway runs along a side · ${money(cost)}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
+        else this.hint(chk.ok ? (ok ? `Pier · ${n0(z.w)} × ${n0(z.h)} m at ${deg}° · ${joins.length ? `joins Concourse ${joins.map(o => this.sim.d.gateLetter.get(o.id)).join(' and ')}` : near && near.d <= MOVER.reach ? `stands apart: people mover to ${near.name}, ${n0(near.d)} m` : 'stands apart, out of reach of a terminal'} · stands lay themselves along its open sides · ${money(cost)}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
       } else this.hint(`Drag the pier's length: ${PIER.minLen} m at least`);
       return;
     }
@@ -618,6 +661,7 @@ export class UI {
       return;
     }
     if (dr.mode === 'zone') {
+      this.liftDraft();
       const sat = this.tool === 'satellite';   // v0.16: a concourse out on the airfield, linked by people mover
       const t = (sat ? 'concourse' : this.tool) as ZoneType;
       const hall = t === 'checkin';   // v0.12: one hall, check-in on Level 1 over baggage claim on Ground
@@ -629,25 +673,116 @@ export class UI {
       const near = sat ? this.nearestConcourse(r) : null;
       const ok = chk.ok && this.sim.canAfford(cost);
       this.ren.ghost = { kind: 'zone', rect: r, ok };
+      this.liveDraft(ok ? this.draftZones(t, r, sat) : []);
       this.hint(chk.ok ? (ok ? `${hall ? 'Check-in over baggage claim' : ZONES[t].label} · ${n0(r.w)} × ${n0(r.h)} m · ${this.estimateUnits(t, r)}${hall ? ` · ${this.estimateUnits('claim', r)}` : ''}${sat ? (near && near.d < 1.5 ? ' · touching a concourse: it joins that building' : near && near.d <= MOVER.reach ? ` · people mover to ${near.name}: ${n0(near.d)} m, about ${(near.d / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} min` : ` · no concourse within ${n0(MOVER.reach)} m: it will stand alone until one is`) : ''} · ${money(cost)}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
       return;
     }
     if (dr.mode === 'move' && dr.zone) {
       const z = dr.zone;
       if (!dr.moved && Math.hypot(e.offsetX - dr.sx, e.offsetY - dr.sy) < 5) return;
-      dr.moved = true;
+      // v0.19: the building itself moves under the cursor, and everything that depends on it follows
+      if (!dr.moved) { dr.moved = true; dr.z0 = geomOf(z); const tw = this.twin(z); this.beginLive(tw ? [z, tw] : [z]); }
       if (shaped(z)) {   // a pier or hub slides freely and keeps its angle
         const r = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5), w: z.w, h: z.h, rot: z.rot, sides: z.sides };
         const chk = canPlacePier(this.world, { ...r, level: z.level }, z.id);
-        this.ren.ghost = { kind: 'zone', rect: r, ok: chk.ok };
-        this.hint(chk.ok ? `Move the ${z.sides ? 'hub' : 'pier'} · release to place (free)` : chk.reason!, !chk.ok);
+        dr.liveOk = chk.ok; dr.reason = chk.reason;
+        if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
+        this.hint(chk.ok ? `Move the ${z.sides ? 'hub' : 'pier'} · release to place (free), Esc to put it back` : chk.reason!, !chk.ok);
         return;
       }
       const r = this.magnetMove({ x: p.x - dr.off!.x, y: p.y - dr.off!.y, w: z.w, h: z.h }, z.level, z.id);
       const chk = this.placeHall(r, z.type, z.level, z.id, z);
-      this.ren.ghost = { kind: 'zone', rect: r, ok: chk.ok };
-      this.hint(chk.ok ? `Move ${ZONES[z.type].short} · release to place (free) · reconnect paths afterwards` : chk.reason!, !chk.ok);
+      dr.liveOk = chk.ok; dr.reason = chk.reason;
+      if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
+      this.hint(chk.ok ? `Move ${ZONES[z.type].short} · release to place (free), Esc to put it back` : chk.reason!, !chk.ok);
     }
+  }
+
+  // ------------------------------------------------------------ live edits (v0.19)
+  //
+  //   While a shape is dragged, the world itself is changed and everything derived from it is rebuilt once a frame,
+  //   so gates, aprons, taxilanes, shop lots, forecourts and people movers follow the cursor. The sim stands still
+  //   meanwhile. Letting go either keeps the change (one undo step, through `changed()`) or puts everything back.
+  //   Plan view only: the 3D model takes too long to rebuild every frame, so there it stays an outline.
+  beginLive(zs: Zone[]) {
+    if (this.live || this.ren.mode3d) return;
+    this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false };
+    this.ctl.hold = true; holdScenery(this.world, this.sim.d);
+  }
+  /** Give a zone (and the baggage claim under a hall) a new shape for now. */
+  liveSet(z: Zone, g: Geom) {
+    if (!this.live) return;
+    const tw = this.twin(z); if (tw) { tw.x = g.x; tw.y = g.y; tw.w = g.w; tw.h = g.h; }
+    setGeom(z, g); this.live.dirty = true;
+  }
+  /** Take the draft out of the world for a moment, so the next placement check does not find it in its own way. */
+  liftDraft() { const lv = this.live; if (lv?.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z)); }
+  /** Zones that exist only while the mouse is down: what a drawing tool is about to build. Call `liftDraft` first. */
+  liveDraft(zs: Zone[]) {
+    if (this.ren.mode3d) return;
+    if (!this.live) { if (!zs.length) return; this.beginLive([]); }
+    const lv = this.live!;
+    if (!zs.length && !lv.temp.length) return;
+    this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
+    lv.temp = zs; this.world.zones.push(...zs); lv.dirty = true;
+  }
+  /** Once a frame (main.ts): rebuild the layout if a live edit moved something. */
+  frame() {
+    const lv = this.live; if (!lv?.dirty) return;
+    lv.dirty = false; lv.touched = true;
+    try { this.sim.d = derive(this.world); } catch { /* a shape the layout cannot take: keep showing the last one that worked */ }
+  }
+  /** End a live edit. `keep` leaves the shapes as they are (the caller then calls `changed()`); otherwise all is put back. */
+  endLive(keep: boolean) {
+    const lv = this.live; if (!lv) return;
+    this.live = null; this.ctl.hold = false; holdScenery(null);
+    if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
+    if (!keep) for (const s of lv.saved) setGeom(s.z, s.g);
+    this.sim.d = lv.d0;
+    if (lv.touched) this.liveStale = true;
+  }
+  /** After a live edit that was not kept through `changed()`: lay the sim out again, so nothing it holds (routes,
+   *  car lanes, queues) refers to a layout that was only ever shown. */
+  settle() { if (this.liveStale && !this.live) { this.liveStale = false; this.sim.relayout(); } }
+  /** What a zone tool would build from this rectangle, for showing while it is drawn. Mirrors `buildZone`. */
+  draftZones(t: ZoneType, r: Rect, sat: boolean): Zone[] {
+    const hall = t === 'checkin'; const id = this.world.nextId;
+    const st = TERMINAL_TOOLS.has(t) && !sat ? this.world.sites?.find(q => q.id === this.ren.focus) : undefined;
+    const z: Zone = { id, type: t, level: ZONES[t].groundOnly ? 0 : hall || sat ? 1 : this.ren.level, ...r, tier: 0, site: st?.id };
+    if (t === 'concourse') z.cls = this.opt.conc;
+    if (!hall) return [z];
+    z.units = Math.max(6, Math.round(area(r) / 500)); z.pair = id + 1;
+    return [z, { id: id + 1, type: 'claim', level: 0, ...r, tier: 0, pair: id, site: st?.id }];
+  }
+  /** Which grip of a selected shape is under the pointer. */
+  gripAt(z: Zone, sx: number, sy: number): Grip | null {
+    if (z.auto || this.ren.mode3d) return null;
+    const top = this.ren.tilt > 0.02 ? LEVELS[z.level].z1 : 0;
+    for (const g of gripsOf(z, canTurn(z))) { const [x, y] = this.ren.P(g.p.x, g.p.y, top); if (Math.hypot(x - sx, y - sy) < 12) return g.grip; }
+    return null;
+  }
+  gripHint(z: Zone, grip: Grip) {
+    if (grip === 'r') return z.sides! >= 24 ? 'Drag to make the hub wider or narrower' : 'Drag a corner to resize and turn the hub';
+    if (grip === 'a' || grip === 'b') return 'Drag this end to stretch and swing the pier · the other end stays where it is';
+    return canTurn(z) ? 'Drag to make it wider or narrower' : `Drag this edge to resize the ${ZONES[z.type].short.toLowerCase()} · the opposite edge stays where it is`;
+  }
+  /** Can a built zone take this shape? */
+  placeGeom(z: Zone, g: Geom) {
+    if (g.sides || g.rot) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, level: z.level }, z.id);
+    const r = { x: g.x, y: g.y, w: g.w, h: g.h };
+    const chk = this.placeModule(r, z.type, z.level, z.id); const tw = this.twin(z);
+    return chk.ok && tw ? this.placeModule(r, tw.type, tw.level, tw.id) : chk;
+  }
+  geomCost(z: Zone, g: Geom) {
+    const tw = this.twin(z);
+    return (g.sides ? polyArea(zonePts(g)) : g.w * g.h) * (ZONES[z.type].costPerM2 + (tw ? ZONES[tw.type].costPerM2 : 0));
+  }
+  /** Stop whatever is being dragged and put it back (Esc). */
+  cancelDrag() {
+    if (!this.drag) return false;
+    this.endLive(false); this.settle(); this.drag = null; this.ren.ghost = null; this.ren.canvas.style.cursor = 'default';
+    this.hint(this.toolHint());
+    return true;
   }
 
   up(e: PointerEvent) {
@@ -661,6 +796,34 @@ export class UI {
     const dr = this.drag; this.drag = null;
     if (!dr) return;
     const g = this.ren.ghost; this.ren.ghost = null;
+    if (dr.mode === 'grip' && dr.zone && dr.z0) {
+      const z = dr.zone; const now = geomOf(z);
+      const moved = JSON.stringify(now) !== JSON.stringify(dr.z0);
+      const cost = this.geomCost(z, now) - this.geomCost(z, dr.z0);
+      this.endLive(moved); this.ren.canvas.style.cursor = 'default';
+      if (moved) {
+        if (cost > 0) this.sim.spend(cost); else if (cost < 0 && this.sim.moneyOn) this.sim.money += -cost * 0.4;
+        const st = siteOf(this.world, z); if (st && isTerminalModule(z) && !shaped(z)) { z.site = st.id; fitSite(this.world, st); }
+        this.changed(); this.ren.selected = { kind: 'zone', id: z.id }; this.refresh(true);
+        if (cost) this.ren.float(cost > 0 ? `− ${money(cost)}` : `+ ${money(-cost * 0.4)}`, centreOf(z), cost > 0 ? PAL_BAD : '#3F7A4E', LEVELS[z.level].z1);
+      }
+      if (!dr.liveOk && dr.reason) this.toast(`${dr.reason}${moved ? ' · kept the last shape that fits' : ''}`, 'warn');
+      this.settle(); this.hint(this.toolHint());
+      return;
+    }
+    if (dr.mode === 'move' && dr.zone && dr.moved && dr.z0) {
+      const z = dr.zone; const moved = z.x !== dr.z0.x || z.y !== dr.z0.y;
+      this.endLive(moved);
+      if (moved) {
+        const st = siteOf(this.world, z); if (st && isTerminalModule(z) && !shaped(z)) { z.site = st.id; fitSite(this.world, st); }
+        this.changed();
+      }
+      if (!dr.liveOk && dr.reason) this.toast(`Cannot move there: ${dr.reason}${moved ? ' · it stays at the last place that fits' : ''}`, 'warn');
+      this.settle(); this.hint(this.toolHint());
+      return;
+    }
+    // a drawing tool's draft goes; the real thing is built below
+    this.endLive(false);
     if (dr.mode === 'runway' && g?.a && g.b) {
       if (g.ok) this.buildRunway(g.a, g.b);
       else if (dist(g.a, g.b) > 50) this.toast(canPlaceRunway(this.world, g.a, g.b).reason ?? 'Not enough money', 'bad');
@@ -697,17 +860,8 @@ export class UI {
     } else if (dr.mode === 'site' && g?.rect) {
       if (g.ok) this.buildSite(g.rect);
       else if (g.rect.w > 5 || g.rect.h > 5) { const c0 = this.canPlaceSite(g.rect); const pl = c0.ok && this.opt.layout ? this.sitePlan(g.rect) : null; this.toast(c0.reason ?? (pl && !pl.ok ? pl.reason : null) ?? 'Not enough money', 'bad'); }
-    } else if (dr.mode === 'move' && dr.zone && dr.moved && g?.rect) {
-      if (g.ok) {
-        if (shaped(dr.zone)) { dr.zone.x = g.rect.x; dr.zone.y = g.rect.y; this.changed(); return; }
-        const tw = this.twin(dr.zone); if (tw) { tw.x += g.rect.x - dr.zone.x; tw.y += g.rect.y - dr.zone.y; }
-        dr.zone.x = g.rect.x; dr.zone.y = g.rect.y;
-        const st = siteOf(this.world, dr.zone); if (st && isTerminalModule(dr.zone)) { dr.zone.site = st.id; fitSite(this.world, st); }
-        this.changed();
-      }
-      else if (shaped(dr.zone)) this.toast('Cannot move there: ' + (canPlacePier(this.world, { ...g.rect, rot: dr.zone.rot, sides: dr.zone.sides, level: dr.zone.level }, dr.zone.id).reason ?? ''), 'bad');
-      else this.toast('Cannot move there: ' + (this.placeHall(g.rect, dr.zone.type, dr.zone.level, dr.zone.id, dr.zone).reason ?? ''), 'bad');
     }
+    this.settle();
     this.hint(this.toolHint());
   }
 
@@ -716,8 +870,9 @@ export class UI {
     const k = e.key;
     if (e.ctrlKey || e.metaKey) { if (k === 'z' || k === 'Z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); } else if (k === 'y') { e.preventDefault(); this.redo(); } return; }
     const t = TOOLS.find(x => x.key.toLowerCase() === k.toLowerCase());
-    if (t) { this.setTool(t.id); return; }
+    if (t) { this.cancelDrag(); this.setTool(t.id); return; }
     if (k === 'Escape') {
+      if (this.cancelDrag()) return;
       if (this.ren.lod === 'terminal' && this.tool === 'select') { this.goLod('landside'); return; }
       this.setTool('select'); this.select(null);
     }
@@ -771,10 +926,10 @@ export class UI {
 
   // ------------------------------------------------------------ forgiving placement
   /** Snap a drawn corner to the edges of nearby modules (any level) so modules meet flush; otherwise to the 10 m grid. */
-  magnet(p: Pt, level: Level): Pt {
+  magnet(p: Pt, level: Level, ignore = -1): Pt {
     const tol = Math.max(6, 12 / this.ren.cam.zoom);
     const xs: number[] = [], ys: number[] = [];
-    for (const z of this.world.zones) { if (z.level !== level && !isTerminalModule(z)) continue; xs.push(z.x, z.x + z.w); ys.push(z.y, z.y + z.h); }
+    for (const z of this.world.zones) { if (z.id === ignore || z.pair === ignore || (z.level !== level && !isTerminalModule(z))) continue; xs.push(z.x, z.x + z.w); ys.push(z.y, z.y + z.h); }
     for (const st of this.world.sites ?? []) { xs.push(st.x, st.x + st.w); ys.push(st.y, st.y + st.h); }
     const near = (v: number, cs: number[]) => cs.reduce((m, c) => (Math.abs(c - v) < Math.abs(m - v) ? c : m), Infinity);
     const nx = near(p.x, xs), ny = near(p.y, ys);
@@ -857,7 +1012,7 @@ export class UI {
       this.toast(`${name} laid out: concourse, security and the hall · ${money(cost)}${others > 0 ? ' · 10 check-in agents and 12 screeners hired for it' : ''}`);
       const gates = T?.gates ?? 0; const curb = this.sim.d.zones.some(c => c.auto && this.sim.d.termOf.get(c.auto.module)?.site?.id === st.id);
       if (T?.active) this.toast(`${name} is open: ${gates} gates, and its forecourt laid itself.`);
-      else this.toast([!gates ? 'run a taxiway along the concourse (dashed guides) for gates' : '', !curb ? `draw any road within ${FRONTAGE.reach} m of the hall for its forecourt` : ''].filter(Boolean).join(', and ').replace(/^./, c => c.toUpperCase()) || (T?.problems[0] ?? 'Check the design check for what it still needs') + '.', 'warn');
+      else this.toast([!gates ? 'give the concourse room for stands on an open side' : '', !curb ? `draw any road within ${FRONTAGE.reach} m of the hall for its forecourt` : ''].filter(Boolean).join(', and ').replace(/^./, c => c.toUpperCase()) || (T?.problems[0] ?? 'Check the design check for what it still needs') + '.', 'warn');
       this.setTool('select');
       return;
     }
@@ -871,6 +1026,7 @@ export class UI {
 
   // ------------------------------------------------------------ edits
   changed() {
+    this.liveStale = false;
     if (this.snap) { this.undoStack.push(this.snap); if (this.undoStack.length > 50) this.undoStack.shift(); this.redoStack = []; }
     this.sim.relayout(); this.refresh(true); this.ctl.save();
     this.snap = this.snapshot();
@@ -882,6 +1038,7 @@ export class UI {
   private undoStack: string[] = []; private redoStack: string[] = []; private snap = '';
   snapshot() { return JSON.stringify({ w: this.sim.world, m: this.sim.money }); }
   restore(s: string) {
+    this.endLive(false); this.drag = null;
     const o = JSON.parse(s) as { w: World; m: number };
     Object.assign(this.sim.world, o.w); this.sim.money = o.m;
     this.ren.selected = null; this.ren.hover = null;
@@ -1025,7 +1182,7 @@ export class UI {
     this.toast(`${what} built · ${z.sides ? `${lots} lots round its atrium · ` : ''}${u?.count ?? 0} gates · ${money(cost)}${joins.length ? ` · part of ${T?.name ?? 'the terminal'} now` : mv ? ` · linked to ${T?.name ?? 'the terminal'} by people mover` : ''}`);
     if (!joins.length && !mv) this.toast(`It stands alone: no concourse within ${n0(MOVER.reach)} m. Draw it into a concourse to join that building.`, 'warn');
     if (z.sides) { if (joins.length < 2) this.toast('Draw piers out of the hub (Pier, 9): start each one inside it and they join.'); return; }
-    if (!(u?.count)) this.toast('No gates yet: run a taxiway parallel to one of its long sides (dashed guides).', 'warn');
+    if (!(u?.count)) this.toast('No gates: there is no room for stands on any side. Slide or swing it clear of buildings, roads and the runway strip.', 'warn');
   }
 
   /** The nearest concourse to a rectangle, for the people mover a satellite would get. */
@@ -1070,7 +1227,7 @@ export class UI {
       this.toast(`Satellite concourse built · ${u?.count ?? 0} gates · ${money(cost)}`);
       if (mv) { const L = dist(mv.a, mv.b); this.toast(`A people mover links it to ${T?.name ?? 'the terminal'}: ${n0(L)} m, about ${(L / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} minutes.`); this.ren.float('+ people mover', lerpPt(mv.a, mv.b, 0.5), '#2F5D7C'); }
       else if (!T?.active) this.toast(`No concourse within ${n0(MOVER.reach)} m to link to. Build it nearer a terminal, or give it a terminal of its own.`, 'warn');
-      if (!(u?.count)) this.toast('No gates yet: run a taxiway along one of its sides (dashed guides).', 'warn');
+      if (!(u?.count)) this.toast('No gates: there is no room for stands on any side. Slide it clear of buildings, roads and the runway strip.', 'warn');
     } else
     this.toast(`${ZONES[t].label} built · ${u?.count ?? 0} ${ZONES[t].unit} · ${money(cost)}`);
   }
@@ -1436,8 +1593,8 @@ export class UI {
     const rows = s.d.gateGuides.filter(g => g.zone.id === z.id).map(g => {
       const n = s.d.gateSlots.filter(sl => sl.zone.id === z.id && sl.side === g.side);
       const on = n.filter(sl => sl.on).length;
-      const txt = n.length ? `${on} of ${n.length} gates · ${CLASSES[g.cls ?? zc].example} · taxiway ${Math.round(g.d ?? 0)} m out`
-        : g.note ? g.note : `no taxiway: draw one ${standDepth(zc)}–${sideReach(zc)} m out`;
+      const txt = n.length ? `${on} of ${n.length} gates · ${CLASSES[g.cls ?? zc].example} · ${g.self ? 'its own apron, taxilane' : 'taxiway'} ${Math.round(g.d ?? 0)} m out`
+        : g.land ? 'landside: no stands against the hall or security' : g.note ? g.note : 'no room for stands: built against, or too near a road, taxiway or runway';
       return `<dt>${sideName(g.side)}</dt><dd class="${n.length ? '' : 'muted'}">${txt}</dd>`;
     }).join('');
     return `${rows}<dt></dt><dd class="muted small">Click a gate on the apron to remove it, or a dashed stand to add it back.</dd>`;
