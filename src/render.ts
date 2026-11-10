@@ -2,7 +2,7 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind } from './config';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER } from './config';
 import type { Sim, Flight } from './sim';
 import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
 import type { LItem } from './layout';
@@ -850,6 +850,19 @@ export class Renderer {
     const z = this.cam.zoom;
     for (const [i, l] of sim.d.trainLinks.entries()) {
       const n = norm({ x: -(l.b.y - l.a.y), y: l.b.x - l.a.x });
+      if (l.apm) {
+        // v0.16: an airside people mover runs in a tunnel under the apron: a dashed twin line, a station at each end
+        const g = this.ctx; const L = dist(l.a, l.b); const dv = norm(sub(l.b, l.a));
+        g.setLineDash([Math.max(3, 7 * z), Math.max(2, 4 * z)]);
+        for (const s of [-1.6, 1.6]) this.line(add(l.a, mul(n, s)), add(l.b, mul(n, s)), 0.6, PAL.select, 0, 'butt', 1.1);
+        g.setLineDash([]);
+        const T = Math.max(1, L / (TUNE.walkSpeed * MOVER.speed)) + 0.8; const ph = ((sim.t + i * 1.3) % (2 * T)) / T; const k = ph < 1 ? ph : 2 - ph;
+        const e = clamp((k * T - 0.4) / (T - 0.8), 0, 1); const c = lerp2(l.a, l.b, e);
+        if (z > 0.2) { this.line(add(c, mul(dv, -11)), add(c, mul(dv, 11)), 3.4, '#F4EDDF', 0, 'round', 3); this.line(add(c, mul(dv, -11)), add(c, mul(dv, 11)), 1.4, PAL.select, 0, 'butt', 1.2); }
+        for (const p of [l.a, l.b]) { const [x, y] = this.P(p.x, p.y); const r = clamp(7 * z, 3.5, 9); g.fillStyle = '#F4EDDF'; g.strokeStyle = PAL.select; g.lineWidth = 2; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); g.stroke(); g.fillStyle = PAL.select; g.beginPath(); g.arc(x, y, r * 0.38, 0, Math.PI * 2); g.fill(); }
+        if (z > 0.35 && L * z > 150) { const rot = Math.atan2((l.b.y - l.a.y) * this.yScale, l.b.x - l.a.x); this.label(`PEOPLE MOVER · ${Math.round(L)} m`, add(lerp2(l.a, l.b, 0.5), mul(n, 9)), 0, 8, PAL.select, { weight: 800, spacing: 1.2, rot: Math.cos(rot) < 0 ? rot + Math.PI : rot }); }
+        continue;
+      }
       this.line(l.a, l.b, 5, 'rgba(40,36,30,0.10)', 0, 'butt', 2);
       for (const s of [-1.4, 1.4]) this.line(add(l.a, mul(n, s)), add(l.b, mul(n, s)), 0.5, PAL.select, 0, 'butt', 1);
       const L = dist(l.a, l.b); if (z > 0.5) for (let u = 20; u < L; u += 30) { const p = lerp2(l.a, l.b, u / L); this.line(add(p, mul(n, -2.2)), add(p, mul(n, 2.2)), 0.8, 'rgba(47,93,124,0.5)', 0, 'butt', 0.8); }

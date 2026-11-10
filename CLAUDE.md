@@ -19,7 +19,8 @@ node scripts/stress.mjs      # 14 days with deliberate cuts and an A380 build-ou
 node scripts/growth.mjs      # every growth facility, international flights, the AirTrain
 node scripts/roads.mjs       # curves, roundabouts and one-way loops
 node scripts/halls.mjs       # stacked halls and self-laid forecourts
-npm test             # all six sims
+node scripts/satellites.mjs  # satellite concourses and people movers
+npm test             # all seven sims
 node scripts/shot.cjs out.png <camX> <camY> <zoom> ["js using g = window.__game"]   # needs playwright; GL3D=1 for shots of the 3D view
 ```
 
@@ -29,6 +30,7 @@ Healthy results:
 - growth.mjs shows 8 facilities served, the far garage served by AirTrain, 0 missed and 0 stranded, international flights scheduled, and several hundred AirTrain riders a day.
 - roads.mjs shows Terminal 1 open with 0 missed, 0 stranded and 0 wrong-way cars in every scenario except the reversed loop, which must close the terminal and raise the one-way warning. Cars go round the ring wherever there is a roundabout, and far fewer cars overlap as drawn than on the centreline.
 - halls.mjs shows Terminal 1 open with `G arr, L1 dep` curbs and a deck in every case but the last: a self-laid forecourt (1 frontage, 2 links, 2 ramps) on the sample and with separate check-in and claim; no forecourt where the frontage road is drawn by hand; 4 links where the road stops short and off to one side; and Terminal 1 closed with no forecourt when no road is in reach. No car uses a ramp unless it is bound for the deck. The one-rectangle terminal reports its airside edge as `n` and opens with 0 stranded.
+- satellites.mjs shows Terminal 1 open with 0 missed and 0 stranded in every case; one people mover per satellite (a chain when they are in a line); every flight at satellite gates and every passenger riding when the main gates are switched off; and a concourse out of reach left as a closed Terminal 2.
 - stress.mjs strands passengers on purpose on the day it moves check-in (arrivals too since v0.14, because the hall's curbs go with it), and on the days it cuts the road or the taxiway. Cutting the walkways no longer strands anyone, because the lot lays its own sidewalk (v0.9). That is expected.
 
 ## Architecture
@@ -101,6 +103,7 @@ Healthy results:
   - **Restroom cores** about every 160 m.
   - Window lots sit on ungated exterior walls. Tenants bid for lots (commerce.ts) and the best-scoring lots lease first.
 - **Other fit-outs** (layout.ts): check-in, security, claim and curb. Each module faces the module it touches upstream.
+- **Satellites** (v0.16): in `derive()`, a group of touching terminal modules with no security is a satellite. Each satellite concourse links to the nearest concourse of an already-linked group within `MOVER.reach` (nearest first, so chains form): two pedestrian nodes and a fast edge, added to `vpairs` so the groups become one terminal, and to `d.trainLinks` with `apm: true`. The stations are train nodes, so `p.ride` works as on the AirTrain. Generated, never saved. The Satellite tool builds a concourse with no `site`.
 - **Terminals:** zones joined on foot form a terminal. It opens only when check-in, security, a concourse with working gates and bag claim connect, with a road-served curb. Only open terminals get flights. Each airline has a home terminal.
 - **Saves** go to localStorage under `airport-builder-alpha-v3`. Don't rename the key. Any schema change needs a step in `migrateWorld()` (world.ts). v0.8 added `sites`; old saves get one site per group of touching terminal modules.
 - **Version stamp:** scripts/build.mjs defines `__VERSION__` from package.json; main.ts writes it into the title block.
@@ -116,13 +119,13 @@ Healthy results:
 
 ## Roadmap
 
-Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. v0.10: growth unlocks, self-connecting landside facilities, international flights, the AirTrain, proper road junctions and curbside, undo, weather and airline offers. v0.11: curved roads with bend handles, roundabouts that roads join by themselves, and one-way roads and loops. v0.15: a terminal laid out in one drag. v0.14: the starter airport rebuilt on the hall and its forecourt, and forecourt links that turn a corner. v0.13: deck ramps that split from and rejoin the approach road, and a version stamp. v0.12: check-in and claim as one stacked hall that lays its own two-level forecourt, cars drawn in lanes with gaps and brake lights, and sound. Next in that direction: curved taxiways and sidewalks, curbs along curved and angled frontages, cars that yield turn by turn in the sim; gates and holdrooms that respond to the taxiway and apron as you drag them, and moving modules in 3D.
+Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. v0.10: growth unlocks, self-connecting landside facilities, international flights, the AirTrain, proper road junctions and curbside, undo, weather and airline offers. v0.11: curved roads with bend handles, roundabouts that roads join by themselves, and one-way roads and loops. v0.16: satellite concourses that link themselves to a terminal by people mover. v0.15: a terminal laid out in one drag. v0.14: the starter airport rebuilt on the hall and its forecourt, and forecourt links that turn a corner. v0.13: deck ramps that split from and rejoin the approach road, and a version stamp. v0.12: check-in and claim as one stacked hall that lays its own two-level forecourt, cars drawn in lanes with gaps and brake lights, and sound. Next, towards free-form airports: modules that turn to any angle (angled piers, then X, Y and star terminals with a hub where arms meet), a landside-to-airside people mover with security at the far end, and people-mover loops through several stations. Also: curved taxiways and sidewalks, cars that yield turn by turn in the sim, gates and holdrooms that respond to the taxiway and apron as you drag them, and moving modules in 3D.
 
 The concourse interiors plan has four phases.
 
 1. **Done in v0.6:** one concourse type, with band carving in rectangles.
 2. **Done in v0.7:** simulated footfall past each lot, visibility and dwell scores, tenants bidding for lots by score (with rent and overnight re-letting), walk-through duty free at the security exit, and a commercial heatmap.
-3. **Next:** compound arm-and-hub concourse shapes (X, Y and T piers), and satellites with a people mover.
+3. **Started in v0.16:** satellites with a people mover. **Next:** compound arm-and-hub concourse shapes (X, Y and T piers) at any angle.
 4. Mezzanine lounges; tenant growth, merges and pop-ups; day-parting; disruption surges.
 
 Other known gaps:
