@@ -15,6 +15,7 @@ import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, se
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
 import { letLots } from './commerce';
+import { Shell, shellsOf } from './shell';
 
 export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
@@ -188,6 +189,8 @@ export interface Terminal {
 
 export interface Derived {
   runways: RunwayInfo[]; aprons: Apron[]; gates: Gate[];
+  /** v0.23: each building's airside as one rounded outline (shell.ts), and which shell a concourse piece belongs to. */
+  shells: Shell[]; shellOf: Map<number, Shell>;
   /** v0.19: paving in the corners where self-laid aprons on neighbouring faces meet. */
   pads: Pt[][];
   air: Net; airExtra: { a: Pt; b: Pt; cls: number }[]; taxiLabels: TaxiLabel[]; taxiLetter: Map<number, string>;
@@ -927,10 +930,12 @@ export function derive(source: World): Derived {
   issues.sort((p, q) => ['error', 'warn', 'info'].indexOf(p.level) - ['error', 'warn', 'info'].indexOf(q.level));
   if (!issues.some(i => i.level !== 'info')) issues.unshift({ level: 'info', text: `${terminals.filter(t => t.active).length === 1 ? 'Terminal is' : 'All terminals are'} open. Watch the queues.` });
 
+  // v0.23: one outline per building
+  const shells = shellsOf(source.zones); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
   // the same line about the same building is said once (two of its aprons can earn the same remark)
   { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {
-    runways, aprons, gates, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
+    runways, aprons, gates, shells, shellOf, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,

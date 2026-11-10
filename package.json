@@ -18,6 +18,7 @@
     "typescript": "5.6.3"
   },
   "dependencies": {
+    "clipper-lib": "^6.4.2",
     "three": "0.170.0"
   }
 }
