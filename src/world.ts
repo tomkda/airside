@@ -37,7 +37,9 @@ export type WayKind = 'taxi' | 'road' | 'walk';
 /** v0.11: a road may curve (`c` is the control point of a quadratic curve) and may be one-way, from a to b. */
 export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lanes: number; c?: Pt; oneway?: boolean;
   /** Generated, never saved (v0.12): part of a hall's own forecourt, along its face or linking it to a road. */
-  fore?: 'face' | 'link' }
+  fore?: 'face' | 'link' | 'ramp';
+  /** For a ramp: the id of the frontage road whose upper deck it climbs to. */
+  face?: number }
 export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[] }
 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [] });
@@ -177,6 +179,8 @@ export interface Derived {
   /** v0.10: access drives facilities laid for themselves; the AirTrain's guideway; facilities that work (road and a way in on foot). */
   /** v0.11: every road as straight pieces (curves in chords, roundabout rings included), and the roundabouts. */
   roadPieces: Piece[]; rounds: Round[];
+  /** v0.13: road ids that are ramps up to a departures deck. Only cars bound for or leaving that deck use them. */
+  rampRefs: Set<number>;
   autoRoads: Way[]; trainLinks: { a: Pt; b: Pt }[]; served: Set<number>;
   isTrainNode(p: Pt): boolean;
   zoneAt(p: Pt, lv: Level): Zone | undefined;
@@ -766,7 +770,7 @@ export function derive(source: World): Derived {
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
-    roadPieces: pieces, rounds,
+    roadPieces: pieces, rounds, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),
     autoRoads: laidRoads, trainLinks: tLinks.map(l => ({ a: center(l.a), b: center(l.b) })), served, isTrainNode: (p: Pt) => tKeys.has(tKey(p)),
   };
 }

@@ -236,7 +236,7 @@ export class Renderer3D {
     // roads (roads.ts): each one a smooth path, with junction curves and highway slip ramps so every corner has a curved kerb
     const RP = roadPlan(d);
     const chords = (pts: Pt[], f: (a: Pt, b: Pt) => void, ext = 0) => { for (let i = 1; i < pts.length; i++) { const dv = norm(sub(pts[i], pts[i - 1])); f(sub(pts[i - 1], mul(dv, ext)), add(pts[i], mul(dv, ext))); } };
-    for (const s of RP.paths) chords(s.pts, (a, b) => strips.push({ a, b, w: s.w, z: 0.12, c: '#8E8A83' }), s.pts.length > 2 ? 0.5 : 0);
+    for (const s of RP.paths) if (!s.ramp) chords(s.pts, (a, b) => strips.push({ a, b, w: s.w, z: 0.12, c: '#8E8A83' }), s.pts.length > 2 ? 0.5 : 0);
     const bez = (k: { p1: Pt; c: Pt; p2: Pt }, t: number): Pt => ({ x: (1 - t) * (1 - t) * k.p1.x + 2 * (1 - t) * t * k.c.x + t * t * k.p2.x, y: (1 - t) * (1 - t) * k.p1.y + 2 * (1 - t) * t * k.c.y + t * t * k.p2.y });
     for (const k of [...RP.turns, ...RP.ramps]) for (let i = 0; i < 8; i++) strips.push({ a: bez(k, i / 8 - 0.02), b: bez(k, (i + 1) / 8 + 0.02), w: k.w, z: 0.121, c: '#8E8A83' });
     // roundabouts: the ring, a paved truck apron and a planted island
@@ -292,7 +292,7 @@ export class Renderer3D {
       const L = polyLen(pts); for (let u = gap / 2; u < L - dash / 2; u += dash + gap) chords(sliceLine(pts, u, Math.min(L, u + dash)), (a, b) => m(a, b, w, c, z));
     };
     for (const s of RP.paths) {
-      if (s.len - s.trimA - s.trimB < 2) continue;
+      if (s.ramp || s.len - s.trimA - s.trimB < 2) continue;
       const mid = sliceLine(s.pts, s.trimA, s.len - s.trimB);
       const solid = (k: number, w: number, c: string) => chords(offsetLine(mid, k), (a, b) => m(a, b, w, c, 0.17), 0.05);
       solid(s.w / 2 - 0.6, 0.2, WHITE); solid(-(s.w / 2 - 0.6), 0.2, s.ow ? YELLOW : WHITE);
@@ -324,12 +324,15 @@ export class Renderer3D {
     // ---- upper decks: slab on columns with ramps; curb canopies over the sidewalk at each curb
     const misc: Box[] = [];
     for (const dk of d.decks) {
-      const L = dist(dk.a, dk.b); const dir = norm(sub(dk.b, dk.a)); const ramp = FRONTAGE.ramp;
+      // v0.13: the slab follows the deck's own path, climbing along each ramp from the road it splits from
       const z1 = LEVELS[1].z0;
-      add3(slab(dk.a, dk.b, dk.width + 2, z1 - 0.8, z1, '#B9B2A4', ramp));
-      for (let s = ramp; s <= L - ramp; s += 30) for (const side of [-1, 1]) {
-        const c = add(add(dk.a, mul(dir, s)), { x: -dir.y * side * (dk.width / 2), y: dir.x * side * (dk.width / 2) });
-        misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: z1 - 0.8, c: '#8C8576' });
+      add3(slabPath(dk.pts, dk.zs.map(k => 0.2 + (z1 - 0.2) * k), dk.ws.map(w => Math.max(11, w) + 2), 0.8, '#B9B2A4'));
+      const cum = [0]; for (let i = 1; i < dk.pts.length; i++) cum.push(cum[i - 1] + dist(dk.pts[i - 1], dk.pts[i]));
+      for (let u = 0; u <= cum[cum.length - 1]; u += 30) {
+        let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
+        const t = (u - cum[k]) / (cum[k + 1] - cum[k] || 1); const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * t; if (zk < 0.35) continue;
+        const p = lerpPt(dk.pts[k], dk.pts[k + 1], t); const dir = norm(sub(dk.pts[k + 1], dk.pts[k])); const w = dk.ws[k] + (dk.ws[k + 1] - dk.ws[k]) * t;
+        for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
       }
     }
     for (const z of d.zones) if (z.type === 'curb') {
@@ -576,7 +579,7 @@ export class Renderer3D {
     const poses = this.ren.lod !== 'airfield' ? carPoses(sim) : null;
     if (poses) for (const car of sim.cars) {
       const ps = poses.get(car); if (!ps || c >= 3000) continue;
-      const up = car.curb?.zone.level === 1 && (car.stage === 'queue' || car.stage === 'bay') ? LEVELS[1].z0 : 0;
+      const up = ps.up * LEVELS[1].z0;
       o.position.set(ps.x, up + 0.65, ps.y); o.rotation.set(0, -ps.ang, 0); o.scale.set(1, 1, 1); o.updateMatrix();
       this.cars.setMatrixAt(c, o.matrix); this.cars.setColorAt(c, this.col.set(CAR_COLS[car.id % CAR_COLS.length]));
       o.position.set(ps.x - Math.cos(ps.ang) * 0.3, up + 1.4, ps.y - Math.sin(ps.ang) * 0.3); o.updateMatrix(); this.cabs.setMatrixAt(c, o.matrix);
@@ -725,6 +728,19 @@ function stripMesh(ss: Strip[], opacity = 1) {
   return m;
 }
 /** A deck slab from a to b, level at height z1, sloping to the ground over `ramp` metres at each end. */
+/** A slab along a path, with its own height and width at each point (a deck with its ramps). */
+function slabPath(pts: Pt[], zs: number[], ws: number[], thick: number, c: string) {
+  const pos: number[] = []; const idx: number[] = [];
+  pts.forEach((p, i) => {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)]; const dv = norm(sub(b, a));
+    const n = { x: -dv.y * ws[i] / 2, y: dv.x * ws[i] / 2 }; const z = zs[i], zb = Math.max(0, z - thick);
+    pos.push(p.x + n.x, z, p.y + n.y, p.x - n.x, z, p.y - n.y, p.x + n.x, zb, p.y + n.y, p.x - n.x, zb, p.y - n.y);
+    if (i) { const k = (i - 1) * 4, j = i * 4; idx.push(k, j, k + 1, j, j + 1, k + 1, k + 2, k + 3, j + 2, j + 2, k + 3, j + 3, k, k + 2, j, j, k + 2, j + 2, k + 1, j + 1, k + 3, j + 1, j + 3, k + 3); }
+  });
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide })); m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
 function slab(a: Pt, b: Pt, w: number, z0: number, z1: number, c: string, ramp: number) {
   const d = norm(sub(b, a)); const L = dist(a, b); const n = { x: -d.y * w / 2, y: d.x * w / 2 };
   const prof = [[0, 0.2], [ramp, z1], [L - ramp, z1], [L, 0.2]];

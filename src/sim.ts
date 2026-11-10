@@ -202,7 +202,7 @@ export class Sim {
     // edge that ends at one holds less; a roundabout keeps traffic moving, so its ring and its approaches do not lose any.
     const R = this.d.road;
     this.roadCap = new Float32Array(R.edges.length).fill(1);
-    const stopAt = (n: number) => R.adj[n].length >= 3 && !R.adj[n].some(k => R.edges[k].kind === 'hwy' || isRingRef(R.edges[k].ref));
+    const stopAt = (n: number) => R.adj[n].length >= 3 && !R.adj[n].some(k => R.edges[k].kind === 'hwy' || isRingRef(R.edges[k].ref) || this.d.rampRefs.has(R.edges[k].ref));
     for (const e of R.edges) if (e.kind !== 'hwy' && !isRingRef(e.ref) && (stopAt(e.u) || stopAt(e.v))) this.roadCap[e.id] = ROADS.junctionDelay;
     const keep = new Map(this.procs);
     this.procs.clear();
@@ -1091,14 +1091,20 @@ export class Sim {
   }
 
   // ---------------------------------------------------------------- roads, cars, curbs, lots
-  roadDJ(target: number): DJ {
-    let dj = this.roadCache.get(target);
-    if (!dj) { dj = dijkstra(this.d.road, [{ n: target, c: 0 }], undefined, e => e.len / (e.kind === 'hwy' ? 1.6 : e.lanes >= 4 ? 1.25 : 1), -1); this.roadCache.set(target, dj); }
+  /** `deck`: the trip is to or from an upper departures deck, so it takes the deck's ramps; every other trip keeps off them. */
+  roadDJ(target: number, deck = false): DJ {
+    const key = deck ? -target - 1 : target;
+    let dj = this.roadCache.get(key);
+    if (!dj) {
+      const ramps = this.d.rampRefs;
+      dj = dijkstra(this.d.road, [{ n: target, c: 0 }], undefined, e => (e.len / (e.kind === 'hwy' ? 1.6 : e.lanes >= 4 ? 1.25 : 1)) * (ramps.has(e.ref) ? (deck ? 0.5 : 8) : 1), -1);
+      this.roadCache.set(key, dj);
+    }
     return dj;
   }
-  roadRoute(from: number, to: number): { pts: Pt[]; eids: number[] } | null {
+  roadRoute(from: number, to: number, deck = false): { pts: Pt[]; eids: number[] } | null {
     if (from < 0 || to < 0) return null;
-    const dj = this.roadDJ(to);
+    const dj = this.roadDJ(to, deck);
     if (!isFinite(dj.dist[from])) return null;
     const tr = trace(this.d.road, dj, from);
     return { pts: tr.nodes.map(n => this.d.road.nodes[n]), eids: tr.eids };
@@ -1155,8 +1161,9 @@ export class Sim {
   driveTo(party: Party, curb: Proc, pick: boolean): boolean {
     const o = this.hwyEnd();
     let best: { pts: Pt[]; eids: number[] } | null = null, bn = -1;
+    const deck = curb.zone.auto?.deck === 'dep';
     for (const n of this.d.attach.get(curb.zone.id) ?? []) {
-      const r0 = this.roadRoute(o, n); const r = r0 && this.trimHwy(r0);
+      const r0 = this.roadRoute(o, n, deck); const r = r0 && this.trimHwy(r0);
       if (r && (!best || polyLen(r.pts) < polyLen(best.pts))) { best = r; bn = n; }
     }
     if (!best) return false;
@@ -1183,8 +1190,9 @@ export class Sim {
   exitRoute(from: Pt, zoneId: number, avoid: number): { pts: Pt[]; eids: number[] } {
     const dest = this.hwyEnd();
     let best: { pts: Pt[]; eids: number[] } | null = null, bc = Infinity;
+    const deck = this.d.zones.find(z => z.id === zoneId)?.auto?.deck === 'dep';
     for (const n of this.d.attach.get(zoneId) ?? []) {
-      const r = this.roadRoute(n, dest);
+      const r = this.roadRoute(n, dest, deck);
       if (!r) continue;
       const c = polyLen(r.pts) + dist(from, r.pts[0]) + (n === avoid ? 120 : 0);
       if (c < bc) { bc = c; best = r; }

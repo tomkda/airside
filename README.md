@@ -33,7 +33,15 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.12)
+## What's in the alpha (v0.13)
+
+- **The road divides for the upper deck, and a version stamp (v0.13):**
+  - **Ramps that split and rejoin.** Where a hall lays its own forecourt, the departures deck no longer sits on the road as a slab. On each side, a ramp leaves the approach road about 120 m before the corner, sweeps round inside it while it climbs, and lands on the deck in front of the hall; the ground road carries on round the corner underneath to the arrivals curb. The same happens in reverse on the way out, so the road visibly divides and comes back together. It is generated with the forecourt and moves with it.
+  - **Cars take the right branch.** Cars dropping off at departures go up the ramp and leave by the other one; cars for arrivals, the car park and everything else keep to the ground road. In 3D, cars climb with the ramp.
+  - A ramp is a merge, not a junction: no stop bars or turn arrows where it leaves and rejoins, and it does not slow the road the way a crossroads does.
+  - A frontage road you draw by hand keeps its straight ramps along the road, as before.
+  - **Version stamp.** The title block in the corner of the map now shows the version you are playing (`AIRSIDE v0.13.0`), taken from the build.
+
 
 - **One hall, and a forecourt that lays itself (v0.12):** getting a road, check-in and baggage claim to line up was the hardest part of building a terminal. It no longer needs lining up.
   - **The hall.** Check-in and baggage claim are one building now: the **Hall** tool (`3`) places check-in on Level 1 with baggage claim directly under it on Ground, in one drag. The two move together and are demolished together. Separate check-in and claim modules in older saves keep working.
@@ -203,7 +211,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 - Unlocks depend on the best day's departures only. Weather and offers are light: no de-icing, diversions or negotiation yet.
 - Adding a second terminal splits the same check-in agents and screeners across both, so queues grow until you hire more in Operations.
 - Terminal sites are rectangles. A pier that reaches far out grows its site's bounding box rather than an L or T shape.
-- A forecourt is laid along one straight face of the hall and its links run straight out (or straight on) to the nearest road; it does not yet find its way round obstacles or pick a one-way loop, and it links to the nearest road even if that road goes nowhere (the design check then reports the curb has no road to State Route 12). A hand-drawn frontage road must still be parallel to the face to grow a curb. Cars reach the upper deck by its ramps, but drive under it in the plan view.
+- A forecourt is laid along one straight face of the hall and its links run straight out (or straight on) to the nearest road; it does not yet find its way round obstacles or pick a one-way loop, and it links to the nearest road even if that road goes nowhere (the design check then reports the curb has no road to State Route 12). A hand-drawn frontage road must still be parallel to the face to grow a curb. Cars reach the upper deck by its ramps, but drive under it in the plan view. The curved ramps need a link at least 45 m long that comes straight out from the frontage; otherwise the deck keeps a straight ramp. The ground road under a ramp is still drawn in the plan.
 - In 3D, modules are drawn and selected, but not moved by dragging (switch to plan with `T` to move one). Labels in 3D are terminal names only.
 - No signal timing at junctions; sidewalks are ground-level only (no elevated walkways yet), and they cannot cross a roundabout.
 - Lot sidewalks go straight or round one corner; a lot boxed in by buildings still needs a hand-drawn one.
