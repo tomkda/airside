@@ -20,10 +20,12 @@ const rep = (name, w) => {
   return { d, by, reach };
 };
 const conc = (w, x, y, ww, h, extra = {}) => { const z = { id: w.nextId++, type: 'concourse', level: 1, x, y, w: ww, h, tier: 0, cls: 2, ...extra }; w.zones.push(z); return z; };
+const inPoly = (p, poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const a = poly[i], b = poly[j]; if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) c = !c; } return c; };
 const pier = (w, cx, cy, len, wid, deg) => conc(w, cx - len / 2, cy - wid / 2, len, wid, { rot: deg * Math.PI / 180 });
 const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b: { x: 4500, y: 2300 } });
 
 { const r = rep('sample', sampleWorld());
+  check('a one-piece building has no junction spaces', r.d.junctions.length === 0);
   check('the sample gains an end stand each side', r.d.gates.length === 14 && r.reach === 14);
   check('no stands on the landside face', !Object.keys(r.by).some(k => k.includes(':s')));
   check('the landside face is marked', r.d.gateGuides.some(g => g.side === 's' && g.land)); }
@@ -35,6 +37,11 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   const sl = r.d.gateSlots; let near = Infinity;
   for (let i = 0; i < sl.length; i++) for (let j = i + 1; j < sl.length; j++) near = Math.min(near, Math.hypot(sl[i].stand.x - sl[j].stand.x, sl[i].stand.y - sl[j].stand.y));
   check('no two stands of the merged building share ground (nearest pair ' + near.toFixed(0) + ' m apart)', near >= 30);
+  // v0.25: where the pier runs into the concourse the building keeps a space for itself, and no lot stands in it
+  const js = r.d.junctions, ins = (p, j) => j.rings.reduce((n, q) => n + (inPoly(p, q) ? 1 : 0), 0) % 2 === 1;
+  const lots = [...r.d.shops.values()].flat().map(sh => ({ x: sh.pts.reduce((n, q) => n + q.x, 0) / sh.pts.length, y: sh.pts.reduce((n, q) => n + q.y, 0) / sh.pts.length }));
+  check('the merged building keeps a junction space (' + js.map(j => j.kind + ' ' + Math.round(j.area) + ' m2').join(', ') + ')', js.length >= 1 && js.every(j => j.seeds.length > 0));
+  check('no shop lot stands in a junction space', lots.length > 20 && !lots.some(c => js.some(j => ins(c, j))));
   check('every gate of the merged building has its own name', new Set(sl.map(q => q.zone.id + ':' + q.key)).size === sl.length && new Set(r.d.gates.map(g => g.id)).size === r.d.gates.length); }
 { const w = sampleWorld(); const z = pier(w, 3568, 2718, 400, 40, 20); const r = rep('a 40 m pier (too narrow for a stand on its end)', w);
   const mine = r.d.gates.filter(g => g.zone.id === z.id);
@@ -108,6 +115,13 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   const tall = { x: 1000, y: 1000, w: 50, h: 300, off: ['e2'] };
   const g5 = regrip(tall, 'b', { x: 1025 + 200, y: 1000 + 200 }, true, lim);
   check('an upright satellite swung off the grid keeps its switched-off gate on the same wall', !!g5.rot && g5.off[0] === 'n2'); }
+// v0.25: four concourses round a square: the hole in the middle is a courtyard, and each corner a space of the building's own
+{ const w = newWorld(); runway(w);
+  conc(w, 3000, 2700, 400, 50); conc(w, 3000, 3000, 400, 50); conc(w, 3000, 2700, 50, 350); conc(w, 3350, 2700, 50, 350);
+  const r = rep('four concourses round a courtyard', w); const js = r.d.junctions;
+  check('the enclosed square is one courtyard with trees', js.filter(j => j.kind === 'court').length === 1 && js.find(j => j.kind === 'court').seeds.every(t => t.t === 'tree') && js.find(j => j.kind === 'court').area > 50000);
+  check('each corner where two concourses cross is a space of its own', js.filter(j => j.kind !== 'court' && j.ids.length === 2).length === 4);
+  check('no stand is laid in the courtyard', !r.d.gateSlots.some(q => inPoly(q.stand, js.find(j => j.kind === 'court').outer))); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

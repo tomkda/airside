@@ -1,6 +1,6 @@
 {
   "name": "airside",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "private": true,
   "description": "Airside: airport builder / simulator, browser alpha",
   "type": "module",
