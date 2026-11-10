@@ -114,9 +114,9 @@ export class Renderer {
     if (close) g.closePath();
   }
   /** The corners of a rectangle. A turned zone (v0.17) gives its turned corners; `pivot` turns a part of one about the zone's centre. */
-  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number; bend?: number }): Pt[] {
+  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number; bend?: number; taper?: number }): Pt[] {
     if (r.sides) return hallPts(r);   // a round or polygonal hall (v0.18)
-    if (r.bend) return zonePts(r);    // a bent pier (v0.20)
+    if (r.bend || r.taper) return zonePts(r);    // a bent pier (v0.20) or a tapered one (v0.21)
     const c = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
     if (!r.rot) return c;
     const pv = r.pivot ?? { x: r.x + r.w / 2, y: r.y + r.h / 2 };
@@ -213,7 +213,7 @@ export class Renderer {
       const zn = sim.d.zones.find(q => q.id === id); if (!zn) continue;
       const grow = (8 + 22 * k) / this.cam.zoom;
       g.strokeStyle = zn.auto ? `rgba(194,133,46,${1 - k})` : `rgba(47,93,124,${1 - k})`; g.lineWidth = 3 * (1 - k) + 1;
-      this.path(this.rectPts({ x: zn.x - grow, y: zn.y - grow, w: zn.w + 2 * grow, h: zn.h + 2 * grow, rot: zn.rot, sides: zn.sides, bend: zn.bend, pivot: centreOf(zn) }), 0); g.stroke();
+      this.path(this.rectPts({ x: zn.x - grow, y: zn.y - grow, w: zn.w + 2 * grow, h: zn.h + 2 * grow, rot: zn.rot, sides: zn.sides, bend: zn.bend, taper: zn.taper, pivot: centreOf(zn) }), 0); g.stroke();
       if (k < 0.5) this.poly(this.rectPts(zn), `rgba(255,248,230,${0.5 - k})`, 0);
     }
   }
@@ -1347,7 +1347,9 @@ export class Renderer {
       // the bend grip is filled, like the one on a road
       g.fillStyle = hot || gr.grip === 'm' ? PAL.select : '#FBF8F1'; g.strokeStyle = gr.grip === 'm' ? '#FBF8F1' : PAL.select; g.lineWidth = 2;
       g.beginPath();
-      if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r' || gr.grip === 'm') g.arc(x, y, r, 0, Math.PI * 2); else g.rect(x - r, y - r, 2 * r, 2 * r);
+      if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r' || gr.grip === 'm') g.arc(x, y, r, 0, Math.PI * 2);
+      // a diamond on an end's corner: that end's width
+      else if (gr.grip === 'ta' || gr.grip === 'tb') { g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y); g.closePath(); } else g.rect(x - r, y - r, 2 * r, 2 * r);
       g.fill(); g.stroke();
     }
   }

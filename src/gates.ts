@@ -72,6 +72,8 @@ export function sidesOf(z: Zone): Side[] {
     { side: 'w' as SideKey, a: { x: z.x, y: z.y + z.h }, b: { x: z.x, y: z.y }, out: { x: -1, y: 0 } },
   ];
   // v0.17: a turned zone keeps its side names (north is the north of its own frame); the geometry turns with it
+  // v0.21: a tapered bar's walls are not parallel: each faces square off its own line
+  if (z.taper) return sides.map(sd => { const a = toWorld(z, sd.a), b = toWorld(z, sd.b); const d = norm(sub(b, a)); return { side: sd.side, a, b, out: { x: d.y, y: -d.x } }; });
   return z.rot ? sides.map(sd => ({ side: sd.side, a: toWorld(z, sd.a), b: toWorld(z, sd.b), out: dirWorld(z, sd.out) })) : sides;
 }
 
@@ -100,7 +102,9 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
       // nearest parallel taxiway within reach that overlaps this side
       let best: { w: Way; d: number; ov: number } | null = null;
       for (const w of taxis) {
-        if (Math.abs(dot(norm(sub(w.b, w.a)), al)) < 0.985) continue;
+        // (a tapered bar's walls are splayed: only a taxiway truly parallel to one counts, or stands near the
+        //  wide end would reach across it; otherwise the wall lays its own apron)
+        if (Math.abs(dot(norm(sub(w.b, w.a)), al)) < (z.taper ? 0.9995 : 0.985)) continue;
         const d = (dot(sub(w.a, sd.a), sd.out) + dot(sub(w.b, sd.a), sd.out)) / 2;
         if (d < 8 || d > sideReach(zc)) continue;
         const s0 = dot(sub(w.a, sd.a), al), s1 = dot(sub(w.b, sd.a), al);
@@ -242,13 +246,21 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       // stand closer along the wall; on the inside they close up, and need more wall each. The spacing is set
       // where the wings are (half an aircraft out from the nose), and on the inside also where the tails meet.
       const F = frameOf(z); const yw = sd.curve!; const dir = yw === F.y ? -1 : 1;
-      const rw = A.R + A.sg * (yw - (F.y + F.h / 2));          // the wall's radius
+      const rw = A.R + A.sg * (yw - (F.y + F.h / 2));          // the wall's radius (half way along, if the bar tapers)
       const grow = A.sg * dir;                                   // +1: the outside of the bend, -1: the inside
       const rWing = rw + grow * (APRON.nose + C.length / 2), rLane = rw + grow * D;
       if (rLane < 30) { guide.note = 'the bend is too tight for stands on its inside'; continue; }
       const dphi = Math.max(sp / rWing, grow < 0 ? (0.45 * sp) / rLane : 0);
       const du = dphi * A.R; const n = Math.floor(F.w / du); const pad = (F.w - n * du) / 2;
-      const P = (u: number, d: number) => toWorld(z, { x: u, y: yw + dir * d });
+      // a point `d` metres out from the wall, square off it (on a tapered bar the wall is not at one radius, so this
+      // is taken from the wall itself, not from the frame)
+      const wallAt = (u: number) => toWorld(z, { x: u, y: yw });
+      const P = (u: number, d: number) => {
+        const p0 = wallAt(u); if (!z.taper) return toWorld(z, { x: u, y: yw + dir * d });
+        const t = norm(sub(wallAt(u + 0.5), wallAt(u - 0.5))); let nx = t.y, ny = -t.x; const o = sub(toWorld(z, { x: u, y: yw + dir }), p0);
+        if (nx * o.x + ny * o.y < 0) { nx = -nx; ny = -ny; }
+        return { x: p0.x + nx * d, y: p0.y + ny * d };
+      };
       const fwd = sd.side === 'n' ? 1 : -1;                      // sides run clockwise: north west to east, south east to west
       const u0 = sd.side === 'n' ? F.x : F.x + F.w;
       // landside: a processing module stands against this wall
@@ -322,7 +334,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       const room = (p: Pt) => onSite(p) && !outlines.some(o => o.z.id !== z.id && nearBox(p, o.box, 10) && polyDist(p, o.pts) < 10) && !aprons.some(o => o !== ap && nearBox(p, o.rect, 0) && within(p, o.pts, 1)) && !keep.some(k => segDist(p, k.a, k.b) < 10);
       const e0 = room(add(first.front, mul(first.tan, -sp / 2))) ? sp / 2 : 2, e1 = room(add(last.front, mul(last.tan, sp / 2))) ? sp / 2 : 2;
       const lane = [add(first.front, mul(first.tan, -e0)), ...(A ? run.map(q => q.front) : []), add(last.front, mul(last.tan, e1))];
-      runs.push({ pts: lane, cls: zc, zone: z.id, outs: [first.outward, last.outward, midOut], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [e0, e1], joined: [false, false], T: D + sp });
+      runs.push({ pts: lane, cls: zc, zone: z.id, outs: [first.outward, last.outward, midOut], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [e0, e1], joined: [false, false], T: D + sp + Math.abs(z.taper ?? 0) / 2 });
       run = [];
     };
     for (const c of cands) {

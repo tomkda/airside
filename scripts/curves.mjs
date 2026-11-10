@@ -1,5 +1,5 @@
-// Bent piers (v0.20): a pier bent into an arc by its middle grip. Its stands, taxilanes, interior and walking routes
-// follow the curve.
+// Bent piers (v0.20) and tapered piers (v0.21): a pier bent into an arc by its middle grip, or made wider at one end
+// than the other by the grips on its end corners. Its stands, taxilanes, interior and walking routes follow its shape.
 import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
@@ -7,7 +7,7 @@ import { derive, canPlacePier } from './src/world';
 import * as W0 from './src/world';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
-import { inZone, zonePts, arcOf, frameOf, toLocal, toWorld, polyArea, regrip, gripsOf, maxBend, minBendRadius, heart } from './src/shapes';
+import { inZone, zonePts, arcOf, frameOf, toLocal, toWorld, polyArea, regrip, gripsOf, maxBend, minBendRadius, heart, endWidths } from './src/shapes';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
 const lim = { minLen: 60, minWide: 30, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 };
@@ -80,6 +80,46 @@ for (const bend of [120, -120]) {
   const d = derive(w); const T = d.termOf.get(hub.id);
   console.log('a round hub on the tip of the bent pier:', T ? T.name + (T.active ? ' open' : ' closed') + ', ' + T.gateAreas + ' concourses' : 'no terminal', '| people movers', d.trainLinks.filter(l => l.apm).length, '| hub lots', (d.shops.get(hub.id) ?? []).length);
   check('the hub is part of the same terminal, joined by overlap', T && T.active && T.gateAreas === 3 && d.trainLinks.filter(l => l.apm).length === 0); }
+{ // v0.21: tapered piers, straight and bent
+  const z = { x: 1000, y: 1000, w: 500, h: 60, rot: 0.35, bend: 100, taper: 40 }; const F = frameOf(z);
+  let err = 0; for (let i = 0; i < 200; i++) { const p = { x: F.x + rnd() * F.w, y: F.y + rnd() * F.h }; const q = toLocal(z, toWorld(z, p)); err = Math.max(err, Math.hypot(q.x - p.x, q.y - p.y)); }
+  const ends = endWidths(z); const P = zonePts({ x: 1000, y: 1000, w: 500, h: 60, taper: 40 });
+  const wWest = Math.hypot(P[0].x - P[3].x, P[0].y - P[3].y), wEast = Math.hypot(P[1].x - P[2].x, P[1].y - P[2].y);
+  console.log('taper: a 60 m pier with a 40 m taper is', wWest, 'm wide at one end and', wEast, 'm at the other | there and back error (bent and tapered)', err.toExponential(1), 'm');
+  check('the ends are as wide as the taper says', ends[0] === 40 && ends[1] === 80 && Math.abs(wWest - 40) < 1e-9 && Math.abs(wEast - 80) < 1e-9);
+  check('straighten and bend back is exact on a bent, tapered bar', err < 1e-6);
+  const st = { x: 1000, y: 1000, w: 500, h: 60, rot: 0.35 }; const tb = gripsOf(st, true).find(g => g.grip === 'tb').p; const c0 = heart(st);
+  const out = { x: tb.x + Math.sin(0.35) * 20, y: tb.y - Math.cos(0.35) * 20 };   // 20 m further off the centreline
+  const g1 = regrip(st, 'tb', out, true, lim); const e1 = endWidths(g1); const a0 = gripsOf(st, true).find(g => g.grip === 'a').p, a1 = gripsOf(g1, true).find(g => g.grip === 'a').p, b0 = gripsOf(st, true).find(g => g.grip === 'b').p, b1 = gripsOf(g1, true).find(g => g.grip === 'b').p;
+  console.log('taper grip: east end pulled 20 m wider a side → ends', e1[0], 'and', e1[1], 'm | centreline ends moved', Math.max(Math.hypot(a1.x - a0.x, a1.y - a0.y), Math.hypot(b1.x - b0.x, b1.y - b0.y)).toFixed(3), 'm');
+  check('one end widens, the other keeps its width, the centreline stays put', e1[0] === 60 && e1[1] === 100 && Math.hypot(a1.x - a0.x, a1.y - a0.y) < 0.01 && Math.hypot(b1.x - b0.x, b1.y - b0.y) < 0.01);
+  const g2 = regrip(g1, 'tb', tb, true, lim);
+  check('pulled back, it is a plain pier again', !g2.taper && g2.h === 60);
+  const g3 = regrip(st, 'ta', a0, true, lim);
+  check('an end stops at the narrowest an end may be', endWidths(g3)[0] === 24 && endWidths(g3)[1] === 60); }
+for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 2688 }], ['a bent and tapered pier', { taper: -36, h: 60, y: 2688, bend: 110 }]]) {
+  const { w, z } = mk(extra.bend, extra); const d = derive(w);
+  const mine = d.gates.filter(g => g.zone.id === z.id); const shops = d.shops.get(z.id) ?? []; const out = shops.filter(sh => sh.pts.some(p => !inZone(p, z, 0.6))).length;
+  const inside = mine.filter(g => !inZone(g.door, z)).length, standIn = mine.filter(g => inZone(g.stand, z, 2)).length; const T = d.termOf.get(z.id);
+  console.log(name + ':', mine.length, 'gates,', mine.filter(g => g.rwys[0].size).length, 'reach a runway |', shops.length, 'lots,', out, 'outside the building | doors outside', inside, '| stands inside the building', standIn, '|', T ? T.name + (T.active ? ' open' : ' closed') + ', ' + T.gateAreas + ' concourses' : 'no terminal');
+  check('it is a valid place for a pier', canPlacePier(w, z, z.id).ok);
+  check('stands on both long walls, every one reaching a runway', mine.filter(g => g.key[0] === 'n').length >= 4 && mine.filter(g => g.key[0] === 's').length >= 4 && mine.every(g => g.rwys[0].size > 0));
+  check('every door is inside the building and every stand outside it', inside === 0 && standIn === 0);
+  check('every shop lot is inside the building', shops.length > 30 && out === 0);
+  check('it is part of the terminal it was drawn out of', T && T.active && T.gateAreas === 2);
+}
+{ // a wide-ended A380 pier still joins its taxilanes round the wide end
+  const { w, z } = mk(54, { w: 320, h: 109, y: 2718 - 109 / 2, rot: 0.537, taper: 94, cls: 3 }); const d = derive(w);
+  const mine = d.gates.filter(g => g.zone.id === z.id);
+  console.log('a bent A380 pier 62 m wide at one end and 156 m at the other:', mine.length, 'gates,', mine.filter(g => g.rwys[0].size).length, 'reach a runway');
+  check('every stand of a wide-ended A380 pier reaches a runway', mine.length > 0 && mine.every(g => g.rwys[0].size > 0)); }
+{ // a taxiway drawn along a splayed wall does not take it over: the stands would reach across it at the wide end
+  const { w, z } = mk(undefined, { x: 2900, y: 1700, w: 500, h: 92, rot: undefined, taper: 60 });
+  w.ways.push({ id: w.nextId++, kind: 'taxi', a: { x: 2800, y: 1700 - 60 }, b: { x: 3500, y: 1700 - 60 }, cls: 2, lanes: 0 });
+  const d = derive(w); const mine = d.gates.filter(g => g.zone.id === z.id && g.key[0] === 'n'); const tw = w.ways[w.ways.length - 1];
+  const across = mine.filter(g => (g.stand.y - 19 - tw.a.y) < 8).length;
+  console.log('a taxiway 60 m off the mid-point of a splayed wall:', mine.length, 'stands on that wall,', across, 'with a tail within 8 m of its centreline');
+  check('no stand parks across the taxiway', across === 0); }
 { // two days of flying from the bent pier alone
   const { w, z } = mk(-110, { w: 420 });
   const sim = new Sim(w, 7); const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); main.off = [...Array(12).keys()].map(i => 'n' + i).concat(['e0', 'w0']);

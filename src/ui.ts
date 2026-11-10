@@ -14,7 +14,7 @@ import {
 import { rectsOverlap, rectSegDist } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
 import { canPlacePier } from './world';
-import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart } from './shapes';
+import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths } from './shapes';
 import { canTurn, derive, Derived } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
@@ -68,7 +68,7 @@ const isWay = (t: Tool): t is WayKind => t === 'taxi' || t === 'road' || t === '
 export interface Controls { speed: number; paused: boolean; hold?: boolean; save(): void; loadSample(): void; clearSite(): void }
 /** How far a grip can take a shape. */
 /** The floor a zone was paid for: a bent pier's or a hub's true outline, not its box. */
-const floorArea = (z: Zone) => (z.bend || z.sides ? polyArea(zonePts(z)) : z.w * z.h);
+const floorArea = (z: Zone) => (z.bend || z.sides || z.taper ? polyArea(zonePts(z)) : z.w * z.h);
 const GRIP: GripLimits = { minLen: PIER.minLen, minWide: 30, maxWide: 120, minDia: HALL.minDia, maxDia: HALL.maxDia, snapDeg: PIER.snapDeg };
 
 export class UI {
@@ -548,7 +548,7 @@ export class UI {
     }
     if (dr.mode === 'grip' && dr.zone && dr.z0 && dr.grip) {
       // v0.19: reshape what is built. The shape itself changes as you drag, and its gates, aprons, lots and roads with it.
-      const z = dr.zone; const z0 = dr.z0; const swing = dr.grip === 'a' || dr.grip === 'b' || dr.grip === 'r' || dr.grip === 'm' || !!z0.bend;
+      const z = dr.zone; const z0 = dr.z0; const swing = dr.grip === 'a' || dr.grip === 'b' || dr.grip === 'r' || dr.grip === 'm' || dr.grip === 'ta' || dr.grip === 'tb' || !!z0.bend || !!z0.taper;
       const q = swing || z0.rot ? p : this.magnet(p, z.level, z.id);
       const g = regrip(z0, dr.grip, q, canTurn(z), GRIP);
       const chk = this.placeGeom(z, g); const cost = this.geomCost(z, g) - this.geomCost(z, z0);
@@ -557,7 +557,9 @@ export class UI {
       if (ok) { this.liveSet(z, g); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: g, ok: false };
       const u = this.sim.d.units.get(z.id); const deg = Math.round(((g.rot ?? 0) * 180) / Math.PI);
       const arc = arcOf(g);
-      const size = g.sides ? `${n0(g.w)} m across` : arc ? `${n0(arc.La)} m round the bend × ${n0(g.h)} m · centreline radius ${n0(arc.R)} m` : `${n0(g.w)} × ${n0(g.h)} m${g.rot && Math.abs(g.rot) > 1e-3 ? ` at ${deg}°` : ''}`;
+      const ends = g.taper ? ` · ${n0(endWidths(g)[0])} m wide at one end, ${n0(endWidths(g)[1])} m at the other` : '';
+      const size0 = g.sides ? `${n0(g.w)} m across` : arc ? `${n0(arc.La)} m round the bend × ${n0(g.h)} m · centreline radius ${n0(arc.R)} m` : `${n0(g.w)} × ${n0(g.h)} m${g.rot && Math.abs(g.rot) > 1e-3 ? ` at ${deg}°` : ''}`;
+      const size = size0 + ends;
       const count = z.type === 'concourse' ? ` · ${u?.count ?? 0} gates` : u ? ` · ${u.max} ${ZONES[z.type].unit}` : '';
       this.hint(ok ? `${size}${count}${cost > 0 ? ` · ${money(cost)}` : cost < 0 ? ` · ${money(-cost * 0.4)} back` : ''} · release to keep, Esc to put it back` : dr.reason!, !ok);
       return;
@@ -691,7 +693,7 @@ export class UI {
       // v0.19: the building itself moves under the cursor, and everything that depends on it follows
       if (!dr.moved) { dr.moved = true; dr.z0 = geomOf(z); const tw = this.twin(z); this.beginLive(tw ? [z, tw] : [z]); }
       if (shaped(z)) {   // a pier or hub slides freely and keeps its angle
-        const r = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5), w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend };
+        const r = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5), w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper };
         const chk = canPlacePier(this.world, { ...r, level: z.level }, z.id);
         dr.liveOk = chk.ok; dr.reason = chk.reason;
         if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
@@ -775,12 +777,13 @@ export class UI {
   gripHint(z: Zone, grip: Grip) {
     if (grip === 'r') return z.sides! >= 24 ? 'Drag to make the hub wider or narrower' : 'Drag a corner to resize and turn the hub';
     if (grip === 'a' || grip === 'b') return 'Drag this end to stretch and swing the pier · the other end stays where it is';
+    if (grip === 'ta' || grip === 'tb') return 'Drag to make this end of the pier wider or narrower · the other end keeps its width, so the pier tapers';
     if (grip === 'm') return z.bend ? 'Drag to bend the pier more or less · pull it back to the line between its ends to straighten it' : 'Drag sideways to bend the pier into a curve · both ends stay where they are';
     return canTurn(z) ? 'Drag to make it wider or narrower' : `Drag this edge to resize the ${ZONES[z.type].short.toLowerCase()} · the opposite edge stays where it is`;
   }
   /** Can a built zone take this shape? */
   placeGeom(z: Zone, g: Geom) {
-    if (g.sides || g.rot || g.bend) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, bend: g.bend, level: z.level }, z.id);
+    if (g.sides || g.rot || g.bend || g.taper) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, bend: g.bend, taper: g.taper, level: z.level }, z.id);
     const r = { x: g.x, y: g.y, w: g.w, h: g.h };
     const chk = this.placeModule(r, z.type, z.level, z.id); const tw = this.twin(z);
     return chk.ok && tw ? this.placeModule(r, tw.type, tw.level, tw.id) : chk;
@@ -789,7 +792,7 @@ export class UI {
     // every square metre carries what was paid for it: the fit-out tier, a mezzanine, garage decks
     const rate = (q: Zone) => ZONES[q.type].costPerM2 + (q.tier ? ZONES[q.type].tierCostPerM2 : 0) + (q.mezz ? GROWTH.mezzCostPerM2 * 0.3 : 0) + Math.max(0, (q.floors ?? 1) - 1) * GROWTH.deckCostPerM2;
     const tw = this.twin(z);
-    return (g.sides || g.bend ? polyArea(zonePts(g)) : g.w * g.h) * (rate(z) + (tw ? rate(tw) : 0));
+    return (g.sides || g.bend || g.taper ? polyArea(zonePts(g)) : g.w * g.h) * (rate(z) + (tw ? rate(tw) : 0));
   }
   /** Stop whatever is being dragged and put it back (Esc). */
   cancelDrag() {
@@ -1533,6 +1536,7 @@ export class UI {
       <h2>${def.label} <span class="lvl">${LEVELS[z.level].short}</span></h2>
       <p class="muted">${def.blurb}</p>
       <dl class="kv">
+        ${z.taper ? `<dt>Taper</dt><dd>${n0(endWidths(z)[0])} m wide at its west end, ${n0(endWidths(z)[1])} m at its east end (of its own frame)</dd>` : ''}
         <dt>Size</dt><dd>${arcOf(z) ? `${n0(arcOf(z)!.La)} m round the bend × ${n0(z.h)} m · radius ${n0(arcOf(z)!.R)} m · ${n0(polyArea(zonePts(z)))} m²` : `${n0(z.w)} × ${n0(z.h)} m · ${n0(floorArea(z))} m²`}</dd>
         ${(() => { const T = s.d.termOf.get(z.id); return T ? `<dt>Terminal</dt><dd class="${T.active ? '' : 'bad'}">${T.name} · ${T.active ? 'open' : 'closed'}</dd>` : ''; })()}
         ${z.type === 'concourse' ? this.gateSidesHTML(z) : ''}

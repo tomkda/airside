@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts } from './shapes';
+import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
@@ -30,6 +30,8 @@ export interface Zone {
   rot?: number;
   /** v0.20: the bar is bent into an arc: its ends stay, its middle moves this far to its own south (north if negative). See shapes.ts. */
   bend?: number;
+  /** v0.21: the bar tapers: its east end is this much wider than its west end; `h` is the width half way along. See shapes.ts. */
+  taper?: number;
   /** v0.18: a round or polygonal hall: a regular polygon of this many sides in the circle that fits the box (24+ is round). */
   sides?: number;
   /** v0.12: the id of the module stacked with this one (check-in over baggage claim): they move and go together. */
@@ -67,10 +69,15 @@ export function migrateWorld(w: World): World {
   // v0.12: a hall's two halves point at each other; drop a pointer whose other half is gone.
   for (const z of w.zones) if (z.rot !== undefined && !(z.type === 'concourse' && isFinite(z.rot))) delete z.rot;   // v0.17: only concourses turn
   for (const z of w.zones) if (z.sides !== undefined && !(z.type === 'concourse' && z.sides >= 3 && z.sides <= 64)) delete z.sides;   // v0.18: or are round
+  for (const z of w.zones) if (z.taper !== undefined) {   // v0.21: or taper, with both ends a width an end may be
+    if (z.type !== 'concourse' || z.sides || !isFinite(z.taper)) { delete z.taper; continue; }
+    const m = Math.max(0, 2 * Math.min(z.h - END_WIDTH.min, END_WIDTH.max - z.h)); z.taper = Math.max(-m, Math.min(m, z.taper)); if (Math.abs(z.taper) < 2) delete z.taper;
+  }
   for (const z of w.zones) if (z.bend !== undefined) {   // v0.20: or bend, and only as far as their width allows
     if (z.type !== 'concourse' || z.sides || !isFinite(z.bend)) { delete z.bend; continue; }
-    const m = maxBend(z.w, z.h); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
+    const m = maxBend(z.w, z.h + Math.abs(z.taper ?? 0) / 2); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
   }
+
   for (const z of w.zones) if (z.pair !== undefined && !w.zones.some(q => q.id === z.pair && q.pair === z.id)) delete z.pair;
   // v0.11: roundabouts, and roads that may curve or run one way. Drop anything malformed.
   w.rounds = (Array.isArray(w.rounds) ? w.rounds : []).filter(r => r && isFinite(r.x) && isFinite(r.y) && (r.size === 0 || r.size === 1));
@@ -343,7 +350,7 @@ export function canPlaceWay(world: World, kind: WayKind, a: Pt, b: Pt, aprons: A
  * v0.17: can a pier (a concourse at any angle) go here? It may overlap other concourses: that is how it joins a
  * building. It may not overlap anything else on its level, cross a taxiway, or reach into a runway strip.
  */
-export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; level: Level }, ignoreId = -1): PlaceCheck {
+export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; level: Level }, ignoreId = -1): PlaceCheck {
   if (z.sides && Math.min(z.w, z.h) < HALL.minDia) return { ok: false, reason: `Too small: a hall needs ${HALL.minDia} m across at least` };
   if (Math.max(z.w, z.h) < PIER.minLen) return { ok: false, reason: `Too short: a pier needs ${PIER.minLen} m at least` };
   const pts = zonePts(z); const edges = pts.map((p, i) => [p, pts[(i + 1) % pts.length]] as const);
@@ -361,7 +368,7 @@ export function canPlacePier(world: World, z: { x: number; y: number; w: number;
 }
 /** Does a segment pass through a turned zone (2 m inside its outline)? */
 function segInZone(z: Zone, a: Pt, b: Pt): boolean {
-  if (z.sides || z.bend) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
+  if (z.sides || z.bend || z.taper) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
   const la = toLocal(z, a), lb = toLocal(z, b);
   return rectSegDist(inset(z, 2), la, lb) === 0;
 }
@@ -401,7 +408,7 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
 }
 
 /** v0.19: can this shape be swung round by its ends? A pier or satellite can: a concourse that belongs to no site. */
-export const canTurn = (z: Zone) => z.type === 'concourse' && !z.sides && (z.site === undefined || !!z.rot || !!z.bend);
+export const canTurn = (z: Zone) => z.type === 'concourse' && !z.sides && (z.site === undefined || !!z.rot || !!z.bend || !!z.taper);
 
 // ------------------------------------------------------------ wind
 export interface Wind { from: number; kt: number }
@@ -460,13 +467,13 @@ export function derive(source: World): Derived {
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     let C;
     if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
-    else if (z.rot || z.bend) {
+    else if (z.rot || z.bend || z.taper) {
       // an angled pier is laid out in its own upright frame, then every piece is turned into place
       // (v0.19: its neighbours are brought into that frame too, as the box each one fills there, so the pier finds
       //  its entry and its windowless walls where they really are)
       // (v0.20: a bent pier too: its frame is as long as its arc, and what is laid out on it is carried onto the curve)
-      const zl = { ...z, ...frameOf(z), rot: undefined, bend: undefined };
-      const nearParts = zoneParts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot, bend: z.bend });   // the pier's outline, 2 m out
+      const zl = { ...z, ...frameOf(z), rot: undefined, bend: undefined, taper: undefined };
+      const nearParts = zoneParts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot, bend: z.bend, taper: z.taper });   // the pier's outline, 2 m out
       const local: World = { ...world, zones: world.zones.map(o => {
         if (o.id === z.id) return zl;
         // only the part of a neighbour that is at the pier counts, or its box would wall off stretches it never touches;
