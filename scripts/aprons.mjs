@@ -30,7 +30,12 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
 { const w = sampleWorld(); const z = pier(w, 3568, 2718, 400, 50, 20); const r = rep('a 20° pier drawn into the concourse, no taxiway drawn', w);
   const mine = r.d.gates.filter(g => g.zone.id === z.id);
   check('the pier has stands on both long sides and its end', mine.length >= 14 && mine.every(g => g.apron.self));
-  check('every pier gate reaches a runway', mine.every(g => g.rwys[0].size > 0)); }
+  check('every pier gate reaches a runway', mine.every(g => g.rwys[0].size > 0));
+  // v0.24: the pier and the concourse are one building, and its stands are laid along the one outline
+  const sl = r.d.gateSlots; let near = Infinity;
+  for (let i = 0; i < sl.length; i++) for (let j = i + 1; j < sl.length; j++) near = Math.min(near, Math.hypot(sl[i].stand.x - sl[j].stand.x, sl[i].stand.y - sl[j].stand.y));
+  check('no two stands of the merged building share ground (nearest pair ' + near.toFixed(0) + ' m apart)', near >= 30);
+  check('every gate of the merged building has its own name', new Set(sl.map(q => q.zone.id + ':' + q.key)).size === sl.length && new Set(r.d.gates.map(g => g.id)).size === r.d.gates.length); }
 { const w = sampleWorld(); const z = pier(w, 3568, 2718, 400, 40, 20); const r = rep('a 40 m pier (too narrow for a stand on its end)', w);
   const mine = r.d.gates.filter(g => g.zone.id === z.id);
   check('its two taxilanes meet round the end, so both sides reach a runway', mine.length >= 14 && mine.every(g => g.rwys[0].size > 0)); }
