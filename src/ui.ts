@@ -92,6 +92,7 @@ export class UI {
   private click3d: Pt | null = null;
   /** v0.22: the corners clicked so far while a path of piers is being drawn. */
   private path: Pt[] | null = null;
+  private pathLast: Pt | null = null;   // where on screen the last corner was clicked
   /** v0.19: a live edit in progress: the layout as it was, the shapes as they were, and a zone that exists only while dragging. */
   private live: null | { d0: Derived; saved: { z: Zone; g: Geom }[]; temp: Zone[]; dirty: boolean; touched: boolean } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
@@ -100,6 +101,14 @@ export class UI {
   /** v0.12: sound. `nextSound` lets an edit say what it sounded like before `changed()` plays it. */
   snd = new Sound(); nextSound: 'place' | 'demolish' | 'none' = 'place';
   constructor(public sim: Sim, public ren: Renderer, public ctl: Controls) {
+    // v0.22: a save never includes a draft. Anything may save while a shape is being drawn (a panel control, an
+    // offer answered); the drafts are lifted out for the moment of the save.
+    const save0 = ctl.save.bind(ctl);
+    ctl.save = () => {
+      const lv = this.live; if (!lv?.temp.length) { save0(); return; }
+      const all = this.sim.world.zones; this.sim.world.zones = all.filter(z => !lv.temp.includes(z));
+      try { save0(); } finally { this.sim.world.zones = all; }
+    };
     this.buildChrome();
     this.bindInput();
     this.setTool('select');
@@ -123,6 +132,7 @@ export class UI {
     $('#toolopts').addEventListener('click', e => {
       const b = (e.target as HTMLElement).closest('[data-opt]') as HTMLElement | null; if (!b) return;
       const [k, v] = b.dataset.opt!.split(':');
+      if (this.path) this.cancelDrag();   // a path half drawn is given up when its tool's options change
       (this.opt as Record<string, number>)[k] = Number(v);
       this.renderToolOpts(); this.hint(this.toolHint());
     });
@@ -148,6 +158,7 @@ export class UI {
     $('#checkToggle').addEventListener('click', () => document.body.classList.toggle('check-open'));
     this.syncSpeed();
     this.ren.canvas.addEventListener('dblclick', e => {
+      if (this.tool !== 'select') return;   // a double click while drawing is two clicks of the drawing tool, not "open this terminal"
       const h = this.hitTest(this.wpt(e as unknown as PointerEvent), true);
       const st = h?.kind === 'site' ? h.site : h?.kind === 'zone' ? siteOf(this.world, h.zone) : undefined;
       if (st) this.openTerminal(st);
@@ -217,6 +228,7 @@ export class UI {
   }
 
   set3d(on: boolean) {
+    this.cancelDrag();   // nothing is left half drawn or half dragged across a change of view
     this.ren.set3d(on);
     this.ren.setOrbitLeft(this.tool === 'select');
     $('#view3d').setAttribute('aria-pressed', String(on));
@@ -820,35 +832,45 @@ export class UI {
     }
     return { zones, cost };
   }
-  pathCheck(zones: Zone[], cost: number) {
-    for (const z of zones) { const c = canPlacePier(this.world, z); if (!c.ok) return c; }
+  pathCheck(zones: Zone[], cost: number, pts?: Pt[]) {
+    // a leg may not double back on the one before it
+    if (pts) for (let i = 2; i < pts.length; i++) {
+      const a = sub(pts[i - 1], pts[i - 2]), b = sub(pts[i], pts[i - 1]);
+      if (dot(norm(a), norm(b)) < -0.86) return { ok: false as const, reason: 'Too sharp a turn: a leg cannot double back on the one before it' };
+    }
+    for (const z of zones) { const c = canPlacePier(this.world, z); if (!c.ok) return z.sides ? { ok: false as const, reason: `The hall at a corner: ${c.reason}` } : c; }
     return this.sim.canAfford(cost) ? { ok: true as const } : { ok: false as const, reason: `Not enough money: ${money(cost)}` };
   }
   pathPreview(p: Pt) {
     const pts = this.path!; this.liftDraft();
     const leg = this.pathLeg(pts[pts.length - 1], p);
     const all = leg ? [...pts, leg.end] : pts;
-    const { zones, cost } = this.pathZones(all); const chk = zones.length ? this.pathCheck(zones, cost) : { ok: false as const, reason: `Move out to where the first leg ends: ${PIER.minLen} m at least` };
+    const { zones, cost } = this.pathZones(all); const chk = zones.length ? this.pathCheck(zones, cost, all) : { ok: false as const, reason: `Move out to where the first leg ends: ${PIER.minLen} m at least` };
     this.liveDraft(chk.ok ? zones : this.pathZones(pts).zones);
     this.ren.ghost = leg ? { kind: 'zone', rect: leg.z, ok: chk.ok } : null;
     const legs = all.length - 1; const total = zones.filter(z => !z.sides).reduce((t, z) => t + z.w, 0);
     this.hint(chk.ok ? `${legs} leg${legs > 1 ? 's' : ''} · ${n0(total)} m in all · ${money(cost)} · click to set this corner, click it again or press Enter to build` : chk.reason!, !chk.ok);
   }
   pathClick(p: Pt, sx: number, sy: number) {
-    if (!this.path) { this.path = [{ x: snap(p.x, 5), y: snap(p.y, 5) }]; this.hint('Now click the first corner, or the far end'); return; }
-    const pts = this.path; const last = pts[pts.length - 1]; const [lx, ly] = this.ren.P(last.x, last.y);
-    if (pts.length > 1 && Math.hypot(lx - sx, ly - sy) < 14) { this.pathBuild(); return; }   // the last corner again: build
+    if (!this.path) { this.path = [{ x: snap(p.x, 5), y: snap(p.y, 5) }]; this.pathLast = { x: sx, y: sy }; this.hint('Now click the first corner, or the far end'); return; }
+    const pts = this.path; const last = pts[pts.length - 1];
+    // the same spot clicked again (where the pointer was, not where the corner snapped to): build
+    const again = !!this.pathLast && Math.hypot(this.pathLast.x - sx, this.pathLast.y - sy) < 8;
+    if (again) { if (pts.length > 1) this.pathBuild(); return; }
+    this.pathLast = { x: sx, y: sy };
     const leg = this.pathLeg(last, p); if (!leg) { this.toast(`A leg is ${PIER.minLen} m at least`, 'warn'); return; }
     this.liftDraft();
-    const { zones, cost } = this.pathZones([...pts, leg.end]); const chk = this.pathCheck(zones, cost);
+    const { zones, cost } = this.pathZones([...pts, leg.end]); let chk = this.pathCheck(zones, cost, [...pts, leg.end]);
+    // the hall this corner would get if the path goes on from here must fit too, or every next leg would be refused
+    if (chk.ok) { const R = Math.max(HALL.minDia / 2, this.opt.pierW / 2 + 4); const c = canPlacePier(this.world, { x: leg.end.x - R, y: leg.end.y - R, w: 2 * R, h: 2 * R, sides: 32, level: 1 }); if (!c.ok) chk = { ok: false as const, reason: `A corner here would need a hall, and: ${c.reason}. End the path one corner back, or put this corner somewhere else.` }; }
     if (!chk.ok) { this.toast(chk.reason ?? 'Cannot go there', 'bad'); this.pathPreview(p); return; }
     pts.push(leg.end); this.pathPreview(p);
   }
   pathBuild() {
     const pts = this.path; if (!pts) return;
-    this.path = null; this.endLive(false); this.ren.ghost = null;
+    this.path = null; this.pathLast = null; this.endLive(false); this.ren.ghost = null;
     if (pts.length < 2) { this.settle(); this.hint(this.toolHint()); return; }
-    const { zones, cost } = this.pathZones(pts); const chk = this.pathCheck(zones, cost);
+    const { zones, cost } = this.pathZones(pts); const chk = this.pathCheck(zones, cost, pts);
     if (!chk.ok) { this.settle(); this.toast(chk.reason ?? 'Cannot build that', 'bad'); this.hint(this.toolHint()); return; }
     this.sim.spend(cost); this.world.nextId += zones.length; this.world.zones.push(...zones);
     this.changed();
@@ -861,7 +883,7 @@ export class UI {
 
   /** Stop whatever is being dragged and put it back (Esc). */
   cancelDrag() {
-    if (this.path) { this.path = null; this.endLive(false); this.settle(); this.ren.ghost = null; this.hint(this.toolHint()); return true; }
+    if (this.path) { this.path = null; this.pathLast = null; this.endLive(false); this.settle(); this.ren.ghost = null; this.hint(this.toolHint()); return true; }
     if (!this.drag) return false;
     this.endLive(false); this.settle(); this.drag = null; this.ren.ghost = null; this.ren.canvas.style.cursor = 'default';
     this.hint(this.toolHint());
@@ -905,8 +927,8 @@ export class UI {
       this.settle(); this.hint(this.toolHint());
       return;
     }
-    // a drawing tool's draft goes; the real thing is built below
-    this.endLive(false);
+    // a drawing tool's draft goes; the real thing is built below (a path's draft stays: it is not drawn by dragging)
+    if (!this.path) this.endLive(false);
     if (dr.mode === 'runway' && g?.a && g.b) {
       if (g.ok) this.buildRunway(g.a, g.b);
       else if (dist(g.a, g.b) > 50) this.toast(canPlaceRunway(this.world, g.a, g.b).reason ?? 'Not enough money', 'bad');
@@ -952,8 +974,9 @@ export class UI {
     if ((e.target as HTMLElement).closest('input, select, textarea')) return;
     const k = e.key;
     // any key that edits or changes the view first puts back whatever is being dragged
-    if (this.path && (k === 'Enter' || k === 'Backspace')) { e.preventDefault(); if (k === 'Enter') this.pathBuild(); else { this.path.pop(); if (!this.path.length) this.cancelDrag(); else this.pathPreview(this.path[this.path.length - 1]); } return; }
+    if (this.path && (k === 'Enter' || k === 'Backspace')) { e.preventDefault(); if (k === 'Enter') this.pathBuild(); else { this.path.pop(); this.pathLast = null; if (!this.path.length) this.cancelDrag(); else this.pathPreview(this.path[this.path.length - 1]); } return; }
     if ((this.drag && this.drag.mode !== 'pan' || this.path) && !['Shift', 'Control', 'Alt', 'Meta', 'Escape', ' ', '+', '=', '-'].includes(k)) this.cancelDrag();
+    if ((e.ctrlKey || e.metaKey) && this.path && (k === 'z' || k === 'Z' || k === 'y')) { e.preventDefault(); this.cancelDrag(); return; }   // undo mid-path gives the path up, no more
     if (e.ctrlKey || e.metaKey) { if (k === 'z' || k === 'Z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); } else if (k === 'y') { e.preventDefault(); this.redo(); } return; }
     const t = TOOLS.find(x => x.key.toLowerCase() === k.toLowerCase());
     if (t) { this.cancelDrag(); this.setTool(t.id); return; }
