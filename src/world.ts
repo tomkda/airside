@@ -888,8 +888,8 @@ export function derive(source: World): Derived {
   issues.sort((p, q) => ['error', 'warn', 'info'].indexOf(p.level) - ['error', 'warn', 'info'].indexOf(q.level));
   if (!issues.some(i => i.level !== 'info')) issues.unshift({ level: 'info', text: `${terminals.filter(t => t.active).length === 1 ? 'Terminal is' : 'All terminals are'} open. Watch the queues.` });
 
-  // the same line is said once (two aprons of one building can earn the same remark)
-  { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = issues[k].level + issues[k].text; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
+  // the same line about the same building is said once (two of its aprons can earn the same remark)
+  { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {
     runways, aprons, gates, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
