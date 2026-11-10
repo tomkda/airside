@@ -1166,7 +1166,7 @@ export class Renderer {
   zoneLabel(sim: Sim, zn: Zone, top: number) {
     const z = this.cam.zoom;
     if (z < 0.42) return;
-    if (zn.sides && Math.min(zn.w, zn.h) < 80 && z < 1.2) return;   // a small corner hall between two piers needs no name of its own until you are close
+    if (zn.sides && Math.min(zn.w, zn.h) < 80 && z < 1.2 && (sim.d.shellOf.get(zn.id)?.ids.length ?? 1) < 2) return;   // a small corner hall between two piers needs no name of its own until you are close
     const u = sim.d.units.get(zn.id);
     const def = ZONES[zn.type];
     let c = heart(zn);   // (the middle of the building itself: a bent pier's box centre can lie outside it)
@@ -1175,11 +1175,15 @@ export class Renderer {
     const big = zn.type === 'curb' || zn.type === 'parking';
     const px = clamp(10 * z, 8, 11);
     const bg = 'rgba(240,232,215,0.82)';
+    // v0.23: a building of several pieces is named once, on its largest piece, with the whole building's numbers
+    const shell = zn.type === 'concourse' ? sim.d.shellOf.get(zn.id) : undefined; const many = !!shell && shell.ids.length > 1;
+    if (many) { const big0 = shell!.ids.map(id => sim.d.zones.find(q => q.id === id)!).reduce((m, q) => (q.w * q.h > m.w * m.h ? q : m)); if (big0.id !== zn.id) return; }
     const title = zn.type === 'concourse' ? `CONCOURSE ${sim.d.gateLetter.get(zn.id) ?? ''}` : def.short.toUpperCase();
     this.label(title, c, top, px, big ? PAL.ink2 : PAL.ink, { weight: 700, spacing: 2, bg });
     if (u && z > 0.65) {
       const ls = sim.d.lease.get(zn.id);
-      const sub2 = zn.type === 'concourse' ? `${u.count} gates · ${ls?.count ?? 0} of ${ls?.max ?? 0} lots open` : `${u.count} ${def.unit}`;
+      const sum = (f: (id: number) => number) => (many ? shell!.ids.reduce((t, id) => t + f(id), 0) : f(zn.id));
+      const sub2 = zn.type === 'concourse' ? `${sum(id => sim.d.units.get(id)?.count ?? 0)} gates · ${sum(id => sim.d.lease.get(id)?.count ?? 0)} of ${sum(id => sim.d.lease.get(id)?.max ?? 0)} lots open` : `${u.count} ${def.unit}`; void ls;
       this.label(sub2, { x: c.x, y: c.y + 13 / (z * this.yScale) }, top, px - 1.5, PAL.ink2, { weight: 500, spacing: 1, bg });
     }
   }

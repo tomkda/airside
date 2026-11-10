@@ -37,7 +37,15 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.22)
+## What's in the alpha (v0.23)
+
+- **One building, one outline (v0.23):** the first step of a new foundation. A terminal's airside is no longer drawn as a pile of separate pieces.
+  - **Pieces blend.** Every concourse, pier and hub of a building is merged into one outline. Where pieces meet, the inside corner is filled in with a 16 m radius; outside corners are eased with a 5 m radius. Nothing is clipped where one piece runs into another, and no piece shows its own edge inside the building.
+  - **One name.** A building of several pieces has one name and one gate letter, with its gates numbered in one run and its gate and lot totals shown once.
+  - **One roof.** In 3D a building of several pieces has a single roof to the same rounded outline.
+  - **Whatever your shapes add up to.** The outline is computed from the shapes you put down, so anything that makes a shape (a pier, a path, a hub, and later a free-drawn area or a cut-out courtyard) blends into the building by itself.
+  - What does not follow the outline yet: stands and aprons still run along each piece's own walls, interiors are still laid out piece by piece, and halls and security are not part of it. Those are the next steps.
+
 
 - **Draw a terminal as a line (v0.22):** the Pier tool has a second way of drawing.
   - **A path.** Set the tool to "A path", click where the building starts, then click each corner in turn. Click the last corner again, or press `Enter`, to build it. `Backspace` takes the last corner back and `Esc` gives up. Each leg can run at any angle (5° steps) and is 60 m long at least.
@@ -272,6 +280,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | `src/geom.ts` | Geometry helpers and seeded RNG |
 | `src/net.ts` | Generic line networks: split drawn segments into graphs; Dijkstra, all-pairs routing |
 | `src/gates.ts` | Gate slots on each side of a concourse: along a drawn taxiway, or on an apron the side lays for itself, with its taxilane and link to the airfield |
+| `src/shell.ts` | A building as one outline: every concourse piece merged and its corners rounded (clipper-lib) |
 | `src/shapes.ts` | Turned rectangles, bent bars and hubs: outlines, overlaps, the straight frame a bent pier is laid out on, and the grips that reshape them |
 | `src/frontage.ts` | Roads meeting terminals: curbs grown in the gap, two-level frontage roads, road guides; access drives, sidewalks and the AirTrain line that facilities lay for themselves |
 | `src/ways.ts` | Roads as drawn: curves cut into chords, one-way roads, roundabouts and how roads are cut back to their rings |
@@ -295,6 +304,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 
 - Construction is instant; no build time or disruption yet.
 - Shapes so far are piers at any angle, straight or bent into one arc, of even width or tapering evenly from one end to the other, and regular hubs (round, six or eight sides). There are no S-curves, free-drawn outlines or ellipses yet, and a pier cannot bulge in the middle. Halls, security and concourses built inside a terminal site stay upright, straight and of even width (their edges move, but they do not turn, bend or taper). Where buildings overlap, both roofs are drawn.
+- The merged outline is drawn but not yet used: stands, aprons, interiors, selection and the tilted plan view still work on the separate pieces, so a rounded corner can show a sliver of floor with nothing planned on it, roof glazing lines of two pieces cross at a junction, and the Operations panel still counts pieces as concourses. Halls and security keep their own square outlines.
 - A path of piers is separate pieces that happen to touch: moving or reshaping one leg does not carry its neighbours along, so a leg pulled away from its corner hall stops being part of the building until it is put back. Each leg and corner hall is its own concourse with its own gate letter. A path may cross itself or another building's apron; nothing stops it but the usual placement rules for each piece.
 - On a tapered pier the interior is not re-planned for the width at each point: it is the middle-width layout scaled across, so at a narrow end the holdrooms, spine and lots are all shallower than the planning rules would make them, and a lot's kind (kiosk, shop, restaurant) is chosen from its depth at the middle width. On a bent and tapered pier the stand spacing along a curved wall is set from the wall's radius half way along.
 - On a bent pier: shop lots keep straight walls (each is short), so on a tight bend neighbouring lots meet at a slight angle; the 3D model is a row of short straight lengths, and its opened-up interior is not drawn (it shows as a closed building); the starter guides for drawing a taxiway do not follow a curved wall, since a straight taxiway cannot run parallel to one. A taxiway cannot be curved to follow a bent pier: its stands are always self-laid.

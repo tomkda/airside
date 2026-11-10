@@ -450,7 +450,10 @@ export function derive(source: World): Derived {
   const laidDrives = autoRoads(world, world.zones, rects1, SITE.highwayY, SITE.width, GROWTH.autoRoadReach, fore);
   const keep: { a: Pt; b: Pt }[] = [];
   for (const w of [...source.ways.filter(q => q.kind !== 'taxi'), ...fore, ...laid, ...laidDrives]) for (const [a, b] of waySegs(w)) keep.push({ a, b });
-  const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep });
+  // v0.23: one outline per building; its pieces share a gate letter and one run of gate numbers
+  const shells = shellsOf(source.zones); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
+  const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
+  const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
   for (const [id, u] of GA.units) units.set(id, u);
   const gateLetter = GA.letters;
@@ -930,8 +933,6 @@ export function derive(source: World): Derived {
   issues.sort((p, q) => ['error', 'warn', 'info'].indexOf(p.level) - ['error', 'warn', 'info'].indexOf(q.level));
   if (!issues.some(i => i.level !== 'info')) issues.unshift({ level: 'info', text: `${terminals.filter(t => t.active).length === 1 ? 'Terminal is' : 'All terminals are'} open. Watch the queues.` });
 
-  // v0.23: one outline per building
-  const shells = shellsOf(source.zones); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
   // the same line about the same building is said once (two of its aprons can earn the same remark)
   { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {

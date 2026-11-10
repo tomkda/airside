@@ -417,6 +417,8 @@ export class Renderer3D {
       add3(labelSprite(T ? `T${T.id}` : 'T', st, T?.active ? PAL.ink : PAL.bad));
     }
 
+    // v0.23: a building of several pieces gets one roof over all of them, to its rounded outline
+    for (const sh of d.shells) if (sh.ids.length > 1 && !sh.ids.some(id => rising.has(id))) { const L1 = LEVELS[sh.level as 0 | 1]; add3(extrudeShape(sh.rings, L1.z1 - 0.5, L1.z1 + 0.25, ROOF)); }
     // ---- buildings: a glazed box under a white roof, or opened up (glass walls, floor and fit-out)
     const openSite = (z: Zone) => lod === 'terminal' && (focus === null || siteOf(sim.world, z)?.id === focus || d.termOf.get(z.id)?.site?.id === focus);
     const solid: Box[] = []; const glazing: Box[] = []; const see: Box[] = []; const fit: Box[] = []; const roofs: Box[] = [];
@@ -800,6 +802,15 @@ function prism(pts: Pt[], z0: number, z1: number, c: string, material?: THREE.Ma
   for (let i = 0; i < n; i++) idx.push(t0, t0 + 1 + ((i + 1) % n), t0 + 1 + i);
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
   const m = new THREE.Mesh(g, material ?? new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide })); m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+/** A slab to an outline with holes. */
+function extrudeShape(rings: Pt[][], z0: number, z1: number, c: string) {
+  const ar = (r: Pt[]) => { let a = 0; for (let i = 0; i < r.length; i++) { const p = r[i], q = r[(i + 1) % r.length]; a += p.x * q.y - q.x * p.y; } return Math.abs(a); };
+  const sorted = [...rings].sort((p, q) => ar(q) - ar(p)); const sh = new THREE.Shape(sorted[0].map(p => new THREE.Vector2(p.x, -p.y)));
+  for (const h of sorted.slice(1)) sh.holes.push(new THREE.Path(h.map(p => new THREE.Vector2(p.x, -p.y))));
+  const m = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: z1 - z0, bevelEnabled: false }), new THREE.MeshLambertMaterial({ color: c }));
+  m.rotation.x = -Math.PI / 2; m.position.y = z0; m.castShadow = true; m.receiveShadow = true;
   return m;
 }
 function flatShape(pts: Pt[], z: number, c: string) {
