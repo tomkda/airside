@@ -37,7 +37,14 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.25)
+## What's in the alpha (v0.26)
+
+- **Interiors that stop at the building's own spaces (v0.26):** the pieces of a building now plan round the halls, food courts and gardens it keeps where they meet.
+  - **Fit-out gives way.** No holdroom seating, counter or restroom of either piece stands in a junction space, and the spine and moving walkways break off at its edge and start again beyond it. The space reads as one room.
+  - **Lots front the space.** A shop lot within 9 m of a hall, food court or garden is seen across it, so it scores higher for visibility. On a food court, food tenants bid more for it; on a hall, food and retail; beside a garden, sit-down food, as for an apron window.
+  - **Courtyards in 3D.** A courtyard is a lawn with trees in the 3D view.
+  - Tables and names of these spaces show only for the open terminal.
+
 
 - **Halls, gardens and courtyards where a building's pieces meet (v0.25):** the third step of the new foundation, and the first part of planning a building's inside as a whole.
   - **Junction spaces.** Where two pieces of a building run into each other, the overlap and a few metres round it are kept clear as one open space that belongs to the building, not to either piece. By size it is a winter garden (under 400 m²), a food court (400–1,500 m²) or a hall with planting in the middle and seating round it (over 1,500 m², or where three pieces meet).
@@ -324,7 +331,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 
 - Construction is instant; no build time or disruption yet.
 - Shapes so far are piers at any angle, straight or bent into one arc, of even width or tapering evenly from one end to the other, and regular hubs (round, six or eight sides). There are no S-curves, free-drawn outlines or ellipses yet, and a pier cannot bulge in the middle. Halls, security and concourses built inside a terminal site stay upright, straight and of even width (their edges move, but they do not turn, bend or taper). Where buildings overlap, both roofs are drawn.
-- Junction spaces are drawn and kept clear of shops, but they do not trade yet: a food court earns nothing and passengers do not dwell in a garden. Each piece's holdrooms, spine and lots are still planned for that piece alone, so a holdroom can reach into a hall. They are not shown in 3D or in the tilted plan view.
+- Junction spaces raise the value of the lots round them but have no trade of their own yet: a food court has no counters in it, and passengers do not sit or dwell there. A gate whose holdroom fell in a hall keeps its capacity but has no seats drawn. Halls, food courts and gardens under the roof are not shown in 3D or in the tilted plan view; courtyards are shown in 3D.
 - The merged outline carries the stands, but interiors, selection and the tilted plan view still work on the separate pieces, so a rounded corner can show a sliver of floor with nothing planned on it, a gate at a filled-in junction can have its door a few metres from its holdroom, roof glazing lines of two pieces cross at a junction, and the Operations panel still counts pieces as concourses. Halls and security keep their own square outlines.
 - On a building of several pieces a gate is named by where it is along its wall, so its name can change when that piece is reshaped, and gates switched off before v0.24 on such buildings may now refer to a different stand. The inspector's side-by-side gate list is empty for such pieces. A one-piece building keeps its gate names.
 - A path of piers is separate pieces that happen to touch: moving or reshaping one leg does not carry its neighbours along, so a leg pulled away from its corner hall stops being part of the building until it is put back. Each leg and corner hall is its own concourse with its own gate letter. A path may cross itself or another building's apron; nothing stops it but the usual placement rules for each piece.

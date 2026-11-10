@@ -474,15 +474,19 @@ export class Renderer3D {
 
     // ---- trees, lamps, floodlight masts, the control tower
     const tg = treeGeo();
-    const crowns = new THREE.InstancedMesh(tg.crown, new THREE.MeshLambertMaterial({ color: '#ffffff' }), Math.max(1, sc.trees.length));
-    const trunks = new THREE.InstancedMesh(tg.trunk, new THREE.MeshLambertMaterial({ color: '#7A6A55' }), Math.max(1, sc.trees.length));
+    // (v0.26: with the trees of every courtyard a building encloses, which stand on a lawn)
+    const courts = d.junctions.filter(j => j.kind === 'court');
+    for (const j of courts) add3(extrudeShape(j.rings, 0.05, 0.22, '#B4B98F'));
+    const allTrees = [...sc.trees, ...courts.flatMap(j => j.seeds.map(t => { const h = Math.sin(t.x * 12.9898 + t.y * 78.233) * 43758.5453; return { x: t.x, y: t.y, s: 5.5 * t.s, k: h - Math.floor(h) }; }))];
+    const crowns = new THREE.InstancedMesh(tg.crown, new THREE.MeshLambertMaterial({ color: '#ffffff' }), Math.max(1, allTrees.length));
+    const trunks = new THREE.InstancedMesh(tg.trunk, new THREE.MeshLambertMaterial({ color: '#7A6A55' }), Math.max(1, allTrees.length));
     const o = this.tmp;
-    sc.trees.forEach((t, i) => {
+    allTrees.forEach((t, i) => {
       o.position.set(t.x, 0, t.y); o.rotation.set(0, t.k * 6, 0); o.scale.set(t.s, t.s * (0.9 + t.k * 0.4), t.s); o.updateMatrix();
       crowns.setMatrixAt(i, o.matrix); trunks.setMatrixAt(i, o.matrix);
       crowns.setColorAt(i, this.col.set(t.k < 0.33 ? '#A9B28A' : t.k < 0.66 ? '#98A47D' : '#B7B694'));
     });
-    crowns.count = trunks.count = sc.trees.length; crowns.castShadow = true; crowns.receiveShadow = true; trunks.castShadow = true;
+    crowns.count = trunks.count = allTrees.length; crowns.castShadow = true; crowns.receiveShadow = true; trunks.castShadow = true;
     add3(crowns); add3(trunks);
     const poles = new THREE.InstancedMesh(poleGeo(), new THREE.MeshLambertMaterial({ color: '#6D6454' }), Math.max(1, sc.lamps.length + sc.masts.length));
     const glow: number[] = []; const pools: { p: Pt; r: number }[] = [];
