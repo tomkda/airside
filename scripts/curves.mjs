@@ -120,6 +120,14 @@ for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 
   const across = mine.filter(g => (g.stand.y - 19 - tw.a.y) < 8).length;
   console.log('a taxiway 60 m off the mid-point of a splayed wall:', mine.length, 'stands on that wall,', across, 'with a tail within 8 m of its centreline');
   check('no stand parks across the taxiway', across === 0); }
+{ // v0.22: a path of piers. Two legs that run into a small round hall at the corner are one building.
+  const w = sampleWorld(); const leg = (a, b) => { const L = Math.hypot(b.x - a.x, b.y - a.y); let rot = Math.atan2(b.y - a.y, b.x - a.x); if (rot > Math.PI / 2) rot -= Math.PI; else if (rot <= -Math.PI / 2) rot += Math.PI;
+    const z = { id: w.nextId++, type: 'concourse', level: 1, x: (a.x + b.x) / 2 - L / 2, y: (a.y + b.y) / 2 - 25, w: L, h: 50, tier: 0, cls: 2, rot: rot || 1e-4 }; w.zones.push(z); return z; };
+  const A = { x: 3390, y: 2650 }, B = { x: 3600, y: 2780 }, C = { x: 3900, y: 2780 };
+  const l1 = leg(A, B); w.zones.push({ id: w.nextId++, type: 'concourse', level: 1, x: B.x - 30, y: B.y - 30, w: 60, h: 60, tier: 0, cls: 2, sides: 32 }); const l2 = leg(B, C);
+  const d = derive(w); const T = d.termOf.get(l2.id); const g2 = d.gates.filter(g => g.zone.id === l2.id);
+  console.log('two legs and a corner hall, drawn as a path out of the concourse:', T ? T.name + (T.active ? ' open' : ' closed') + ', ' + T.gateAreas + ' concourses' : 'no terminal', '| people movers', d.trainLinks.filter(l => l.apm).length, '| far leg', g2.length, 'gates,', g2.filter(g => g.rwys[0].size).length, 'reach a runway');
+  check('a path is one building: no people mover, and the far leg has working gates', T && T.active && T.gateAreas === 4 && d.trainLinks.filter(l => l.apm).length === 0 && g2.length >= 6 && g2.every(g => g.rwys[0].size > 0)); }
 { // two days of flying from the bent pier alone
   const { w, z } = mk(-110, { w: 420 });
   const sim = new Sim(w, 7); const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); main.off = [...Array(12).keys()].map(i => 'n' + i).concat(['e0', 'w0']);

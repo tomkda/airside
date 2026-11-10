@@ -74,7 +74,7 @@ const GRIP: GripLimits = { minLen: PIER.minLen, minWide: 30, maxWide: 120, minDi
 export class UI {
   tool: Tool = 'select';
   tab: 'inspect' | 'ops' | 'report' = 'ops';
-  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 0, pierW: 50, hub: 32 };
+  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 0, pierW: 50, hub: 32, pierPath: 0 };
   private drag: null | {
     mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip';
     /** v0.19: a grip on a built shape, the shape as it was when the drag began, and whether where it is now is allowed */
@@ -90,6 +90,9 @@ export class UI {
   private lastPanel = 0;
   private confirmClear = 0;
   private click3d: Pt | null = null;
+  /** v0.22: the corners clicked so far while a path of piers is being drawn. */
+  private path: Pt[] | null = null;
+  private pathLast: Pt | null = null;   // where on screen the last corner was clicked
   /** v0.19: a live edit in progress: the layout as it was, the shapes as they were, and a zone that exists only while dragging. */
   private live: null | { d0: Derived; saved: { z: Zone; g: Geom }[]; temp: Zone[]; dirty: boolean; touched: boolean } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
@@ -98,6 +101,14 @@ export class UI {
   /** v0.12: sound. `nextSound` lets an edit say what it sounded like before `changed()` plays it. */
   snd = new Sound(); nextSound: 'place' | 'demolish' | 'none' = 'place';
   constructor(public sim: Sim, public ren: Renderer, public ctl: Controls) {
+    // v0.22: a save never includes a draft. Anything may save while a shape is being drawn (a panel control, an
+    // offer answered); the drafts are lifted out for the moment of the save.
+    const save0 = ctl.save.bind(ctl);
+    ctl.save = () => {
+      const lv = this.live; if (!lv?.temp.length) { save0(); return; }
+      const all = this.sim.world.zones; this.sim.world.zones = all.filter(z => !lv.temp.includes(z));
+      try { save0(); } finally { this.sim.world.zones = all; }
+    };
     this.buildChrome();
     this.bindInput();
     this.setTool('select');
@@ -121,6 +132,7 @@ export class UI {
     $('#toolopts').addEventListener('click', e => {
       const b = (e.target as HTMLElement).closest('[data-opt]') as HTMLElement | null; if (!b) return;
       const [k, v] = b.dataset.opt!.split(':');
+      if (this.path) this.cancelDrag();   // a path half drawn is given up when its tool's options change
       (this.opt as Record<string, number>)[k] = Number(v);
       this.renderToolOpts(); this.hint(this.toolHint());
     });
@@ -146,6 +158,7 @@ export class UI {
     $('#checkToggle').addEventListener('click', () => document.body.classList.toggle('check-open'));
     this.syncSpeed();
     this.ren.canvas.addEventListener('dblclick', e => {
+      if (this.tool !== 'select') return;   // a double click while drawing is two clicks of the drawing tool, not "open this terminal"
       const h = this.hitTest(this.wpt(e as unknown as PointerEvent), true);
       const st = h?.kind === 'site' ? h.site : h?.kind === 'zone' ? siteOf(this.world, h.zone) : undefined;
       if (st) this.openTerminal(st);
@@ -215,6 +228,7 @@ export class UI {
   }
 
   set3d(on: boolean) {
+    this.cancelDrag();   // nothing is left half drawn or half dragged across a change of view
     this.ren.set3d(on);
     this.ren.setOrbitLeft(this.tool === 'select');
     $('#view3d').setAttribute('aria-pressed', String(on));
@@ -240,7 +254,7 @@ export class UI {
     else if (t === 'site') html = `<span class="label">New terminal</span>${seg('layout', this.opt.layout, [[0, 'Empty site<span class="opt-note"> · lay it out yourself</span>'], [1, 'With a starter layout']])}`;
     else if (t === 'round') html = `<span class="label">Roundabout</span>${seg('round', this.opt.round, ROUNDS.map((r, i) => [i, `${r.name}<span class="opt-note"> · ${r.note}</span>`]))}`;
     else if (t === 'hub') html = `<span class="label">Hub shape</span>${seg('hub', this.opt.hub, HALL.shapes.map(q => [q.sides, q.name]))}<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
-    else if (t === 'pier') html = `<span class="label">Pier width</span>${seg('pierW', this.opt.pierW, PIER.widths.map(v => [v, `${v} m`]))}<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
+    else if (t === 'pier') html = `<span class="label">Draw</span>${seg('pierPath', this.opt.pierPath, [[0, 'One pier'], [1, 'A path<span class="opt-note"> · click each corner</span>']])}<span class="label">Pier width</span>${seg('pierW', this.opt.pierW, PIER.widths.map(v => [v, `${v} m`]))}<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
     else if (t === 'concourse' || t === 'satellite') html = `<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
     el.innerHTML = html; el.hidden = !html;
   }
@@ -264,6 +278,7 @@ export class UI {
   }
 
   setTool(t: Tool) {
+    if (this.path) this.cancelDrag();
     const def = TOOLS.find(x => x.id === t);
     if (def?.unlock && !this.sim.has(def.unlock)) {
       const u = UNLOCKS.find(x => x.id === def.unlock)!;
@@ -310,7 +325,8 @@ export class UI {
     if (t === 'taxi') return `Drag to draw a taxiway · snaps to runways, aprons and other taxiways${this.opt.auto ? ' · drawn beside a runway, it links itself with end stubs and rapid exits' : ''}`;
     if (t === 'checkin') return `Drag the hall: check-in on Level 1 with baggage claim under it on Ground, as one building · put it against security · any road within ${FRONTAGE.reach} m of its open face and it lays its own two-level forecourt`;
     if (t === 'hub') return 'Drag a hub out from its centre: a round or polygonal hall with shops round an atrium · overlap a concourse or security and it joins that building · start piers inside it and they join too';
-    if (t === 'pier') return 'Drag a pier at any angle, from where it starts to where it ends · start inside a concourse and it becomes part of that building · gates grow on any side with a taxiway running parallel';
+    if (t === 'pier') return this.opt.pierPath ? 'Click the start, then each corner · click the last corner again or press Enter to build · Backspace undoes a corner · Esc gives up'
+      : 'Drag a pier at any angle, from where it starts to where it ends · start inside a concourse and it becomes part of that building · every open side lays its own stands';
     if (t === 'satellite') return `Drag a satellite concourse anywhere on the airfield · within ${n0(MOVER.reach)} m of a terminal's concourse it links itself by people mover · every open side lays its own stands and taxilane, and links itself to the nearest taxiway`;
     if (t === 'round') return 'Click to place a roundabout · on a junction, a road end or anywhere along a road: every road that reaches it joins the ring · traffic keeps moving where a crossroads would stop it';
     if (t === 'road' && this.opt.shape) return `Drag to draw a curved road · it leaves in line with the road it starts from, or sweeps round a corner on open ground · ${this.opt.oneway ? 'one-way, in the direction you draw · ' : ''}select a road later and drag its middle handle to bend it`;
@@ -486,6 +502,7 @@ export class UI {
       }
     }
     if (t === 'satellite') { this.drag = { mode: 'zone', ...base, start: this.magnet(p, 1) }; return; }
+    if (t === 'pier' && this.opt.pierPath && !this.ren.mode3d) { this.pathClick(p, e.offsetX, e.offsetY); return; }
     if (t === 'pier' || t === 'hub') { this.drag = { mode: 'pier', ...base, start: { x: snap(p.x, 5), y: snap(p.y, 5) } }; return; }
     if (t in ZONES) { this.drag = { mode: 'zone', ...base, start: this.magnet(p, ZONES[t as ZoneType].groundOnly ? 0 : this.ren.level) }; return; }
     if (t === 'site') { this.drag = { mode: 'site', ...base, start: { x: snap(p.x, 10), y: snap(p.y, 10) } }; return; }
@@ -520,6 +537,7 @@ export class UI {
     }
     const p = this.wpt(e);
     const dr = this.drag;
+    if (!dr && this.path) { this.pathPreview(p); return; }
     if (!dr) {
       if (this.tool === 'select' || this.tool === 'demolish') {
         const sr = this.ren.selected?.kind === 'runway' && this.tool === 'select' ? this.world.runways.find(r => r.id === this.ren.selected!.id) : undefined;
@@ -794,8 +812,78 @@ export class UI {
     const tw = this.twin(z);
     return (g.sides || g.bend || g.taper ? polyArea(zonePts(g)) : g.w * g.h) * (rate(z) + (tw ? rate(tw) : 0));
   }
+  // ------------------------------------------------------------ a path of piers (v0.22)
+  //
+  //   A terminal drawn as a line: click a start, then each corner. Every leg is a pier and every corner a small round
+  //   hall that the two legs run into, so the whole path is one building by the usual rule (shapes that overlap
+  //   merge). The path stands in the world as a draft while it is drawn, with its stands and taxilanes.
+  /** The leg from `a` towards `p`: its pier, and where it really ends once its angle and length have snapped. */
+  pathLeg(a: Pt, p: Pt) { const z = this.pierFrom(a, p); if (!z) return null; const c = centreOf(z); return { z, end: { x: 2 * c.x - a.x, y: 2 * c.y - a.y } }; }   // (the pier is centred half way along the leg)
+  /** The zones a path makes: a pier a leg, a round hall at each corner between two legs. */
+  pathZones(pts: Pt[]): { zones: Zone[]; cost: number } {
+    const zones: Zone[] = []; let id = this.world.nextId; let cost = 0; const R = Math.max(HALL.minDia / 2, this.opt.pierW / 2 + 4);
+    const mk = (g: { x: number; y: number; w: number; h: number; rot?: number; sides?: number }) => { const z: Zone = { id: id++, type: 'concourse', level: 1, x: g.x, y: g.y, w: g.w, h: g.h, tier: 0, cls: this.opt.conc }; if (g.rot) z.rot = g.rot; if (g.sides) z.sides = g.sides; zones.push(z); cost += (g.sides ? polyArea(zonePts(z)) : g.w * g.h) * ZONES.concourse.costPerM2; };
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1]; const L = dist(a, b); const ang = Math.atan2(b.y - a.y, b.x - a.x); const W = this.opt.pierW;
+      let rot = ang; if (rot > Math.PI / 2 + 1e-6) rot -= Math.PI; else if (rot <= -Math.PI / 2 + 1e-6) rot += Math.PI;
+      if (Math.abs(Math.sin(2 * rot)) < 1e-6) rot += 1e-4;
+      mk({ x: (a.x + b.x) / 2 - L / 2, y: (a.y + b.y) / 2 - W / 2, w: L, h: W, rot });
+      if (i + 2 < pts.length) mk({ x: b.x - R, y: b.y - R, w: 2 * R, h: 2 * R, sides: 32 });
+    }
+    return { zones, cost };
+  }
+  pathCheck(zones: Zone[], cost: number, pts?: Pt[]) {
+    // a leg may not double back on the one before it
+    if (pts) for (let i = 2; i < pts.length; i++) {
+      const a = sub(pts[i - 1], pts[i - 2]), b = sub(pts[i], pts[i - 1]);
+      if (dot(norm(a), norm(b)) < -0.86) return { ok: false as const, reason: 'Too sharp a turn: a leg cannot double back on the one before it' };
+    }
+    for (const z of zones) { const c = canPlacePier(this.world, z); if (!c.ok) return z.sides ? { ok: false as const, reason: `The hall at a corner: ${c.reason}` } : c; }
+    return this.sim.canAfford(cost) ? { ok: true as const } : { ok: false as const, reason: `Not enough money: ${money(cost)}` };
+  }
+  pathPreview(p: Pt) {
+    const pts = this.path!; this.liftDraft();
+    const leg = this.pathLeg(pts[pts.length - 1], p);
+    const all = leg ? [...pts, leg.end] : pts;
+    const { zones, cost } = this.pathZones(all); const chk = zones.length ? this.pathCheck(zones, cost, all) : { ok: false as const, reason: `Move out to where the first leg ends: ${PIER.minLen} m at least` };
+    this.liveDraft(chk.ok ? zones : this.pathZones(pts).zones);
+    this.ren.ghost = leg ? { kind: 'zone', rect: leg.z, ok: chk.ok } : null;
+    const legs = all.length - 1; const total = zones.filter(z => !z.sides).reduce((t, z) => t + z.w, 0);
+    this.hint(chk.ok ? `${legs} leg${legs > 1 ? 's' : ''} · ${n0(total)} m in all · ${money(cost)} · click to set this corner, click it again or press Enter to build` : chk.reason!, !chk.ok);
+  }
+  pathClick(p: Pt, sx: number, sy: number) {
+    if (!this.path) { this.path = [{ x: snap(p.x, 5), y: snap(p.y, 5) }]; this.pathLast = { x: sx, y: sy }; this.hint('Now click the first corner, or the far end'); return; }
+    const pts = this.path; const last = pts[pts.length - 1];
+    // the same spot clicked again (where the pointer was, not where the corner snapped to): build
+    const again = !!this.pathLast && Math.hypot(this.pathLast.x - sx, this.pathLast.y - sy) < 8;
+    if (again) { if (pts.length > 1) this.pathBuild(); return; }
+    this.pathLast = { x: sx, y: sy };
+    const leg = this.pathLeg(last, p); if (!leg) { this.toast(`A leg is ${PIER.minLen} m at least`, 'warn'); return; }
+    this.liftDraft();
+    const { zones, cost } = this.pathZones([...pts, leg.end]); let chk = this.pathCheck(zones, cost, [...pts, leg.end]);
+    // the hall this corner would get if the path goes on from here must fit too, or every next leg would be refused
+    if (chk.ok) { const R = Math.max(HALL.minDia / 2, this.opt.pierW / 2 + 4); const c = canPlacePier(this.world, { x: leg.end.x - R, y: leg.end.y - R, w: 2 * R, h: 2 * R, sides: 32, level: 1 }); if (!c.ok) chk = { ok: false as const, reason: `A corner here would need a hall, and: ${c.reason}. End the path one corner back, or put this corner somewhere else.` }; }
+    if (!chk.ok) { this.toast(chk.reason ?? 'Cannot go there', 'bad'); this.pathPreview(p); return; }
+    pts.push(leg.end); this.pathPreview(p);
+  }
+  pathBuild() {
+    const pts = this.path; if (!pts) return;
+    this.path = null; this.pathLast = null; this.endLive(false); this.ren.ghost = null;
+    if (pts.length < 2) { this.settle(); this.hint(this.toolHint()); return; }
+    const { zones, cost } = this.pathZones(pts); const chk = this.pathCheck(zones, cost, pts);
+    if (!chk.ok) { this.settle(); this.toast(chk.reason ?? 'Cannot build that', 'bad'); this.hint(this.toolHint()); return; }
+    this.sim.spend(cost); this.world.nextId += zones.length; this.world.zones.push(...zones);
+    this.changed();
+    const legs = zones.filter(z => !z.sides); const gates = zones.reduce((t, z) => t + (this.sim.d.units.get(z.id)?.count ?? 0), 0); const T = this.sim.d.termOf.get(zones[0].id);
+    this.ren.float(`− ${money(cost)}`, centreOf(legs[0]), PAL_BAD, LEVELS[1].z1);
+    this.select({ kind: 'zone', zone: legs[0] });
+    this.toast(`Built ${legs.length} leg${legs.length > 1 ? 's' : ''} in one building · ${gates} gates · ${money(cost)}${T?.active ? ` · part of ${T.name}` : ''}`);
+    this.hint(this.toolHint());
+  }
+
   /** Stop whatever is being dragged and put it back (Esc). */
   cancelDrag() {
+    if (this.path) { this.path = null; this.pathLast = null; this.endLive(false); this.settle(); this.ren.ghost = null; this.hint(this.toolHint()); return true; }
     if (!this.drag) return false;
     this.endLive(false); this.settle(); this.drag = null; this.ren.ghost = null; this.ren.canvas.style.cursor = 'default';
     this.hint(this.toolHint());
@@ -839,8 +927,8 @@ export class UI {
       this.settle(); this.hint(this.toolHint());
       return;
     }
-    // a drawing tool's draft goes; the real thing is built below
-    this.endLive(false);
+    // a drawing tool's draft goes; the real thing is built below (a path's draft stays: it is not drawn by dragging)
+    if (!this.path) this.endLive(false);
     if (dr.mode === 'runway' && g?.a && g.b) {
       if (g.ok) this.buildRunway(g.a, g.b);
       else if (dist(g.a, g.b) > 50) this.toast(canPlaceRunway(this.world, g.a, g.b).reason ?? 'Not enough money', 'bad');
@@ -886,7 +974,9 @@ export class UI {
     if ((e.target as HTMLElement).closest('input, select, textarea')) return;
     const k = e.key;
     // any key that edits or changes the view first puts back whatever is being dragged
-    if (this.drag && this.drag.mode !== 'pan' && !['Shift', 'Control', 'Alt', 'Meta', 'Escape', ' ', '+', '=', '-'].includes(k)) this.cancelDrag();
+    if (this.path && (k === 'Enter' || k === 'Backspace')) { e.preventDefault(); if (k === 'Enter') this.pathBuild(); else { this.path.pop(); this.pathLast = null; if (!this.path.length) this.cancelDrag(); else this.pathPreview(this.path[this.path.length - 1]); } return; }
+    if ((this.drag && this.drag.mode !== 'pan' || this.path) && !['Shift', 'Control', 'Alt', 'Meta', 'Escape', ' ', '+', '=', '-'].includes(k)) this.cancelDrag();
+    if ((e.ctrlKey || e.metaKey) && this.path && (k === 'z' || k === 'Z' || k === 'y')) { e.preventDefault(); this.cancelDrag(); return; }   // undo mid-path gives the path up, no more
     if (e.ctrlKey || e.metaKey) { if (k === 'z' || k === 'Z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); } else if (k === 'y') { e.preventDefault(); this.redo(); } return; }
     const t = TOOLS.find(x => x.key.toLowerCase() === k.toLowerCase());
     if (t) { this.cancelDrag(); this.setTool(t.id); return; }

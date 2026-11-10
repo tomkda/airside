@@ -1151,6 +1151,7 @@ export class Renderer {
   zoneLabel(sim: Sim, zn: Zone, top: number) {
     const z = this.cam.zoom;
     if (z < 0.42) return;
+    if (zn.sides && Math.min(zn.w, zn.h) < 80 && z < 1.2) return;   // a small corner hall between two piers needs no name of its own until you are close
     const u = sim.d.units.get(zn.id);
     const def = ZONES[zn.type];
     let c = heart(zn);   // (the middle of the building itself: a bent pier's box centre can lie outside it)
