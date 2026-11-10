@@ -232,7 +232,8 @@ const fat = (a: Pt, b: Pt, hw: number): Pt[] => { const n = mul(perpLeft(norm(su
 
 /** A run of stands and the taxilane along their tails: `pts` is the lane (two points, or a polyline round a curve),
  *  `outs` the way the stands face at each end and in the middle, `corner` the apron's corners at each end (at the wall, at the lane). */
-interface Run { pts: Pt[]; cls: Cls; zone: number; outs: [Pt, Pt, Pt]; corner: [[Pt, Pt], [Pt, Pt]]; ap: Apron; ext: [number, number]; joined: [boolean, boolean]; T: number }
+interface Run { outs2?: [Pt | null, Pt | null];   // an end that must leave along a given line (the edge of a neighbouring drawn apron)
+  pts: Pt[]; cls: Cls; zone: number; outs: [Pt, Pt, Pt]; corner: [[Pt, Pt], [Pt, Pt]]; ap: Apron; ext: [number, number]; joined: [boolean, boolean]; T: number }
 type LaneR = Lane & { run?: Run };
 
 function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, pending: Pending[],
@@ -334,8 +335,12 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       aprons.push(ap);
       for (const sl of run) if (sl.on) { counts.get(sl.zone.id)!.k++; gates.push({ id: sl.id, key: sl.key, num: `${letter}${nextNum(sl.zone.id)}`, zone: sl.zone, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] }); }
       if (first.drawn) continue;   // these stand on a drawn taxiway: no taxilane of their own
-      const lane = whole ? [...run.map(q => q.front), first.front] : [add(first.front, mul(first.tan, -rsp / 2)), ...run.map(q => q.front), add(last.front, mul(last.tan, rsp / 2))];
-      runs.push({ pts: lane, cls: rc, zone: first.zone.id, outs: [first.outward, last.outward, midSl.outward], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [rsp / 2, rsp / 2], joined: [whole, whole], T: selfDepth(rc) + rsp });
+      // where the next stands along the wall are on a drawn taxiway, the lane stops at the line between them, so it
+      // can run straight out along that line to the taxiway and not into their apron
+      const gi = got.indexOf(first), gj = got.indexOf(last); const before = got[(gi - 1 + got.length) % got.length], after = got[(gj + 1) % got.length];
+      const nb0 = before !== first && before.drawn && ((first.s - before.s + total) % total) <= before.w + 7, nb1 = after !== last && after.drawn && ((after.s - last.s + total) % total) <= last.w + 7;
+      const lane = whole ? [...run.map(q => q.front), first.front] : [nb0 ? first.cell[3] : add(first.front, mul(first.tan, -rsp / 2)), ...run.map(q => q.front), nb1 ? last.cell[2] : add(last.front, mul(last.tan, rsp / 2))];
+      runs.push({ pts: lane, cls: rc, zone: first.zone.id, outs: [first.outward, last.outward, midSl.outward], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [rsp / 2, rsp / 2], joined: [whole, whole], T: selfDepth(rc) + rsp, outs2: [nb0 ? norm(sub(first.cell[3], first.cell[0])) : null, nb1 ? norm(sub(last.cell[2], last.cell[1])) : null] });
     }
   }
 
@@ -553,7 +558,8 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
   for (const r of runs) for (const e of [0, 1] as const) {
     if (r.joined[e]) continue;
     // straight on, straight out from the building, or on a little and then out or round the end of the building
-    const w = waysOut(endPt(r, e), endDir(r, e), [r.outs[e], mul(r.outs[e], -1)], r);
+    const o2 = r.outs2?.[e];
+    const w = o2 ? waysOut(endPt(r, e), o2, [], r) : waysOut(endPt(r, e), endDir(r, e), [r.outs[e], mul(r.outs[e], -1)], r);
     if (w) lay(w, r);
   }
 
