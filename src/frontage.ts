@@ -153,14 +153,24 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       const legs: { a: Pt; b: Pt }[] = []; let cost = 0; const rampsHere: { a: Pt; b: Pt; c: Pt }[] = [];
       for (const [E, away] of [[a, { x: -al.x, y: -al.y }], [b, al]] as const) {
         // straight out from the building first, else straight on along the frontage
-        let leg: { a: Pt; b: Pt; d: number } | null = null;
+        let leg: { a: Pt; b: Pt; d: number; via?: Pt } | null = null;
         for (const [dir, pen] of [[sd.out, 0], [away, 40]] as const) {
           const q = rayHit(E, dir, FRONTAGE.reach, chords); if (!q) continue;
           const d = dist(E, q) + pen;
           if (d - pen < 6 || blocked(E, q, fam)) continue;
           if (!leg || d < leg.d) leg = { a: E, b: q, d };
         }
-        if (leg) { legs.push(leg); cost += leg.d; } else cost += 700;
+        if (!leg) {
+          // v0.14: nothing straight ahead. Come straight out, then turn once towards the nearest road: this is what
+          // reaches a road that stops short of the terminal, or one that runs past off to one side.
+          let near: { q: Pt; d: number } | null = null;
+          for (const c of chords) { const q = lerpPt(c.a, c.b, Math.max(0, Math.min(1, dot(sub(E, c.a), sub(c.b, c.a)) / (dot(sub(c.b, c.a), sub(c.b, c.a)) || 1)))); const d = dist(E, q); if (!near || d < near.d) near = { q, d }; }
+          if (near && near.d <= FRONTAGE.reach) {
+            const o = dot(sub(near.q, E), sd.out); const via = { x: E.x + sd.out.x * o, y: E.y + sd.out.y * o };
+            if (o >= 30 && dist(via, near.q) >= 12 && !blocked(E, via, fam) && !blocked(via, near.q, fam)) leg = { a: E, b: via, d: o + dist(via, near.q) + 60, via: near.q };
+          }
+        }
+        if (leg) { legs.push({ a: leg.a, b: leg.b }); if (leg.via) legs.push({ a: leg.b, b: leg.via }); cost += leg.d; } else cost += 700;
         // v0.13: where the link comes straight out to the frontage, the upper deck gets its own ramp: it leaves the
         // link before the corner and sweeps round inside it, so the road visibly divides and comes back together
         const run = leg ? dist(leg.a, leg.b) : 0; const square = leg && Math.abs(dot(norm(sub(leg.b, leg.a)), sd.out)) > 0.99;

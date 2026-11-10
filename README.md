@@ -33,7 +33,14 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.13)
+## What's in the alpha (v0.14)
+
+- **A starter airport that shows how it works, and links that find the road (v0.14):**
+  - **The starter airport is rebuilt** on the hall and its self-laid forecourt. Only the approach is drawn by hand: two roads up from State Route 12, a roundabout on each, and Terminal Drive between them. The frontage road, the departures deck and its two ramps, the curbs, the car park's drives and its sidewalk are all generated. A new game (or **Load sample**) shows the whole system working; a saved game keeps the airport it has.
+  - **Links turn a corner.** A forecourt link used to need a road straight ahead of it. If there is none, it now comes straight out from the frontage and turns once towards the nearest road. So a road that stops short of the terminal, or runs past off to one side, still gets connected.
+  - **Reach is 360 m** (was 320 m), measured from the hall's open face.
+  - **A new hall opens with a sensible number of check-in counters:** about one per 500 m², instead of every counter the floor could hold. The inspector's − and + still change it.
+
 
 - **The road divides for the upper deck, and a version stamp (v0.13):**
   - **Ramps that split and rejoin.** Where a hall lays its own forecourt, the departures deck no longer sits on the road as a slab. On each side, a ramp leaves the approach road about 120 m before the corner, sweeps round inside it while it climbs, and lands on the deck in front of the hall; the ground road carries on round the corner underneath to the arrivals curb. The same happens in reverse on the way out, so the road visibly divides and comes back together. It is generated with the forecourt and moves with it.
@@ -45,7 +52,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 - **One hall, and a forecourt that lays itself (v0.12):** getting a road, check-in and baggage claim to line up was the hardest part of building a terminal. It no longer needs lining up.
   - **The hall.** Check-in and baggage claim are one building now: the **Hall** tool (`3`) places check-in on Level 1 with baggage claim directly under it on Ground, in one drag. The two move together and are demolished together. Separate check-in and claim modules in older saves keep working.
-  - **The forecourt.** If no road runs along the hall's face, and any road (or State Route 12) is within 320 m of it, the hall lays its own forecourt: a four-lane frontage road at the right distance from its open face, with a link from each end down to that road. Because departures sit over arrivals, it splits by itself into an upper departures deck and a lower arrivals road, each with its curb. So: build the hall, draw any road nearby, and the terminal has a working two-level curbside. Move the hall or the road and the forecourt follows.
+  - **The forecourt.** If no road runs along the hall's face, and any road (or State Route 12) is within reach of it (360 m since v0.14), the hall lays its own forecourt: a four-lane frontage road at the right distance from its open face, with a link from each end down to that road. Because departures sit over arrivals, it splits by itself into an upper departures deck and a lower arrivals road, each with its curb. So: build the hall, draw any road nearby, and the terminal has a working two-level curbside. Move the hall or the road and the forecourt follows.
   - A road you draw along the face yourself still becomes the curb, exactly as before, and then the hall lays nothing.
   - Car parks, rental centres and bus stations connect their drives to a forecourt as they do to any road.
 
@@ -211,7 +218,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 - Unlocks depend on the best day's departures only. Weather and offers are light: no de-icing, diversions or negotiation yet.
 - Adding a second terminal splits the same check-in agents and screeners across both, so queues grow until you hire more in Operations.
 - Terminal sites are rectangles. A pier that reaches far out grows its site's bounding box rather than an L or T shape.
-- A forecourt is laid along one straight face of the hall and its links run straight out (or straight on) to the nearest road; it does not yet find its way round obstacles or pick a one-way loop, and it links to the nearest road even if that road goes nowhere (the design check then reports the curb has no road to State Route 12). A hand-drawn frontage road must still be parallel to the face to grow a curb. Cars reach the upper deck by its ramps, but drive under it in the plan view. The curved ramps need a link at least 45 m long that comes straight out from the frontage; otherwise the deck keeps a straight ramp. The ground road under a ramp is still drawn in the plan.
+- A forecourt is laid along one straight face of the hall. Its links run straight out, straight on, or out and round one corner to the nearest road; they do not yet find a way round a building in between or pick a one-way loop, and it links to the nearest road even if that road goes nowhere (the design check then reports the curb has no road to State Route 12). A hand-drawn frontage road must still be parallel to the face to grow a curb. Cars reach the upper deck by its ramps, but drive under it in the plan view. The curved ramps need a link at least 45 m long that comes straight out from the frontage; otherwise the deck keeps a straight ramp. The ground road under a ramp is still drawn in the plan.
 - In 3D, modules are drawn and selected, but not moved by dragging (switch to plan with `T` to move one). Labels in 3D are terminal names only.
 - No signal timing at junctions; sidewalks are ground-level only (no elevated walkways yet), and they cannot cross a roundabout.
 - Lot sidewalks go straight or round one corner; a lot boxed in by buildings still needs a hand-drawn one.
