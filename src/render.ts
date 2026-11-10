@@ -26,6 +26,8 @@ export interface Ghost {
   kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
   way?: { kind: WayKind; cls: number; lanes: number }; snapA?: boolean; snapB?: boolean;
   extras?: { a: Pt; b: Pt; cls: number }[];
+  /** v0.15: the modules a new terminal would be laid out with. */
+  parts?: Rect[];
 }
 export type Sel = { kind: 'zone' | 'runway' | 'way' | 'gate' | 'site' | 'round'; id: number; key?: string };
 
@@ -1303,6 +1305,7 @@ export class Renderer {
     if (gh.kind === 'zone' && gh.rect) {
       this.poly(this.rectPts(gh.rect), gh.ok ? 'rgba(47,93,124,0.16)' : 'rgba(176,71,43,0.18)', top);
       g.strokeStyle = col; g.lineWidth = 1.5; g.setLineDash([5, 4]); this.path(this.rectPts(gh.rect), top); g.stroke(); g.setLineDash([]);
+      for (const q of gh.parts ?? []) { this.poly(this.rectPts(q), gh.ok ? 'rgba(47,93,124,0.28)' : 'rgba(176,71,43,0.25)', top); g.strokeStyle = col; g.lineWidth = 1; this.path(this.rectPts(q), top); g.stroke(); }
     } else if (gh.kind === 'runway' && gh.a && gh.b) {
       const w = runwayWidth(dist(gh.a, gh.b));
       this.line(gh.a, gh.b, w, gh.ok ? 'rgba(40,36,30,0.55)' : 'rgba(176,71,43,0.55)');

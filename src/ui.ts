@@ -17,6 +17,7 @@ import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
 import { roadPlan } from './roads';
 import { Sound } from './sound';
+import { planTerminal, airsideOf, planCost, PlanPart, PLAN_MIN } from './terminalplan';
 
 export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round';
 type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | { kind: 'round'; round: Round } | null;
@@ -61,7 +62,7 @@ export interface Controls { speed: number; paused: boolean; save(): void; loadSa
 export class UI {
   tool: Tool = 'select';
   tab: 'inspect' | 'ops' | 'report' = 'ops';
-  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0 };
+  opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 1 };
   private drag: null | {
     mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend';
     way?: Way; handle?: 'a' | 'b' | 'm'; orig3?: { a: Pt; b: Pt; c?: Pt }; bend?: { a: Pt; b: Pt; c?: Pt; ok: boolean; cost: number; reason?: string }; sx: number; sy: number; start: Pt; snapStart?: boolean;
@@ -217,6 +218,7 @@ export class UI {
     if (t === 'taxi') html = `<span class="label">Taxiway</span>${seg('taxi', this.opt.taxi, TAXI_CLASSES.map(c => [c.cls, `${c.name}<span class="opt-note"> · ${c.note}</span>`]))}<span class="label">Runway links</span>${seg('auto', this.opt.auto, [[1, 'Auto'], [0, 'Manual']])}`;
     else if (t === 'select' && this.ren.selected?.kind === 'runway') html = `<span class="label">Extending</span>${seg('auto', this.opt.auto, [[1, 'Stretch parallel taxiways'], [0, 'Runway only']])}`;
     else if (t === 'road') html = `<span class="label">Road</span>${seg('lanes', this.opt.lanes, ROAD_LANES.map(c => [c.lanes, c.name]))}<span class="label">Shape</span>${seg('shape', this.opt.shape, [[0, 'Straight'], [1, 'Curve']])}<span class="label">Traffic</span>${seg('oneway', this.opt.oneway, [[0, 'Two-way'], [1, 'One-way']])}`;
+    else if (t === 'site') html = `<span class="label">New terminal</span>${seg('layout', this.opt.layout, [[1, 'Complete terminal<span class="opt-note"> · concourse, security and hall laid out for you</span>'], [0, 'Empty site']])}`;
     else if (t === 'round') html = `<span class="label">Roundabout</span>${seg('round', this.opt.round, ROUNDS.map((r, i) => [i, `${r.name}<span class="opt-note"> · ${r.note}</span>`]))}`;
     else if (t === 'concourse') html = `<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
     el.innerHTML = html; el.hidden = !html;
@@ -521,8 +523,16 @@ export class UI {
       const q = { x: snap(p.x, 10), y: snap(p.y, 10) };
       const r = { x: Math.min(dr.start.x, q.x), y: Math.min(dr.start.y, q.y), w: Math.abs(q.x - dr.start.x), h: Math.abs(q.y - dr.start.y) };
       const chk = this.canPlaceSite(r);
-      this.ren.ghost = { kind: 'zone', rect: r, ok: chk.ok };
-      this.hint(chk.ok ? `New terminal site · ${n0(r.w)} × ${n0(r.h)} m · release to allocate (free) · then lay out its modules inside` : chk.reason!, !chk.ok);
+      // v0.15: a complete starter terminal is laid out inside the site as you drag
+      const plan = chk.ok && this.opt.layout ? this.sitePlan(r) : null;
+      const cost = plan?.parts ? planCost(plan.parts) : 0;
+      const ok = chk.ok && (!plan || plan.ok) && this.sim.canAfford(cost);
+      this.ren.ghost = { kind: 'zone', rect: r, ok, parts: plan?.parts?.filter(q => q.type !== 'claim').map(q => q.rect) };
+      const sideName = { n: 'north', e: 'east', s: 'south', w: 'west' };
+      this.hint(!chk.ok ? chk.reason! : plan && !plan.ok ? plan.reason! : !ok ? `Not enough money: ${money(cost)}`
+        : plan?.parts ? `New terminal · ${n0(r.w)} × ${n0(r.h)} m · concourse on the ${sideName[plan.air]} edge (facing the airfield), security, and the hall on the far side · ${money(cost)}`
+        : this.opt.layout ? `New terminal site · ${n0(r.w)} × ${n0(r.h)} m · too small for a full layout yet (${PLAN_MIN.along + 2 * SITES.pad} × ${PLAN_MIN.deep + 2 * SITES.pad} m): release for an empty site`
+        : `New terminal site · ${n0(r.w)} × ${n0(r.h)} m · release to allocate (free) · then lay out its modules inside`, !ok);
       return;
     }
     if (dr.mode === 'extend' && dr.rw && dr.orig && dr.end) {
@@ -642,7 +652,7 @@ export class UI {
       else if (g.rect.w > 5 || g.rect.h > 5) this.toast(this.placeHall(g.rect, t, ZONES[t].groundOnly ? 0 : t === 'checkin' ? 1 : this.ren.level, -1).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'site' && g?.rect) {
       if (g.ok) this.buildSite(g.rect);
-      else if (g.rect.w > 5 || g.rect.h > 5) this.toast(this.canPlaceSite(g.rect).reason ?? '', 'bad');
+      else if (g.rect.w > 5 || g.rect.h > 5) { const c0 = this.canPlaceSite(g.rect); const pl = c0.ok && this.opt.layout ? this.sitePlan(g.rect) : null; this.toast(c0.reason ?? (pl && !pl.ok ? pl.reason : null) ?? 'Not enough money', 'bad'); }
     } else if (dr.mode === 'move' && dr.zone && dr.moved && g?.rect) {
       if (g.ok) {
         const tw = this.twin(dr.zone); if (tw) { tw.x += g.rect.x - dr.zone.x; tw.y += g.rect.y - dr.zone.y; }
@@ -768,9 +778,42 @@ export class UI {
   }
   siteName(st: Site) { return this.sim.d.terminals.find(t => t.site?.id === st.id)?.name ?? 'that terminal'; }
 
+  /** The starter layout for a site being dragged, and whether every piece of it can be built there. */
+  sitePlan(r: Rect): { parts: PlanPart[] | null; air: 'n' | 'e' | 's' | 'w'; ok: boolean; reason?: string } {
+    const air = airsideOf(r, this.world); const parts = planTerminal(r, air);
+    if (!parts) return { parts: null, air, ok: true };
+    for (const q of parts) { const c = canPlaceZone(this.world, q.rect, q.type, q.level, -1, this.sim.d.aprons); if (!c.ok) return { parts, air, ok: false, reason: `${ZONES[q.type].short}: ${c.reason}` }; }
+    return { parts, air, ok: true };
+  }
+
   buildSite(r: Rect) {
     const st: Site = { id: this.world.nextId++, ...r };
     (this.world.sites ??= []).push(st);
+    const plan = this.opt.layout ? this.sitePlan(r) : null;
+    if (plan?.parts && plan.ok) {
+      const others = this.sim.d.terminals.filter(t => t.active).length;
+      const cost = planCost(plan.parts); this.sim.spend(cost);
+      const ids = plan.parts.map(() => this.world.nextId++);
+      plan.parts.forEach((q, i) => {
+        const z: Zone = { id: ids[i], type: q.type, level: q.level, ...q.rect, tier: 0, site: st.id };
+        if (q.type === 'concourse') z.cls = this.opt.conc;
+        if (q.type === 'checkin') { z.units = Math.max(6, Math.round(area(q.rect) / 500)); z.pair = ids[plan.parts!.findIndex(o => o.type === 'claim')]; }
+        if (q.type === 'claim') z.pair = ids[plan.parts!.findIndex(o => o.type === 'checkin')];
+        this.world.zones.push(z);
+      });
+      // a second terminal needs its own people: the first one's agents and screeners are not shared out thinner
+      if (others > 0) { this.sim.staff.agents += 10; this.sim.staff.screeners += 12; }
+      this.changed();
+      const T = this.sim.d.terminals.find(t => t.site?.id === st.id); const name = this.siteName(st);
+      this.ren.float(`− ${money(cost)}`, center4(st), PAL_BAD);
+      this.select({ kind: 'site', site: st });
+      this.toast(`${name} laid out: concourse, security and the hall · ${money(cost)}${others > 0 ? ' · 10 check-in agents and 12 screeners hired for it' : ''}`);
+      const gates = T?.gates ?? 0; const curb = this.sim.d.zones.some(c => c.auto && this.sim.d.termOf.get(c.auto.module)?.site?.id === st.id);
+      if (T?.active) this.toast(`${name} is open: ${gates} gates, and its forecourt laid itself.`);
+      else this.toast([!gates ? 'run a taxiway along the concourse (dashed guides) for gates' : '', !curb ? `draw any road within ${FRONTAGE.reach} m of the hall for its forecourt` : ''].filter(Boolean).join(', and ').replace(/^./, c => c.toUpperCase()) || (T?.problems[0] ?? 'Check the design check for what it still needs') + '.', 'warn');
+      this.setTool('select');
+      return;
+    }
     // modules already standing on the land join it
     for (const z of this.world.zones) if (isTerminalModule(z) && z.site === undefined && inRect(center4(z), st)) z.site = st.id;
     this.changed();

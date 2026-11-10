@@ -33,7 +33,15 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.14)
+## What's in the alpha (v0.15)
+
+- **A terminal in one drag (v0.15):**
+  - **New terminal lays out the whole terminal.** Drag the terminal's rectangle and a complete starter terminal appears inside it as you drag: a concourse along the edge that faces the airfield, security behind it, and the hall (check-in over baggage claim) on the far, landside edge. The game reads which edge is airside from the nearest taxiway (or runway, if there is no taxiway yet). Release and it is built; the pieces can then be moved, resized or demolished like any others.
+  - **From bare ground, five gestures make a working airport:** a runway, a taxiway, the terminal, and two roads. Gates grow where the concourse faces the taxiway and the hall lays its own forecourt to the road. In the test this flies 27 flights on its first day with no one missing a flight.
+  - **A second terminal hires its own staff.** Laying out a terminal when one is already open hires 10 check-in agents and 12 screeners for it, so the first terminal's queues do not double overnight. You are told, and Operations still sets the totals.
+  - The tool has a switch for an **Empty site**, for laying a terminal out by hand as before. A rectangle too small for a full layout (under 160 × 180 m) is allocated empty.
+  - It costs what its modules cost: about $250M for a terminal the size of the starter one.
+
 
 - **A starter airport that shows how it works, and links that find the road (v0.14):**
   - **The starter airport is rebuilt** on the hall and its self-laid forecourt. Only the approach is drawn by hand: two roads up from State Route 12, a roundabout on each, and Terminal Drive between them. The frontage road, the departures deck and its two ramps, the curbs, the car park's drives and its sidewalk are all generated. A new game (or **Load sample**) shows the whole system working; a saved game keeps the airport it has.
@@ -211,6 +219,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
+- The one-drag terminal is one shape: a concourse bar, security and the hall in a line. It does not yet place itself at the right distance from a taxiway for gates (the dashed guides show where), size itself to demand, or add a car park.
 - Sound has no volume control beyond on and off, and no per-vehicle sounds (cars, the AirTrain, announcements).
 - Curves are for roads only: taxiways and sidewalks are still straight. A curve has one bend (no S-curves in one piece), and curbs do not grow along curved roads. Lanes, gaps and brake lights are how traffic is drawn: the sim still moves each car along the centreline and slows it by how full the road is, so cars do not yet yield turn by turn at a junction or roundabout (a roundabout's benefit is modelled as road capacity). The IN and OUT drives of a car park are both two-way underneath.
 - The AirTrain is a people mover inside the airport. It does not run to the city, and trains are drawn on a timetable rather than carrying the riders you see.
