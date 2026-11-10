@@ -49,7 +49,17 @@ export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lan
   /** Generated, never saved (v0.12): part of a hall's own forecourt, along its face or linking it to a road. */
   fore?: 'face' | 'link' | 'ramp' | 'corner';
   /** For a ramp: the id of the frontage road whose upper deck it climbs to. */
-  face?: number }
+  face?: number;
+  /** v0.28: a generated deck ramp is three one-way ways in a row: the `taper` where the road widens, the speed-change
+   *  `lane` that runs beside it, and the `curve` and `climb` that leave it and rise to the deck. The curve carries the
+   *  ramp's shape (`rg`). */
+  part?: 'taper' | 'lane' | 'curve' | 'climb'; rg?: RampGeo }
+/** v0.28: one deck ramp's geometry, all on its approach road's frame. `u` runs along the approach road away from the
+ *  frontage and `n` across it towards the side the ramp is on; `h` is the road's half width. T (on the road's
+ *  centreline) is where the taper starts, P where the full lane begins, N the nose of the gore, where the ramp parts
+ *  from the road; the curve runs from N through M to D (on the frontage road) as two quadratic pieces with control
+ *  points C and C2 (v0.28: so it leaves the road soon after the nose instead of hugging it). `up`: traffic climbs it. */
+export interface RampGeo { T: Pt; P: Pt; N: Pt; C: Pt; M: Pt; C2: Pt; D: Pt; u: Pt; n: Pt; h: number; up: boolean }
 export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[] }
 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [] });

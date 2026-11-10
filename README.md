@@ -39,7 +39,13 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 ## What's in the alpha (v0.28)
 
-- **A forecourt road that curves under its deck (v0.28):** where an approach road meets the frontage road, the ground-level road now sweeps round the corner on a 35 m curve instead of turning it square. The deck's ramp lands further along, inside the curve, so the two levels part and meet as two curves, not a curve over a corner. Cars follow the curve.
+- **Deck ramps that leave and rejoin the road like built ones (v0.28):** each ramp to the upper deck now meets its approach road the way a real on- or off-ramp does (a parallel-type ramp terminal), beside the road and never on top of it.
+  - **Taper and speed-change lane.** The road's edge flares out over about 55 m, and a full lane then runs alongside it for about 75 m, divided from the road by a broken line. On the way up it is a deceleration lane; on the way down, an acceleration lane, with the lane tapering back into the road.
+  - **Gore.** Where the ramp parts from the road there is a painted gore with chevrons. The ramp leaves at a modest angle and is about 13 m clear of the road within 60 m.
+  - **It climbs only once it is clear.** The ramp stays at grade until it is 2 m clear of the road, then climbs to the deck, one lane at first and two once it is away, widening to the deck as it lands. Its shadow draws away as it rises.
+  - **One way, keeping right.** The way up leaves from the right of traffic coming in; the way down joins on the right of traffic going out. Arrows in the lane show which. Cars drive the ramp as drawn.
+  - Shorter approach roads get a shorter lane and taper. A car park never takes its access from a ramp.
+  - **The ground road curves too.** Where an approach road meets the frontage road, the ground-level road sweeps round the corner on a 35 m curve instead of turning it square.
 
 
 - **Deck ramps that split and rejoin like real ones (v0.27):** the first step on the landside.
@@ -341,6 +347,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 
 - Construction is instant; no build time or disruption yet.
 - Shapes so far are piers at any angle, straight or bent into one arc, of even width or tapering evenly from one end to the other, and regular hubs (round, six or eight sides). There are no S-curves, free-drawn outlines or ellipses yet, and a pier cannot bulge in the middle. Halls, security and concourses built inside a terminal site stay upright, straight and of even width (their edges move, but they do not turn, bend or taper). Where buildings overlap, both roofs are drawn.
+- Ramp terminals are drawn in the plan; in 3D the ramp leaves the road at the right place but the gore and lane markings are not shown. The figures for the lane and taper lengths are from memory of AASHTO's tables, not checked against the book.
 - A forecourt link that runs on in line with the frontage road, or turns a second corner on its way to a road, keeps its square corners. The forecourt is still straight (it does not follow a curved or angled hall), and the deck has no lane markings in 3D. In 3D a road's surface can vanish when the camera is very close to it (an older fault).
 - Junction spaces raise the value of the lots round them but have no trade of their own yet: a food court has no counters in it, and passengers do not sit or dwell there. A gate whose holdroom fell in a hall keeps its capacity but has no seats drawn. Halls, food courts and gardens under the roof are not shown in 3D or in the tilted plan view; courtyards are shown in 3D.
 - The merged outline carries the stands, but interiors, selection and the tilted plan view still work on the separate pieces, so a rounded corner can show a sliver of floor with nothing planned on it, a gate at a filled-in junction can have its door a few metres from its holdroom, roof glazing lines of two pieces cross at a junction, and the Operations panel still counts pieces as concourses. Halls and security keep their own square outlines.
