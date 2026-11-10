@@ -174,7 +174,8 @@ input[type=range] { width: 100%; accent-color: var(--ink); }
 
 #hint { position: absolute; left: 50%; transform: translateX(-50%); bottom: 64px; max-width: min(640px, calc(100% - 32px)); background: var(--ink); color: var(--paper); padding: 7px 12px; border-radius: var(--r); font-size: 12px; text-align: center; pointer-events: none; }
 #hint:empty { display: none; }
-#hint.bad { background: var(--rust); }
+/* (the general .bad rule turns text rust; on this rust bar that was red on red, so the bar sets its own) */
+#hint.bad { background: var(--rust); color: #FFF8EC !important; font-weight: 600; }
 #toasts { position: absolute; top: 72px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; width: min(520px, calc(100% - 32px)); }
 .toast { background: var(--paper); border: 1px solid var(--rule); border-left: 3px solid var(--ink); border-radius: var(--r); padding: 8px 12px; font-size: 12px; transition: opacity .5s, transform .5s; }
 .toast.warn { border-left-color: var(--amber); } .toast.bad { border-left-color: var(--rust); }
