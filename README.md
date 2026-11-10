@@ -44,7 +44,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
   - **Gore.** Where the ramp parts from the road there is a painted gore with chevrons. The ramp leaves at a modest angle and is about 13 m clear of the road within 60 m.
   - **It climbs only once it is clear.** The ramp stays at grade until it is 2 m clear of the road, then climbs to the deck, one lane at first and two once it is away, widening to the deck as it lands. Its shadow draws away as it rises.
   - **One way, keeping right.** The way up leaves from the right of traffic coming in; the way down joins on the right of traffic going out. Arrows in the lane show which. Cars drive the ramp as drawn.
-  - Shorter approach roads get a shorter lane and taper. A car park never takes its access from a ramp.
+  - Shorter approach roads get a shorter lane and taper (down to 20 m each), and the taper always merges at least 30 m before the end of the approach road, clear of any roundabout there. A car park never takes its access from a ramp, and the approach road and its planted median run on unbroken past the ramp.
   - **The ground road curves too.** Where an approach road meets the frontage road, the ground-level road sweeps round the corner on a 35 m curve instead of turning it square.
 
 

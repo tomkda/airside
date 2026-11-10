@@ -15,7 +15,7 @@ import { Pt, Rect, sub, dot, dist, norm, lerpPt, rectsOverlap, polyLen, segDist 
 import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way, RampGeo } from './world';
 import { sidesOf } from './gates';
-import { waySegs, wayPts } from './ways';
+import { waySegs, wayPts, roundDef } from './ways';
 import { zonesOverlap, shaped } from './shapes';
 
 export type Deck = 'dep' | 'arr' | 'both';
@@ -94,7 +94,9 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         };
         // with no ramp of its own (a hand-drawn frontage road), the deck comes down straight along the road it is over
         const straight = (p: Pt): RampLine => ({ pts: [p], zs: [0], ws: [W], nIn: [null], gore: null, seam: null, arrows: [] });
-        const U = end(La, Lb) ?? straight(at(c.t0 - FRONTAGE.ramp)), Dn = end(Lb, La) ?? straight(at(c.t1 + FRONTAGE.ramp));
+        // (a straight ramp lands on the road it is over, however short that road is)
+        const ts = [c.road.a, c.road.b].map(p => dot(sub(p, c.a), al)); const tLo = Math.min(...ts), tHi = Math.max(...ts);
+        const U = end(La, Lb) ?? straight(at(Math.max(c.t0 - FRONTAGE.ramp, Math.min(tLo, c.t0 - 1)))), Dn = end(Lb, La) ?? straight(at(Math.min(c.t1 + FRONTAGE.ramp, Math.max(tHi, c.t1 + 1))));
         const rev = <T,>(x: T[]) => [...x].reverse();
         const pts = [...U.pts, La, Lb, ...rev(Dn.pts)];
         const zs = [...U.zs, 1, 1, ...rev(Dn.zs)], ws = [...U.ws, W, W, ...rev(Dn.ws)];
@@ -145,8 +147,10 @@ const RAMP = {
   along: 72,      // where the ramp meets the frontage road, this far along it from the corner
   // v0.28: the speed-change lane and its taper, of the order of AASHTO's parallel-type ramp terminals for a road of
   // 50–60 km/h (Green Book ch. 10: deceleration and acceleration lanes of roughly 50–100 m, tapers of 50–90 m).
-  // These are from memory of the tables, not checked against the book. Short approach roads get shorter ones.
-  lane: 75, taper: 55, minNose: 70, minLane: 30, minTaper: 30,
+  // These are from memory of the tables, not checked against the book. Short approach roads get shorter ones, down
+  // to a 20 m lane and taper and a nose 45 m from the corner (a steep, short ramp, as the old one was); the taper ends
+  // `clear` short of the far end of the link (and of a roundabout's outer kerb there).
+  lane: 75, taper: 55, minNose: 45, minLane: 20, minTaper: 20, clear: 30,
   leave: 0.35, arrive: 0.5,   // the curve's handles, as a share of the run along the road and along the frontage
 } as const;
 /** v0.28: where the gore ends and grass begins between the ramp and the road (m apart), and the gap at which the ramp
@@ -262,7 +266,10 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
         // and the right of outbound traffic at the other (the way down), so each ramp is one-way.
         if (leg && square) {
           const u = sd.out, n = { x: -away.x, y: -away.y }; const h = roadWidth(4) / 2, o = h + DECK.lane / 2;
-          let g: number = RAMP.nose, Lp: number = RAMP.lane, Lt: number = RAMP.taper; const avail = run - 15;
+          // the taper must merge well before whatever the link ends at: `RAMP.clear` short of its end, and short of the
+          // outer kerb of a roundabout there (the network cuts the link back to the ring)
+          const ring = (world.rounds ?? []).filter(r => dist({ x: r.x, y: r.y }, leg.b) < roundDef(r).icd / 2 + 2).reduce((m, r) => Math.max(m, roundDef(r).icd / 2), 0);
+          let g: number = RAMP.nose, Lp: number = RAMP.lane, Lt: number = RAMP.taper; const avail = run - RAMP.clear - ring;
           if (g + Lp + Lt > avail) { const k = avail / (g + Lp + Lt); Lp = Math.max(RAMP.minLane, Lp * k); Lt = Math.max(RAMP.minTaper, Lt * k); g = Math.min(RAMP.nose, avail - Lp - Lt); }
           const at = (t: number, k: number): Pt => ({ x: E.x + u.x * t + n.x * k, y: E.y + u.y * t + n.y * k });
           const T = at(g + Lp + Lt, 0), P = at(g + Lp, o), N = at(g, o), D = at(0, RAMP.along);

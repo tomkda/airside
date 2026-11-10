@@ -790,7 +790,7 @@ export function derive(source: World): Derived {
   const rounds = world.rounds ?? [];
   const pieces = roadPieces(roads, rounds, curbCuts(FR.curbs, roads));
   for (const p of pieces) if (dist(p.a, p.b) > 1) roadSegs.push({ a: p.a, b: p.b, kind: 'road', cls: 0, ref: p.ref, lanes: p.lanes, ow: p.ow });
-  for (const w of roads) for (const e of [w.a, w.b]) {
+  for (const w of roads) if (w.fore !== 'ramp') for (const e of [w.a, w.b]) {   // (v0.28: a ramp's pieces join their road, never the highway)
     const dy = Math.abs(e.y - HY);
     if (dy > 4 && dy <= 20) roadSegs.push({ a: e, b: { x: e.x, y: HY }, kind: 'road', cls: 0, ref: w.id, lanes: w.lanes });
   }
