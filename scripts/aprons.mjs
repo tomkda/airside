@@ -25,7 +25,7 @@ const pier = (w, cx, cy, len, wid, deg) => conc(w, cx - len / 2, cy - wid / 2, l
 const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b: { x: 4500, y: 2300 } });
 
 { const r = rep('sample', sampleWorld());
-  check('a one-piece building has no junction spaces', r.d.junctions.length === 0);
+  check('a one-piece building has no junction spaces', r.d.junctions.length === 0 && ![...r.d.shops.values()].flat().some(sh => sh.plaza));
   check('the sample gains an end stand each side', r.d.gates.length === 14 && r.reach === 14);
   check('no stands on the landside face', !Object.keys(r.by).some(k => k.includes(':s')));
   check('the landside face is marked', r.d.gateGuides.some(g => g.side === 's' && g.land)); }
@@ -42,6 +42,13 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   const lots = [...r.d.shops.values()].flat().map(sh => ({ x: sh.pts.reduce((n, q) => n + q.x, 0) / sh.pts.length, y: sh.pts.reduce((n, q) => n + q.y, 0) / sh.pts.length }));
   check('the merged building keeps a junction space (' + js.map(j => j.kind + ' ' + Math.round(j.area) + ' m2').join(', ') + ')', js.length >= 1 && js.every(j => j.seeds.length > 0));
   check('no shop lot stands in a junction space', lots.length > 20 && !lots.some(c => js.some(j => ins(c, j))));
+  // v0.26: the pieces' own fit-out stops at the space, and the lots round it front it
+  const its = [...r.d.frames.entries()].filter(([id]) => r.d.zones.find(q => q.id === id)?.type === 'concourse').flatMap(([, f]) => f.items);
+  const mid = q => ({ x: q.reduce((n, v) => n + v.x, 0) / q.length, y: q.reduce((n, v) => n + v.y, 0) / q.length });
+  check('no holdroom seat, counter or restroom stands in a junction space', its.length > 50 && !its.filter(it => it.closed || (it.k !== 'spine' && it.k !== 'lane')).some(it => js.some(j => ins(mid(it.pts), j))));
+  check('the spine breaks off at the space and starts again beyond it', !its.filter(it => it.k === 'spine' || it.k === 'lane').some(it => it.pts.some((q, i) => i + 1 < it.pts.length && js.some(j => ins({ x: (q.x + it.pts[i + 1].x) / 2, y: (q.y + it.pts[i + 1].y) / 2 }, j)))));
+  const fronting = [...r.d.shops.values()].flat().filter(sh => sh.plaza);
+  check('lots round the space front it (' + fronting.length + ': ' + [...new Set(fronting.map(sh => sh.plaza))].join(', ') + ')', fronting.length >= 2 && fronting.length < lots.length / 3);
   check('every gate of the merged building has its own name', new Set(sl.map(q => q.zone.id + ':' + q.key)).size === sl.length && new Set(r.d.gates.map(g => g.id)).size === r.d.gates.length); }
 { const w = sampleWorld(); const z = pier(w, 3568, 2718, 400, 40, 20); const r = rep('a 40 m pier (too narrow for a stand on its end)', w);
   const mine = r.d.gates.filter(g => g.zone.id === z.id);

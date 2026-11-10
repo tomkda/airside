@@ -178,5 +178,23 @@ function plant0(kind: JunctionKind, rings: Pt[][], outer: Pt[]): Junction['seeds
   const far = deep.reduce((m, p) => Math.max(m, Math.hypot(p.x - c.x, p.y - c.y)), 0);
   return [...deep, ...tables(3.5).filter(p => !deep.some(t => Math.hypot(t.x - p.x, t.y - p.y) < 5.5) && (!deep.length || Math.hypot(p.x - c.x, p.y - c.y) > far * 0.4))];
 }
+/** How far a point is from a junction space's edge (0 if it is inside). */
+export function junctionGap(p: Pt, j: Junction) { return inJunction(p, j) ? 0 : edgeGap(p, j.rings); }
+/** The stretches of a line that lie outside every one of these spaces (a spine stops at a hall and starts again beyond it). */
+export function outsideRuns(pts: Pt[], js: Junction[], step = 1.5): Pt[][] {
+  const runs: Pt[][] = []; let cur: Pt[] = [];
+  const inAny = (p: Pt) => js.some(j => inJunction(p, j));
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i], b = pts[i + 1]; const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / step));
+    for (let k = i ? 1 : 0; k <= n; k++) {
+      const p = { x: a.x + (b.x - a.x) * k / n, y: a.y + (b.y - a.y) * k / n };
+      if (inAny(p)) { if (cur.length > 1) runs.push(cur); cur = []; }
+      else if (k === 0 || k === n || !cur.length) cur.push(p);
+      else if (cur.length === 1 || k === n) cur.push(p); else cur[cur.length - 1] = p;
+    }
+  }
+  if (cur.length > 1) runs.push(cur);
+  return runs;
+}
 /** Is a point in a junction space (its holes are not part of it)? */
 export function inJunction(p: Pt, j: Junction) { return j.rings.reduce((n, r) => n + (inPoly(p, r) ? 1 : 0), 0) % 2 === 1; }

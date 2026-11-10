@@ -5,7 +5,7 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, COMMERCE as SC } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
@@ -15,7 +15,7 @@ import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, se
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
 import { letLots } from './commerce';
-import { Shell, shellsOf, Junction, junctionsOf, inJunction } from './shell';
+import { Shell, shellsOf, Junction, junctionsOf, inJunction, junctionGap, outsideRuns } from './shell';
 
 export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
@@ -166,6 +166,8 @@ export interface Shop {
   key: string; id: string;
   side: 'A' | 'B' | 'E'; u0: number; u1: number; depth: number; frontage: number;
   tenant: TenantId;
+  /** v0.26: the lot fronts a space the building keeps for itself (within `COMMERCE.plazaReach` of it). */
+  plaza?: 'hall' | 'food' | 'garden';
   // scores, 0–1 unless noted
   vis: number;              // how much of the spine sees the shopfront
   near: number;             // closeness to the security exit
@@ -511,7 +513,21 @@ export function derive(source: World): Derived {
   // v0.25: and no lot stands in a space the building keeps for itself (a junction hall, food court or garden)
   if (junctions.length) for (const [id, list] of shops) {
     const z = world.zones.find(q => q.id === id)!; const js = junctions.filter(j => j.level === z.level && j.kind !== 'court'); if (!js.length) continue;
-    shops.set(id, list.filter(sh => { const c = polyCentre(sh.pts); return !js.some(j => inJunction(c, j)); }));
+    const kept = list.filter(sh => { const c = polyCentre(sh.pts); return !js.some(j => inJunction(c, j)); });
+    // v0.26: a lot that fronts one of these spaces is seen across it, and takes its trade from it
+    for (const sh of kept) {
+      const c = polyCentre(sh.pts); const reach = SC.plazaReach + Math.sqrt(sh.area) / 2; const rank = { hall: 3, food: 2, garden: 1, court: 0 };
+      const j = js.filter(q => junctionGap(c, q) <= reach && junctionGap(sh.door, q) <= reach).sort((a, b) => rank[b.kind] - rank[a.kind])[0];
+      if (j && j.kind !== 'court') { sh.plaza = j.kind; sh.vis = clamp(sh.vis + SC.plazaVis, 0, 1); }
+    }
+    shops.set(id, kept);
+    // and the piece's own fit-out stops at the space: no holdroom seats, counters or restrooms in it, and the lines
+    // down the building (the spine, the moving walkways) break off at its edge and start again beyond it
+    const items = bandItems.get(id);
+    if (items) bandItems.set(id, items.flatMap(it => {
+      if (it.closed || it.pts.length < 2 || (it.k !== 'spine' && it.k !== 'lane')) { const c = polyCentre(it.pts); return js.some(j => inJunction(c, j)) ? [] : [it]; }
+      return outsideRuns(it.pts, js).map(pts => ({ ...it, pts }));
+    }));
   }
   // ---- Tenants bid for the lots by footfall, visibility, dwell and position (see commerce.ts); best lots lease first.
   letLots(source, shops, budgets);

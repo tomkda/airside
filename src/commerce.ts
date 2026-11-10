@@ -50,6 +50,10 @@ export function bidsFor(sh: Shop): Partial<Record<TenantId, number>> {
     lounge: 0.4 * deep + 0.3 * (F < 0.33 ? F / 0.33 : (1 - F) / 0.67) + 0.2 * Far + 0.1 * Wn,
     dutyfree: 0,
   };
+  // v0.26: a lot on a food court wants to sell food; on a hall, food or retail; beside a garden, somewhere to sit
+  if (sh.plaza === 'food') { raw.dining += SC.plazaFood; raw.grab += SC.plazaFood; }
+  else if (sh.plaza === 'hall') { raw.dining += SC.plazaFood / 2; raw.grab += SC.plazaFood / 2; raw.retail += SC.plazaFood / 2; }
+  else if (sh.plaza === 'garden') raw.dining += SC.plazaDining;
   const out: Partial<Record<TenantId, number>> = {};
   ORDER.forEach((t, k) => {
     if (!TENANTS[t].kinds[di]) return;

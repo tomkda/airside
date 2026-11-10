@@ -330,6 +330,11 @@ export const LOD = {
 // ---------------------------------------------------------------- Concourse commerce (v0.7)
 // Footfall, visibility and dwell scores per lot, tenants bidding for lots, walk-through duty free.
 export const COMMERCE = {
+  // v0.26: lots that front a junction space (a hall, food court or garden the building keeps where its pieces meet)
+  plazaReach: 9,           // a lot this close to the space fronts it, m
+  plazaVis: 0.2,           // seen across an open space, not down a corridor
+  plazaFood: 0.22,         // food formats on a food court; half of this on a hall
+  plazaDining: 0.12,       // sit-down food beside a garden (a view, like an apron window)
   // Footfall: departing passengers counted as they cross the spine, in bins along the concourse's long axis.
   binM: 4,                 // bin length, m
   spareRef: 45,            // spare minutes before boarding at which a passer counts as one full shopper
