@@ -11,6 +11,7 @@ import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
+import { DECK } from './frontage';
 import { turn, centreOf, hallPts, shaped, gripsOf, Grip, zonePts, frameOf, bendPath, toWorld as shapeToWorld, heart, Shaped } from './shapes';
 import { canTurn } from './world';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
@@ -266,20 +267,21 @@ export class Renderer {
   drawRoads(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom; const HY = SITE.highwayY;
     const RP = roadPlan(sim.d); const far = this.lod === 'airfield';
+    const groundPaths = RP.paths.filter(q => !q.ramp);   // v0.27: a deck ramp is drawn with its deck, not on the ground
     const VERGE = 'rgba(150,158,118,0.28)', KERB = '#8A8375', ASPHALT = '#9C968A', HWY = '#948E83', LINE = '#F1EBDC', YEL = '#D9B24C';
     g.lineJoin = 'round';
     if (far) g.globalAlpha = 0.55;
     // grass verge, kerb, asphalt: each road as one smooth path, then the turning curves and ramps that round every junction
     const ringOut = (r: { r: number; w: number }) => r.r + r.w / 2;
     if (!far && z > 0.3) {
-      for (const s of RP.paths) this.pline(s.pts, s.w + (s.hwy ? 14 : 9), VERGE, 'round', 2);
+      for (const s of groundPaths) this.pline(s.pts, s.w + (s.hwy ? 14 : 9), VERGE, 'round', 2);
       for (const k of RP.ramps) this.curve(k, k.w + 9, VERGE, 2);
       for (const r of RP.rounds) this.disc(r.c, ringOut(r) + 5, VERGE);
     }
-    for (const s of RP.paths) this.pline(s.pts, s.w + 1.6, KERB, 'round', 1.6);
+    for (const s of groundPaths) this.pline(s.pts, s.w + 1.6, KERB, 'round', 1.6);
     for (const k of [...RP.turns, ...RP.ramps]) this.curve(k, k.w + 1.6, KERB, 1.6);
     for (const r of RP.rounds) this.disc(r.c, ringOut(r) + 0.8, KERB);
-    for (const s of RP.paths) this.pline(s.pts, s.w, s.hwy ? HWY : ASPHALT, 'round', 1);
+    for (const s of groundPaths) this.pline(s.pts, s.w, s.hwy ? HWY : ASPHALT, 'round', 1);
     for (const k of [...RP.turns, ...RP.ramps]) this.curve(k, k.w, ASPHALT, 1);
     for (const r of RP.rounds) this.disc(r.c, ringOut(r), ASPHALT);
     g.globalAlpha = 1;
@@ -299,7 +301,7 @@ export class Renderer {
     }
     if (z > 0.35 && !far) {
       const dash = [Math.max(2, 3 * z), Math.max(3, 6 * z)];
-      for (const s of RP.paths) {
+      for (const s of groundPaths) {
         if (s.len - s.trimA - s.trimB < 2) continue;
         const mid = sliceLine(s.pts, s.trimA, s.len - s.trimB);
         const off = (k: number, w: number, col: string, mp = 0.5) => this.pline(offsetLine(mid, k), w, col, 'butt', mp);
@@ -1093,30 +1095,45 @@ export class Renderer {
     const z = this.cam.zoom; const g = this.ctx;
     for (const dk of sim.d.decks) {
       // v0.13: the deck is drawn along its own path, so a ramp that curves off the approach road reads as the road dividing
-      const pts = ribbon(dk.pts, dk.ws.map(w => Math.max(11, w)));
-      g.save(); g.shadowColor = 'rgba(40,36,30,0.35)'; g.shadowBlur = 6; g.shadowOffsetY = 3;
-      this.poly(pts, '#B4AEA2'); g.restore();
-      g.strokeStyle = PAL.roadEdge; g.lineWidth = 1.2; g.lineJoin = 'round'; this.path(pts); g.stroke();
+      // v0.27: and it is drawn as a road: the same surface, edge lines and lane lines as the road it leaves, between
+      // parapets. What says it is in the air is its shadow, which draws away from it as it climbs.
+      const pts = ribbon(dk.pts, dk.ws);
+      const lift = dk.pts.map((p, i) => ({ x: p.x + dk.zs[i] * 5, y: p.y + dk.zs[i] * 6 }));
+      this.poly(ribbon(lift, dk.ws), 'rgba(40,36,30,0.22)');
+      this.poly(pts, PAL.road);
+      g.strokeStyle = 'rgba(60,54,46,0.85)'; g.lineWidth = Math.max(1, 0.7 * z); g.lineJoin = 'round'; this.path(pts); g.stroke();
       const cum = [0]; for (let i = 1; i < dk.pts.length; i++) cum.push(cum[i - 1] + dist(dk.pts[i - 1], dk.pts[i]));
       const L = cum[cum.length - 1];
       const i0 = dk.zs.findIndex(v => v >= 1), i1 = dk.zs.length - 1 - [...dk.zs].reverse().findIndex(v => v >= 1);
       if (z > 0.35) {
+        // a line a set way off the centreline: `f` of the half width where the deck is at least `min` wide
+        const side = (f: number, min: number, inset = 0): Pt[][] => {
+          const runs: Pt[][] = []; let cur: Pt[] = [];
+          const e = ribbon(dk.pts, dk.ws.map(w => Math.abs(f) * Math.max(0, w - inset * 2))); const n = dk.pts.length;
+          dk.pts.forEach((_, i) => { if (dk.ws[i] >= min) cur.push(f < 0 ? e[i] : f > 0 ? e[2 * n - 1 - i] : dk.pts[i]); else { if (cur.length > 1) runs.push(cur); cur = []; } });
+          if (cur.length > 1) runs.push(cur); return runs;
+        };
+        for (const f of [-1, 1]) for (const r of side(f, 0, 0.7)) this.pline(r, 0.18, PAL.roadLine, 'butt', 0.5);   // edge lines
         g.setLineDash([Math.max(2, 4 * z), Math.max(3, 7 * z)]);
-        this.pline(dk.pts, 0.3, PAL.roadLine, 'butt', 0.6);
-        g.setLineDash([]);
-        // ramps: cross lines that close up as the deck climbs, from where it leaves the ground to deck level
-        for (const [s0, s1] of [[0, cum[i0]], [cum[i1], L]]) for (let u = s0 + 6; u < s1 - 2; u += 9) {
-          const a = along(dk.pts, u); const n = { x: -Math.sin(a.ang), y: Math.cos(a.ang) };
-          const k = (s1 === L ? (L - u) / (L - s0 || 1) : (u - s0) / (s1 - s0 || 1)); const hw = (10 + (dk.width - 10) * Math.min(1, k * 1.6)) / 2 - 0.8;
-          this.line(add(a.p, mul(n, -hw)), add(a.p, mul(n, hw)), 0.2, `rgba(40,36,30,${0.12 + 0.2 * k})`, 0, 'butt', 0.5);
+        for (const r of side(0, DECK.two - 0.5)) if (dk.width < 12) this.pline(r, 0.2, PAL.roadLine, 'butt', 0.5);
+        // a two-lane ramp has one lane line; the deck has one each side of its centre line
+        if (dk.width >= 12) {
+          const two = dk.pts.map((_, i) => dk.ws[i] < dk.width - 0.5);
+          const cut = (keep: (i: number) => boolean, line: Pt[]) => { const runs: Pt[][] = []; let cur: Pt[] = []; line.forEach((p, i) => { if (keep(i)) cur.push(p); else { if (cur.length > 1) runs.push(cur); cur = []; } }); if (cur.length > 1) runs.push(cur); return runs; };
+          for (const r of cut(i => two[i] && dk.ws[i] >= DECK.two - 0.5, dk.pts)) this.pline(r, 0.2, PAL.roadLine, 'butt', 0.5);
+          const n = dk.pts.length; const q = ribbon(dk.pts, dk.ws.map(w => w / 2));
+          for (const line of [q.slice(0, n), q.slice(n).reverse()]) for (const r of cut(i => !two[i], line)) this.pline(r, 0.2, PAL.roadLine, 'butt', 0.5);
+          g.setLineDash([]);
+          for (const r of cut(i => !two[i], dk.pts)) { this.pline(r, 0.5, PAL.roadLine, 'butt', 1.4); this.pline(r, 0.22, PAL.road, 'butt', 0.5); }   // a double centre line
         }
+        g.setLineDash([]);
       }
       // columns under the level part and the upper half of each ramp
       if (z > 0.6) for (let u = 0; u < L; u += 30) {
         const a = along(dk.pts, u); const n = { x: -Math.sin(a.ang), y: Math.cos(a.ang) };
         let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
         const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * ((u - cum[k]) / (cum[k + 1] - cum[k] || 1)); if (zk < 0.5) continue;
-        for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.width / 2 - 1.5))); const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
+        for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.ws[k] / 2 - 1.2))); const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
       }
       if (z > 0.45 && this.lod !== 'airfield') {
         const a = dk.pts[i0], b = dk.pts[i1];

@@ -11,7 +11,7 @@
 //
 // Generated curbs are ordinary Zone objects with negative ids and an `auto` tag. They are rebuilt on every
 // derive and never saved, so moving a road or a module moves its curb with it.
-import { Pt, Rect, sub, dot, dist, norm, lerpPt, rectsOverlap, polyLen } from './geom';
+import { Pt, Rect, sub, dot, dist, norm, lerpPt, rectsOverlap, polyLen, segDist } from './geom';
 import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way } from './world';
 import { sidesOf } from './gates';
@@ -82,7 +82,19 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         // each end: a ramp that splits off the approach road and curves up onto the deck (a forecourt has these),
         // or else a straight ramp along the frontage road itself
         const ramps = extra.filter(w => w.fore === 'ramp' && w.face === c.road.id);
-        const end = (p: Pt, straight: Pt): Pt[] => { const r = ramps.filter(w => dist(w.b, p) < dist(w.b, p === La ? Lb : La)).sort((u, v) => dist(u.b, p) - dist(v.b, p))[0]; return r ? wayPts(r) : [straight]; };
+        // v0.27: a ramp is drawn the way one is built. It peels off the approach road as its inside lane (the side the
+        // terminal is on), one lane wide, swings away from it and climbs, and is two lanes by the time it is clear;
+        // it widens to the deck only as it lands. The way cars are routed along (`r`) is unchanged.
+        const peel = (r: Way): Pt[] => {
+          if (!r.c) return wayPts(r);
+          const inn = norm(sub(r.b, r.c)); const link = extra.find(w => w.fore === 'link' && w.face === c.road.id && segDist(r.a, w.a, w.b) < 1);
+          const off = Math.min(roadWidth(link?.lanes ?? 4) / 2 - DECK.lane / 2 - 0.4, dist(r.b, r.c) * 0.4);
+          const S = { x: r.a.x + inn.x * off, y: r.a.y + inn.y * off }, C = { x: r.c.x + inn.x * off, y: r.c.y + inn.y * off };
+          const out: Pt[] = []; const n = 20;
+          for (let i = 0; i < n; i++) { const t = i / n, u = 1 - t; out.push({ x: u * u * S.x + 2 * u * t * C.x + t * t * r.b.x, y: u * u * S.y + 2 * u * t * C.y + t * t * r.b.y }); }
+          return out;
+        };
+        const end = (p: Pt, straight: Pt): Pt[] => { const r = ramps.filter(w => dist(w.b, p) < dist(w.b, p === La ? Lb : La)).sort((u, v) => dist(u.b, p) - dist(v.b, p))[0]; return r ? peel(r) : [straight]; };
         const La = at(c.t0), Lb = at(c.t1);
         const up = end(La, at(c.t0 - FRONTAGE.ramp)), down = end(Lb, at(c.t1 + FRONTAGE.ramp)).reverse();
         const pts = [...up, La, Lb, ...down];
@@ -91,7 +103,7 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         pts.forEach((p, i) => {
           if (i) run += dist(pts[i - 1], p);
           const k = i <= up.length ? run / (lenUp || 1) : 1 - (run - lenUp - dist(La, Lb)) / (lenDown || 1);
-          const zk = Math.max(0, Math.min(1, k)); zs.push(zk); ws.push(up.length > 1 || down.length > 1 ? 10 + (W - 10) * Math.min(1, zk * 1.6) : W);
+          const zk = Math.max(0, Math.min(1, k)); zs.push(zk); ws.push((i <= up.length ? up.length > 1 : down.length > 1) ? rampWidth(zk, W) : W);
         });
         decks.push({ road: c.road.id, a: at(c.t0 - FRONTAGE.ramp), b: at(c.t1 + FRONTAGE.ramp), width: W, pts, zs, ws });
       } else if (!ground(c).length) pushCurb(c, 0, 'both', c.t0, c.t1);   // a single-level road reaches the face through a frontage core
@@ -125,6 +137,15 @@ export const FORE = 800000;
 export const RAMP_ID = 1600000;
 /** How far down the link a ramp leaves it, and how far along the frontage it lands (m). About 5% up to the deck. */
 const RAMP = { out: 120, along: 72 };
+/** v0.27: a ramp's width as it climbs (k from 0 on the ground to 1 at the deck): one lane where it leaves the road, two
+ *  once it is clear of it, and the deck's own width over its last third. Lane and two-lane ramp widths are the usual
+ *  3.6 m lane with shoulders (AASHTO Green Book: 3.6 m lanes; a two-lane ramp about 7.5–8 m between barriers). */
+export const DECK = { lane: 3.8, two: 7.8 };
+export function rampWidth(k: number, W: number) {
+  if (k < 0.25) return DECK.lane + (DECK.two - DECK.lane) * (k / 0.25);
+  if (k < 0.68) return DECK.two;
+  const t = (k - 0.68) / 0.32; return DECK.two + (W - DECK.two) * t * t * (3 - 2 * t);
+}
 export function autoForecourt(world: World, aprons: Rect[], highwayY: number, siteW: number): Way[] {
   const out: Way[] = [];
   const drawn = world.ways.filter(w => w.kind === 'road');
