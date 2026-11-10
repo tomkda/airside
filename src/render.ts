@@ -1348,7 +1348,8 @@ export class Renderer {
       g.fillStyle = hot || gr.grip === 'm' ? PAL.select : '#FBF8F1'; g.strokeStyle = gr.grip === 'm' ? '#FBF8F1' : PAL.select; g.lineWidth = 2;
       g.beginPath();
       if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r' || gr.grip === 'm') g.arc(x, y, r, 0, Math.PI * 2);
-      else if (gr.grip === 'ta' || gr.grip === 'tb') { g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y); g.closePath(); }   // a diamond on an end's corner: that end's width else g.rect(x - r, y - r, 2 * r, 2 * r);
+      // a diamond on an end's corner: that end's width
+      else if (gr.grip === 'ta' || gr.grip === 'tb') { g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y); g.closePath(); } else g.rect(x - r, y - r, 2 * r, 2 * r);
       g.fill(); g.stroke();
     }
   }

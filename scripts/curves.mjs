@@ -108,6 +108,18 @@ for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 
   check('every shop lot is inside the building', shops.length > 30 && out === 0);
   check('it is part of the terminal it was drawn out of', T && T.active && T.gateAreas === 2);
 }
+{ // a wide-ended A380 pier still joins its taxilanes round the wide end
+  const { w, z } = mk(54, { w: 320, h: 109, y: 2718 - 109 / 2, rot: 0.537, taper: 94, cls: 3 }); const d = derive(w);
+  const mine = d.gates.filter(g => g.zone.id === z.id);
+  console.log('a bent A380 pier 62 m wide at one end and 156 m at the other:', mine.length, 'gates,', mine.filter(g => g.rwys[0].size).length, 'reach a runway');
+  check('every stand of a wide-ended A380 pier reaches a runway', mine.length > 0 && mine.every(g => g.rwys[0].size > 0)); }
+{ // a taxiway drawn along a splayed wall does not take it over: the stands would reach across it at the wide end
+  const { w, z } = mk(undefined, { x: 2900, y: 1700, w: 500, h: 92, rot: undefined, taper: 60 });
+  w.ways.push({ id: w.nextId++, kind: 'taxi', a: { x: 2800, y: 1700 - 60 }, b: { x: 3500, y: 1700 - 60 }, cls: 2, lanes: 0 });
+  const d = derive(w); const mine = d.gates.filter(g => g.zone.id === z.id && g.key[0] === 'n'); const tw = w.ways[w.ways.length - 1];
+  const across = mine.filter(g => (g.stand.y - 19 - tw.a.y) < 8).length;
+  console.log('a taxiway 60 m off the mid-point of a splayed wall:', mine.length, 'stands on that wall,', across, 'with a tail within 8 m of its centreline');
+  check('no stand parks across the taxiway', across === 0); }
 { // two days of flying from the bent pier alone
   const { w, z } = mk(-110, { w: 420 });
   const sim = new Sim(w, 7); const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); main.off = [...Array(12).keys()].map(i => 'n' + i).concat(['e0', 'w0']);

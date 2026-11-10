@@ -241,9 +241,12 @@ function asPier(z: Geom): Geom {
   return { x: c.x - z.h / 2, y: c.y - z.w / 2, w: z.h, h: z.w, rot: Math.PI / 2, off: turnKeys(z.off, -1) };
 }
 /** A width and taper that keep both ends within `END_WIDTH`. */
-function fitEnds(wa: number, wb: number): { h: number; taper: number | undefined } {
+function fitEnds(wa: number, wb: number, keep: 'a' | 'b', lim: GripLimits, was: number): { h: number; taper: number | undefined } {
   const c = (v: number) => Math.min(END_WIDTH.max, Math.max(END_WIDTH.min, v)); const a = c(wa), b = c(wb);
-  return { h: (a + b) / 2, taper: Math.abs(b - a) < 2 ? undefined : b - a };
+  if (Math.abs(b - a) >= 2) return { h: (a + b) / 2, taper: b - a };
+  // no taper left: it is a plain pier as wide as the end that was not touched, within what a plain pier may be
+  const h = keep === 'a' ? a : b;
+  return { h: Math.min(Math.max(was, lim.maxWide), Math.max(Math.min(was, lim.minWide), h)), taper: undefined };
 }
 const clampBend = (w: number, h: number, bend: number | undefined) => { const m = maxBend(w, h); const b = Math.max(-m, Math.min(m, bend ?? 0)); return Math.abs(b) < 4 ? undefined : b; };
 export function gripsOf(z: Geom, turns: boolean): { grip: Grip; p: Pt }[] {
@@ -288,7 +291,7 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     const P = asPier(z0); const F = frameOf(P); const [wa, wb] = endWidths(P);
     // (measured square off the centreline at that end; a bend does not change which way that is in the frame)
     const flat = { ...P, taper: undefined }; const d = Math.abs(toLocal(flat, p).y - (F.y + F.h / 2));
-    const wNew = snap(2 * d, 2); const fit = grip === 'ta' ? fitEnds(wNew, wb) : fitEnds(wa, wNew); const c = centreOf(P);
+    const wNew = snap(2 * d, 2); const fit = grip === 'ta' ? fitEnds(wNew, wb, 'b', lim, P.h) : fitEnds(wa, wNew, 'a', lim, P.h); const c = centreOf(P);
     if (!fit.taper && !z0.taper && !P.bend && Math.abs(fit.h - z0.h) < 1e-9 && alongX(z0)) return geomOf(z0);
     return { ...P, y: c.y - fit.h / 2, h: fit.h, taper: fit.taper, bend: clampBend(P.w, Math.max(fit.h + Math.abs(fit.taper ?? 0) / 2, fit.h), P.bend) };
   }

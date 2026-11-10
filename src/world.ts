@@ -69,14 +69,15 @@ export function migrateWorld(w: World): World {
   // v0.12: a hall's two halves point at each other; drop a pointer whose other half is gone.
   for (const z of w.zones) if (z.rot !== undefined && !(z.type === 'concourse' && isFinite(z.rot))) delete z.rot;   // v0.17: only concourses turn
   for (const z of w.zones) if (z.sides !== undefined && !(z.type === 'concourse' && z.sides >= 3 && z.sides <= 64)) delete z.sides;   // v0.18: or are round
-  for (const z of w.zones) if (z.bend !== undefined) {   // v0.20: or bend, and only as far as their width allows
-    if (z.type !== 'concourse' || z.sides || !isFinite(z.bend)) { delete z.bend; continue; }
-    const m = maxBend(z.w, z.h + Math.abs(z.taper ?? 0) / 2); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
-  }
   for (const z of w.zones) if (z.taper !== undefined) {   // v0.21: or taper, with both ends a width an end may be
     if (z.type !== 'concourse' || z.sides || !isFinite(z.taper)) { delete z.taper; continue; }
     const m = Math.max(0, 2 * Math.min(z.h - END_WIDTH.min, END_WIDTH.max - z.h)); z.taper = Math.max(-m, Math.min(m, z.taper)); if (Math.abs(z.taper) < 2) delete z.taper;
   }
+  for (const z of w.zones) if (z.bend !== undefined) {   // v0.20: or bend, and only as far as their width allows
+    if (z.type !== 'concourse' || z.sides || !isFinite(z.bend)) { delete z.bend; continue; }
+    const m = maxBend(z.w, z.h + Math.abs(z.taper ?? 0) / 2); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
+  }
+
   for (const z of w.zones) if (z.pair !== undefined && !w.zones.some(q => q.id === z.pair && q.pair === z.id)) delete z.pair;
   // v0.11: roundabouts, and roads that may curve or run one way. Drop anything malformed.
   w.rounds = (Array.isArray(w.rounds) ? w.rounds : []).filter(r => r && isFinite(r.x) && isFinite(r.y) && (r.size === 0 || r.size === 1));

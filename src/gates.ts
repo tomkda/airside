@@ -102,7 +102,9 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
       // nearest parallel taxiway within reach that overlaps this side
       let best: { w: Way; d: number; ov: number } | null = null;
       for (const w of taxis) {
-        if (Math.abs(dot(norm(sub(w.b, w.a)), al)) < 0.985) continue;
+        // (a tapered bar's walls are splayed: only a taxiway truly parallel to one counts, or stands near the
+        //  wide end would reach across it; otherwise the wall lays its own apron)
+        if (Math.abs(dot(norm(sub(w.b, w.a)), al)) < (z.taper ? 0.9995 : 0.985)) continue;
         const d = (dot(sub(w.a, sd.a), sd.out) + dot(sub(w.b, sd.a), sd.out)) / 2;
         if (d < 8 || d > sideReach(zc)) continue;
         const s0 = dot(sub(w.a, sd.a), al), s1 = dot(sub(w.b, sd.a), al);
@@ -332,7 +334,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       const room = (p: Pt) => onSite(p) && !outlines.some(o => o.z.id !== z.id && nearBox(p, o.box, 10) && polyDist(p, o.pts) < 10) && !aprons.some(o => o !== ap && nearBox(p, o.rect, 0) && within(p, o.pts, 1)) && !keep.some(k => segDist(p, k.a, k.b) < 10);
       const e0 = room(add(first.front, mul(first.tan, -sp / 2))) ? sp / 2 : 2, e1 = room(add(last.front, mul(last.tan, sp / 2))) ? sp / 2 : 2;
       const lane = [add(first.front, mul(first.tan, -e0)), ...(A ? run.map(q => q.front) : []), add(last.front, mul(last.tan, e1))];
-      runs.push({ pts: lane, cls: zc, zone: z.id, outs: [first.outward, last.outward, midOut], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [e0, e1], joined: [false, false], T: D + sp });
+      runs.push({ pts: lane, cls: zc, zone: z.id, outs: [first.outward, last.outward, midOut], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [e0, e1], joined: [false, false], T: D + sp + Math.abs(z.taper ?? 0) / 2 });
       run = [];
     };
     for (const c of cands) {
