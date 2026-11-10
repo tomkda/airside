@@ -39,11 +39,11 @@ const road = (w, a, b, o = {}) => w.ways.push({ id: w.nextId++, kind: 'road', a:
 run('sample', () => {}, 1);
 
 // a crossroads on the east approach, then a roundabout dropped onto it
-run('crossroads', w => { road(w, [3000, 3700], [3700, 3700]); });
+run('crossroads', w => { road(w, [3000, 3700], [3700, 3700]); }, 1);
 run('crossroads + roundabout', w => { road(w, [3000, 3700], [3700, 3700]); w.rounds.push({ id: w.nextId++, x: 3320, y: 3700, size: 0 }); });
 
 // the whole forecourt as a one-way loop: in up the west side, along the terminal face, out down the east side
-const loop = w => { w.rounds = []; w.ways = w.ways.filter(q => !q.c); for (const q of w.ways) if (q.kind === 'road' && q.lanes === 4) q.oneway = true; };
+const loop = w => { w.rounds = []; for (const q of w.ways) if (q.kind === 'road' && q.lanes === 4) q.oneway = true; };
 run('one-way loop', loop);
 
 // the same loop with the frontage turned against the flow: nothing can get round
@@ -51,10 +51,9 @@ const bad = run('one-way loop, frontage reversed', w => { loop(w); const f = w.w
 
 // only a curved road reaches the terminal face from the highway side
 run('curved approach', w => {
-  w.rounds = []; w.ways = w.ways.filter(q => !q.c);
-  for (const q of w.ways) if (q.kind === 'road' && q.a.x === q.b.x) { if (q.a.y > 5000) q.a.y = 2955; else q.b.y = 2955; }
-  road(w, [2400, 5700], [2780, 2898], { c: { x: 2400, y: 2898 }, lanes: 4 });
-  road(w, [3320, 2898], [3700, 5700], { c: { x: 3700, y: 2898 }, lanes: 4 });
+  w.rounds = []; w.ways = w.ways.filter(q => !(q.kind === 'road' && q.a.x === q.b.x));
+  road(w, [2400, 5700], [2780, 3230], { c: { x: 2400, y: 3230 }, lanes: 4 });
+  road(w, [3320, 3230], [3700, 5700], { c: { x: 3700, y: 3230 }, lanes: 4 });
 });
 `;
 const dir = mkdtempSync(join(tmpdir(), 'roads-')); const out = join(dir, 'run.mjs');

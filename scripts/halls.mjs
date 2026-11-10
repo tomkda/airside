@@ -18,28 +18,40 @@ const run = (name, edit, days = 2) => {
   while (sim.day < days) { sim.step(0.25); for (const c of sim.cars) if (!seen.has(c.id + c.stage)) { seen.add(c.id + c.stage); if (c.eids.some(e => e >= 0 && E[e] && sim.d.rampRefs.has(E[e].ref))) { onRamp++; if (c.curb?.zone.auto?.deck !== 'dep') wrongRamp++; } } }
   return sim;
 };
-const noFrontage = w => { w.ways = w.ways.filter(q => !(q.kind === 'road' && q.a.y === q.b.y && q.a.y < 2960)); };
 const hall = (w, x, y, ww, h, site) => { const a = w.nextId++, b = w.nextId++; w.zones.push({ id: a, type: 'checkin', level: 1, x, y, w: ww, h, tier: 0, site, pair: b }, { id: b, type: 'claim', level: 0, x, y, w: ww, h, tier: 0, site, pair: a }); };
 
-run('sample (frontage drawn by hand)', () => {}, 1);
+// the starter airport: only the approach roads, Terminal Drive and two roundabouts are drawn
+run('sample (nothing drawn along the terminal)', () => {});
 
-// take away the roads along the terminal face: the hall should lay its own forecourt down to the approach roads
-run('sample, no frontage road', noFrontage);
-
-// the sample's separate check-in and claim replaced by one stacked hall, again with no frontage road
-run('stacked hall, no frontage road', w => {
-  noFrontage(w); const site = w.sites[0].id;
-  w.zones = w.zones.filter(z => z.type !== 'checkin' && z.type !== 'claim');
-  hall(w, 2880, 2740, 340, 130, site);
+// a frontage road drawn by hand along the face takes over: the hall lays nothing
+run('frontage road drawn by hand', w => {
+  const R = (ax, ay, bx, by) => w.ways.push({ id: w.nextId++, kind: 'road', a: { x: ax, y: ay }, b: { x: bx, y: by }, cls: 0, lanes: 4 });
+  R(2780, 2898, 3320, 2898); R(2780, 3230, 2780, 2898); R(3320, 2898, 3320, 3230);
 });
 
-// a second terminal out east with nothing but one road passing 150 m south of it
+// an older save: separate check-in and baggage claim modules, the claim reaching back under security
+run('separate check-in and claim (older save)', w => {
+  const site = w.sites[0].id;
+  w.zones = w.zones.filter(z => z.type !== 'checkin' && z.type !== 'claim');
+  w.zones.push({ id: w.nextId++, type: 'checkin', level: 1, x: 2880, y: 2810, w: 340, h: 60, tier: 0, units: 40, site });
+  w.zones.push({ id: w.nextId++, type: 'claim', level: 0, x: 2950, y: 2650, w: 200, h: 220, tier: 0, units: 4, site });
+});
+
+// a road that stops short of the terminal, off to one side: the link comes straight out and turns once to meet it
+run('road stops short, off to one side', w => {
+  w.ways = w.ways.filter(q => !(q.kind === 'road' && q.a.y === q.b.y)); w.rounds = [];
+  for (const q of w.ways) if (q.kind === 'road' && q.a.x === 2780) q.b.y = 3120;
+  for (const q of w.ways) if (q.kind === 'road' && q.a.x === 3320) q.a.y = 3120;
+  for (const q of w.ways) if (q.kind === 'road') { if (q.a.x === 2780) q.a.x = q.b.x = 2640; else if (q.a.x === 3320) q.a.x = q.b.x = 3460; }
+});
+
+// a second terminal out east with nothing but one road running east from the roundabout, 340 m south of it
 run('second terminal beside a passing road', w => {
   const site = w.nextId++; w.sites.push({ id: site, x: 3680, y: 2600, w: 640, h: 300 });
   w.zones.push({ id: w.nextId++, type: 'concourse', level: 1, x: 3700, y: 2620, w: 600, h: 80, tier: 0, cls: 2, site });
   w.zones.push({ id: w.nextId++, type: 'security', level: 1, x: 3940, y: 2700, w: 120, h: 60, tier: 0, site });
   hall(w, 3830, 2760, 340, 100, site);
-  w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 3320, y: 3020 }, b: { x: 4500, y: 3020 }, cls: 0, lanes: 2 });
+  w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 3320, y: 3230 }, b: { x: 4500, y: 3230 }, cls: 0, lanes: 2 });
 }, 3);
 
 // a hall with no road anywhere near: no forecourt, and the design check says so

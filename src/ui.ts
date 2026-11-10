@@ -904,6 +904,8 @@ export class UI {
     const z: Zone = { id: this.world.nextId++, type: t, level: ZONES[t].groundOnly ? 0 : hall ? 1 : this.ren.level, ...r, tier: 0 };
     // v0.12: the hall is check-in on Level 1 with baggage claim under it on Ground, placed, moved and demolished as one
     const under: Zone | null = hall ? { id: this.world.nextId++, type: 'claim', level: 0, ...r, tier: 0, pair: z.id } : null;
+    // a sensible number of counters to open with: about one per 500 m² of hall (the sample's ratio); the inspector's − / + changes it
+    if (hall) z.units = Math.max(6, Math.round(area(r) / 500));
     if (under) { z.pair = under.id; const st0 = this.world.sites?.find(q => q.id === this.ren.focus) ?? siteOf(this.world, z); if (st0) under.site = st0.id; this.world.zones.push(under); }
     const roads0 = this.sim.d.autoRoads.filter(w => w.fore === 'face').length;
     if (t === 'concourse') z.cls = this.opt.conc;
