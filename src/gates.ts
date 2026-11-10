@@ -6,10 +6,11 @@
 //   and each slot can be switched off or back on by the player.
 //
 // The ideal taxiway line for each side (one stand depth out) is exported as a guide for drawing and snapping.
-import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rectsOverlap, rectSegDist } from './geom';
-import { CLASSES, Cls } from './config';
+import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rectsOverlap, rectSegDist, segDist, segsIntersect, inRect } from './geom';
+import { APRON, CLASSES, Cls, SITE, TAXI_CLASSES } from './config';
+import { roundOuter } from './ways';
 import type { World, Zone, Way, Apron, Gate, RunwayInfo } from './world';
-import { zonePts, toWorld, dirWorld, polyClip, polyArea, shaped, hallPts } from './shapes';
+import { zonePts, toWorld, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts } from './shapes';
 import { pointInPoly } from './geom';
 
 /** n, e, s, w for a rectangle (of its own frame); `f0.`, `f1.` … for the facets of a round or polygonal hall (v0.18). */
@@ -21,9 +22,21 @@ export interface GateSlot {
 export interface SideGuide {
   zone: Zone; side: SideKey; a: Pt; b: Pt; out: Pt; ideal: number; reach: number;
   served: boolean; d?: number; cls?: Cls; note?: string;
+  /** v0.19: the side laid its own apron (no taxiway drawn alongside); or it is a landside face and gets none. */
+  self?: boolean; land?: boolean;
+}
+/** A taxilane a concourse laid for itself, or (`link`) its connection to the airfield. Generated, never saved. */
+export interface Lane { a: Pt; b: Pt; cls: Cls; zone: number; link?: boolean }
+export interface GateOpts {
+  /** Lay aprons on faces with no taxiway alongside (v0.19). Off for the first pass, which only finds what the forecourt must avoid. */
+  self?: boolean;
+  /** Roads and sidewalks, drawn and laid, as straight pieces: self-laid stands and taxilanes keep clear of them. */
+  keep?: { a: Pt; b: Pt }[];
 }
 
 export const standDepth = (c: number) => CLASSES[c].length + 22;          // building face to taxiway centreline
+/** Face to taxilane centreline for an apron a concourse lays itself: nose-in gap, aircraft, then the taxilane's clearance (see APRON). */
+export const selfDepth = (c: number) => APRON.nose + CLASSES[c].length + APRON.laneClear[c];
 export const sideReach = (c: number) => Math.max(150, 2 * standDepth(c) + 40); // farthest a taxiway can be and still count
 export const SIDE_NAMES: Record<string, string> = { n: 'North', e: 'East', s: 'South', w: 'West' };
 export const sideName = (s: SideKey) => SIDE_NAMES[s] ?? `Facet ${Number(s.slice(1)) + 1}`;
@@ -47,8 +60,13 @@ export function sidesOf(z: Zone) {
   return z.rot ? sides.map(sd => ({ side: sd.side, a: toWorld(z, sd.a), b: toWorld(z, sd.b), out: dirWorld(z, sd.out) })) : sides;
 }
 
-export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number) {
+type Side = ReturnType<typeof sidesOf>[number];
+interface Pending { z: Zone; sd: Side; guide: SideGuide; zc: Cls; letter: string }
+interface Count { k: number; n: number }
+
+export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, opts: GateOpts = {}) {
   const gates: Gate[] = [], aprons: Apron[] = [], slots: GateSlot[] = [], guides: SideGuide[] = [];
+  const pending: Pending[] = []; const counts = new Map<number, Count>();
   const letters = new Map<number, string>();
   const units = new Map<number, { max: number; count: number }>();
   const taxis = world.ways.filter(w => w.kind === 'taxi');
@@ -74,7 +92,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
         if (ov < 20) continue;
         if (!best || d < best.d - 3 || (Math.abs(d - best.d) <= 3 && ov > best.ov)) best = { w, d, ov };
       }
-      if (!best) continue;
+      if (!best) { pending.push({ z, sd, guide, zc, letter }); continue; }
       guide.d = best.d;
       let cls = -1;
       for (let c = zc; c >= 0; c--) if (standDepth(c) <= best.d + 1) { cls = c; break; }
@@ -141,9 +159,234 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
       }
       flush();
     }
-    units.set(z.id, { max: nSlots, count: k });
+    counts.set(z.id, { k, n: nSlots });
   }
-  return { gates, aprons, slots, guides, letters, units };
+  // v0.19: every other open face lays its own apron, taxilane and link to the airfield.
+  const laid = opts.self && APRON.self ? selfAprons(world, runways, runwayWidth, pending, aprons, gates, slots, counts, opts.keep ?? []) : { lanes: [], pads: [] };
+  for (const [id, c] of counts) units.set(id, { max: c.n, count: c.k });
+  return { gates, aprons, slots, guides, letters, units, lanes: laid.lanes, pads: laid.pads };
+}
+
+// ------------------------------------------------------------ self-laid aprons (v0.19)
+//
+//   A concourse face with no taxiway alongside lays its own apron: stands on the same grid and with the same keys as
+//   a drawn one (so switching to a drawn taxiway later keeps the player's switched-off gates), one stand depth deep,
+//   and a taxilane along their tails. Faces are taken in order, first come first served: a stand needs its whole
+//   cell clear of other buildings, of aprons already laid, of roads and sidewalks, and its taxilane clear of
+//   buildings by the ICAO distance. A face a processing module stands against (security, a hall) is landside
+//   and gets none.
+//
+//   Then the taxilanes are joined up. Lanes on neighbouring faces meet at the corner. Each loose end runs straight
+//   on, or straight out from the building, to the nearest taxiway, taxilane or (at a cost) runway within
+//   `APRON.reach`. A ring with no loose end (round a hub, or all four sides of a satellite) takes the shortest way
+//   out it can find. Nothing here is saved; it is rebuilt on every derive.
+/** Net refs of generated taxilanes: -(LANE_REF + index). */
+export const LANE_REF = 2400000;
+const LANDSIDE = new Set(['security', 'checkin', 'claim', 'passport']);
+const cross = (a: Pt, b: Pt) => a.x * b.y - a.y * b.x;
+/** How far along the ray from p (unit direction u) segment ab is met, or -1. */
+function rayHit(p: Pt, u: Pt, a: Pt, b: Pt): number {
+  const v = sub(b, a); const den = cross(u, v); if (Math.abs(den) < 1e-6) return -1;
+  const w = sub(a, p); const t = cross(w, v) / den, q = cross(w, u) / den;
+  return t >= -0.01 && q >= -0.002 && q <= 1.002 ? Math.max(0, t) : -1;
+}
+/** Distance from a point to a polygon's outline. */
+const edgeDist = (p: Pt, poly: Pt[]) => { let m = Infinity; for (let i = 0; i < poly.length; i++) m = Math.min(m, segDist(p, poly[i], poly[(i + 1) % poly.length])); return m; };
+/** Distance from a point to a polygon: 0 inside it. */
+const polyDist = (p: Pt, poly: Pt[]) => (pointInPoly(p, poly) ? 0 : edgeDist(p, poly));
+/** Inside a polygon by more than `m` metres (so a point on its edge is not inside). */
+const within = (p: Pt, poly: Pt[], m: number) => pointInPoly(p, poly) && edgeDist(p, poly) > m;
+const fat = (a: Pt, b: Pt, hw: number): Pt[] => { const n = mul(perpLeft(norm(sub(b, a))), hw); return [add(a, n), add(b, n), sub(b, n), sub(a, n)]; };
+
+interface Run { lane: Lane; al: Pt; out: Pt; ap: Apron; ext: [number, number]; joined: [boolean, boolean]; T: number }
+
+function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, pending: Pending[],
+  aprons: Apron[], gates: Gate[], slots: GateSlot[], counts: Map<number, Count>, keep: { a: Pt; b: Pt }[]): { lanes: Lane[]; pads: Pt[][] } {
+  const taxis = world.ways.filter(w => w.kind === 'taxi');
+  const outlines = world.zones.map(z => { const pts = zonePts(z); return { z, pts, box: polyBox(pts) }; });
+  // most things are nowhere near most other things: a box test first keeps this cheap enough to run every frame of a drag
+  const nearBox = (p: Pt, r: Rect, m: number) => p.x >= r.x - m && p.x <= r.x + r.w + m && p.y >= r.y - m && p.y <= r.y + r.h + m;
+  const onSite = (p: Pt) => inRect(p, SITE.buildable) && !pointInPoly(p, SITE.lake);
+  const nearRunway = (p: Pt) => runways.some(r => segDist(p, r.rw.a, r.rw.b) < runwayWidth(r.length) / 2 + 40);
+  const runs: Run[] = [];
+  for (const { z, sd, guide, zc, letter } of pending) {
+    const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a)); const out = sd.out;
+    const C = CLASSES[zc]; const sp = C.gateSpacing; const D = selfDepth(zc); const clear = APRON.laneClear[zc];
+    const quad = (d0: number, d1: number) => [add(sd.a, add(mul(al, 1), mul(out, d0))), add(sd.b, add(mul(al, -1), mul(out, d0))), add(sd.b, add(mul(al, -1), mul(out, d1))), add(sd.a, add(mul(al, 1), mul(out, d1)))];
+    if (L < sp) continue;
+    // a processing module stands against this face: it is the landside of the building
+    const thin = quad(0.5, 6);
+    if (outlines.some(o => o.z.id !== z.id && LANDSIDE.has(o.z.type) && polyArea(polyClip(o.pts, thin)) > 2)) { guide.land = true; continue; }
+    const strip = quad(1, D);
+    const blocked: [number, number][] = [];
+    const cut = (pts: Pt[]) => {
+      const c = polyClip(pts, strip); if (c.length < 3 || polyArea(c) <= 2) return;
+      const t = c.map(p => dot(sub(p, sd.a), al)); blocked.push([Math.min(...t), Math.max(...t)]);
+    };
+    for (const o of outlines) if (o.z.id !== z.id) cut(o.pts);
+    for (const ap of aprons) cut(ap.pts);
+    for (const k of keep) cut(fat(k.a, k.b, 8));
+    for (const w of taxis) cut(fat(w.a, w.b, (w.cls >= 3 ? TAXI_CLASSES[1].width : TAXI_CLASSES[0].width) / 2 + 4));
+    for (const rd of world.rounds ?? []) { const R = roundOuter(rd) + 4; cut([{ x: rd.x - R, y: rd.y - R }, { x: rd.x + R, y: rd.y - R }, { x: rd.x + R, y: rd.y + R }, { x: rd.x - R, y: rd.y + R }]); }
+    const n = Math.floor(L / sp); const pad = (L - n * sp) / 2; const cnt = counts.get(z.id)!;
+    let run: GateSlot[] = [];
+    const flush = () => {
+      if (!run.length) return;
+      const first = run[0], last = run[run.length - 1];
+      const pts = [first.cell[0], last.cell[1], last.cell[2], first.cell[3]];
+      const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+      const rect = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+      const ap: Apron = { zone: z, rect, pts, outward: out, laneA: first.front, laneB: last.front, mouth: lerpPt(first.front, last.front, 0.5), cls: zc, letter, self: true };
+      aprons.push(ap);
+      for (const sl of run) if (sl.on) {
+        cnt.k++;
+        gates.push({ id: sl.id, key: sl.key, num: `${letter}${cnt.k}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
+      }
+      // the taxilane runs half a stand past each end where there is room, so the end stands can push back
+      const room = (p: Pt) => onSite(p) && !outlines.some(o => o.z.id !== z.id && nearBox(p, o.box, 10) && polyDist(p, o.pts) < 10) && !aprons.some(o => o !== ap && nearBox(p, o.rect, 0) && within(p, o.pts, 1)) && !keep.some(k => segDist(p, k.a, k.b) < 10);
+      const e0 = room(add(first.front, mul(al, -sp / 2))) ? sp / 2 : 2, e1 = room(add(last.front, mul(al, sp / 2))) ? sp / 2 : 2;
+      runs.push({ lane: { a: add(first.front, mul(al, -e0)), b: add(last.front, mul(al, e1)), cls: zc, zone: z.id }, al, out, ap, ext: [e0, e1], joined: [false, false], T: D + sp });
+      run = [];
+    };
+    for (let i = 0; i < n; i++) {
+      const s = pad + (i + 0.5) * sp; const ep = add(sd.a, mul(al, s)); const front = add(ep, mul(out, D));
+      const h = mul(al, sp / 2);
+      const cell = [sub(ep, h), add(ep, h), add(add(ep, h), mul(out, D)), add(sub(ep, h), mul(out, D))];
+      const free = !blocked.some(([b0, b1]) => b1 > s - sp / 2 + 1 && b0 < s + sp / 2 - 1)
+        && [cell[2], cell[3], front].every(p => onSite(p) && !nearRunway(p))
+        && !outlines.some(o => o.z.id !== z.id && nearBox(front, o.box, clear) && polyDist(front, o.pts) < clear - 0.5)
+        && !keep.some(k => segDist(front, k.a, k.b) < 12);
+      if (!free) { flush(); continue; }
+      const key = `${sd.side}${i}`;
+      const sl: GateSlot = {
+        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: zc, on: !(z.off ?? []).includes(key),
+        door: add(ep, mul(out, -7)), stand: add(ep, mul(out, C.length / 2 + APRON.nose)), front, ang: Math.atan2(-out.y, -out.x), outward: out, cell,
+      };
+      slots.push(sl); cnt.n++; guide.served = true; guide.self = true; guide.d = D; guide.cls = zc;
+      run.push(sl);
+    }
+    flush();
+  }
+  if (!runs.length) return { lanes: [], pads: [] };
+  const pads: Pt[][] = [];
+
+  // ---- a clear line for a taxilane: on the site, off buildings, aprons, roads and sidewalks
+  const clearLine = (a: Pt, b: Pt) => {
+    if (keep.some(k => segsIntersect(a, b, k.a, k.b))) return false;
+    const L = dist(a, b); const u = norm(sub(b, a));
+    const lb: Rect = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+    const hits = (r: Rect, m: number) => r.x - m <= lb.x + lb.w && r.x + r.w + m >= lb.x && r.y - m <= lb.y + lb.h && r.y + r.h + m >= lb.y;
+    const os = outlines.filter(o => hits(o.box, 10)), as = aprons.filter(o => hits(o.rect, 0));
+    for (let s = 5; s < L - 1; s += 5) {
+      const p = add(a, mul(u, s));
+      if (!onSite(p) || os.some(o => nearBox(p, o.box, 10) && polyDist(p, o.pts) < 10) || as.some(o => nearBox(p, o.rect, 0) && within(p, o.pts, 1.5))) return false;
+    }
+    for (const rd of world.rounds ?? []) if (segDist(rd, a, b) < roundOuter(rd) + 10) return false;
+    return true;
+  };
+  const endPt = (r: Run, e: 0 | 1) => (e ? r.lane.b : r.lane.a);
+  const endDir = (r: Run, e: 0 | 1) => (e ? r.al : mul(r.al, -1));
+
+  // ---- lanes on neighbouring faces meet at the corner
+  const joins: { i: number; j: number; ei: 0 | 1; ej: 0 | 1; X: Pt; cost: number }[] = [];
+  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) for (const ei of [0, 1] as const) for (const ej of [0, 1] as const) {
+    const A = runs[i], B = runs[j]; const ua = endDir(A, ei), ub = endDir(B, ej); const den = cross(ua, ub);
+    if (Math.abs(den) < 0.2) continue;
+    const W = sub(endPt(B, ej), endPt(A, ei)); const ta = cross(W, ub) / den, tb = cross(W, ua) / den;
+    if (ta < -A.ext[ei] - 0.5 || tb < -B.ext[ej] - 0.5 || ta > A.T || tb > B.T) continue;
+    joins.push({ i, j, ei, ej, X: add(endPt(A, ei), mul(ua, ta)), cost: Math.max(0, ta) + Math.max(0, tb) });
+  }
+  joins.sort((p, q) => p.cost - q.cost || p.i - q.i || p.j - q.j);
+  const setEnd = (r: Run, e: 0 | 1, X: Pt) => { if (e) r.lane.b = X; else r.lane.a = X; r.joined[e] = true; };
+  for (const J of joins) {
+    const A = runs[J.i], B = runs[J.j];
+    if (A.joined[J.ei] || B.joined[J.ej]) continue;
+    if (!clearLine(endPt(A, J.ei), J.X) || !clearLine(endPt(B, J.ej), J.X)) continue;
+    setEnd(A, J.ei, J.X); setEnd(B, J.ej, J.X);
+    // pave the corner between the two aprons
+    pads.push([A.ap.pts[J.ei ? 1 : 0], A.ap.pts[J.ei ? 2 : 3], J.X, B.ap.pts[J.ej ? 2 : 3], B.ap.pts[J.ej ? 1 : 0]]);
+  }
+
+  // ---- lanes on opposite sides of a building whose end has no stand (it is narrower than one stand) meet round that end
+  const round: Lane[] = [];
+  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
+    const A = runs[i], B = runs[j];
+    if (A.lane.zone !== B.lane.zone || dot(A.out, B.out) > -0.9) continue;
+    for (const ei of [0, 1] as const) for (const ej of [0, 1] as const) {
+      if (A.joined[ei] || B.joined[ej]) continue;
+      const u = endDir(A, ei); if (dot(u, endDir(B, ej)) < 0.9) continue;
+      const sa = dot(endPt(A, ei), u), sb = dot(endPt(B, ej), u);
+      if (Math.abs(sa - sb) > A.T) continue;          // the two sides end at very different places: not one building end
+      for (const d of [30, 45, 60]) {
+        const s = Math.max(sa, sb) + d;
+        const pa = add(endPt(A, ei), mul(u, s - sa)), pb = add(endPt(B, ej), mul(endDir(B, ej), s - sb));
+        if (!clearLine(endPt(A, ei), pa) || !clearLine(endPt(B, ej), pb) || !clearLine(pa, pb)) continue;
+        setEnd(A, ei, pa); setEnd(B, ej, pb);
+        round.push({ a: pa, b: pb, cls: A.lane.cls, zone: A.lane.zone });
+        break;
+      }
+    }
+  }
+
+  // ---- loose ends reach for the airfield
+  const lanes: Lane[] = [...runs.map(r => r.lane), ...round];
+  /** The nearest taxiway, runway or taxilane a ray meets within reach. `ok` limits taxilanes to those already joined to the airfield. */
+  const rayTo = (from: Pt, u: Pt, self: Run | null, ok?: boolean[]) => {
+    let best: { t: number; rwy: boolean } | null = null;
+    const tryHit = (a: Pt, b: Pt, rwy: boolean) => { const t = rayHit(from, u, a, b); if (t >= 0 && t <= APRON.reach && (!best || t < best.t)) best = { t, rwy }; };
+    for (const w of taxis) tryHit(w.a, w.b, false);
+    for (const r of runways) tryHit(r.rw.a, r.rw.b, true);
+    lanes.forEach((l, k) => { if (runs[k] !== self && (!ok || ok[k])) tryHit(l.a, l.b, false); });
+    return best as { t: number; rwy: boolean } | null;
+  };
+  interface Way2 { pts: Pt[]; cost: number }
+  /** The ways out from a point: straight along `u`, or along `u` a little way and then off to one side. */
+  const waysOut = (from: Pt, u: Pt, sides: Pt[], self: Run | null, ok?: boolean[]): Way2 | null => {
+    let best: Way2 | null = null;
+    const take = (pts: Pt[], cost: number) => { if (!best || cost < best.cost) best = { pts, cost }; };
+    const leg = (p: Pt, dir: Pt, lead: Pt[], extra: number, k: number) => {
+      const h = rayTo(p, dir, self, ok); if (!h) return;
+      const to = add(p, mul(dir, h.t));
+      if (h.t >= 1 && !clearLine(p, to)) return;
+      take([...lead, p, to], (extra + h.t * (h.rwy ? APRON.runwayCost : 1)) * k + (lead.length ? 20 : 0));
+    };
+    leg(from, u, [], 0, 1);
+    for (const sd of sides) leg(from, sd, [], 10, 1.25);
+    for (const d of [30, 60, 100]) {
+      const p = add(from, mul(u, d)); if (!clearLine(from, add(p, mul(u, 6)))) break;
+      for (const sd of sides) leg(p, sd, [from], d, 1.25);
+    }
+    return best as Way2 | null;
+  };
+  const lay = (w: Way2, r: Run) => { for (let i = 1; i < w.pts.length; i++) if (dist(w.pts[i - 1], w.pts[i]) >= 1) lanes.push({ a: w.pts[i - 1], b: w.pts[i], cls: r.lane.cls, zone: r.lane.zone, link: true }); };
+  for (const r of runs) for (const e of [0, 1] as const) {
+    if (r.joined[e]) continue;
+    // straight on, straight out from the building, or on a little and then out or round the end of the building
+    const w = waysOut(endPt(r, e), endDir(r, e), [r.out, mul(r.out, -1)], r);
+    if (w) lay(w, r);
+  }
+
+  // ---- anything still cut off (a ring has no loose end) takes the shortest clear way out to the airfield proper
+  const anchors = [...taxis.map(w => ({ a: w.a, b: w.b })), ...runways.map(r => ({ a: r.rw.a, b: r.rw.b }))];
+  const touch = (p: { a: Pt; b: Pt }, q: { a: Pt; b: Pt }) => segsIntersect(p.a, p.b, q.a, q.b) || segDist(p.a, q.a, q.b) < 4 || segDist(p.b, q.a, q.b) < 4 || segDist(q.a, p.a, p.b) < 4 || segDist(q.b, p.a, p.b) < 4;
+  for (let pass = 0; pass < 200; pass++) {   // one link a pass, until every apron is joined or nothing more can be
+    // which lanes reach the drawn airfield, through each other
+    const ok = lanes.map(l => anchors.some(a => touch(l, a)));
+    for (let grew = true; grew;) { grew = false; for (let i = 0; i < lanes.length; i++) if (!ok[i] && lanes.some((l, j) => ok[j] && touch(lanes[i], l))) { ok[i] = grew = true; } }
+    if (ok.every(Boolean)) break;
+    let best: { w: Way2; r: Run } | null = null;
+    runs.forEach((r, k) => {
+      if (ok[k]) return;
+      const cands: (Way2 | null)[] = [];
+      for (const e of [0, 1] as const) if (!r.joined[e]) cands.push(waysOut(endPt(r, e), endDir(r, e), [r.out, mul(r.out, -1)], r, ok));
+      for (const from of [r.lane.a, r.lane.b, lerpPt(r.lane.a, r.lane.b, 0.5)]) cands.push(waysOut(from, r.out, [], r, ok));
+      for (const w of cands) if (w && (!best || w.cost < best.w.cost)) best = { w, r };
+    });
+    if (!best) break;
+    const B = best as { w: Way2; r: Run };
+    lay(B.w, B.r);
+  }
+  return { lanes, pads };
 }
 
 /** Which slot (on or off) is under a point, if any. */

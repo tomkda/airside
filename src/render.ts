@@ -11,7 +11,8 @@ import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
-import { turn, centreOf, hallPts, shaped } from './shapes';
+import { turn, centreOf, hallPts, shaped, gripsOf, Grip } from './shapes';
+import { canTurn } from './world';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -57,6 +58,8 @@ export class Renderer {
   selected: Sel | null = null;
   hover: Sel | null = null;
   ghost: Ghost | null = null;
+  /** v0.19: the grip of the selected shape under the pointer, if any. */
+  gripHot: Grip | null = null;
   cursor: Pt | null = null;
   showGuides = false;          // taxiway / concourse tools show where gates would grow    // snapped cursor point while a drawing tool is active
 
@@ -183,6 +186,7 @@ export class Renderer {
     this.drawAircraft(sim);
     this.drawFocus(sim);
     this.drawLinks(sim);
+    this.drawGrips(sim);
     this.drawGhost();
     this.drawPulses(sim);
 
@@ -204,7 +208,7 @@ export class Renderer {
       const zn = sim.d.zones.find(q => q.id === id); if (!zn) continue;
       const grow = (8 + 22 * k) / this.cam.zoom;
       g.strokeStyle = zn.auto ? `rgba(194,133,46,${1 - k})` : `rgba(47,93,124,${1 - k})`; g.lineWidth = 3 * (1 - k) + 1;
-      this.path(this.rectPts({ x: zn.x - grow, y: zn.y - grow, w: zn.w + 2 * grow, h: zn.h + 2 * grow }), 0); g.stroke();
+      this.path(this.rectPts({ x: zn.x - grow, y: zn.y - grow, w: zn.w + 2 * grow, h: zn.h + 2 * grow, rot: zn.rot, sides: zn.sides, pivot: centreOf(zn) }), 0); g.stroke();
       if (k < 0.5) this.poly(this.rectPts(zn), `rgba(255,248,230,${0.5 - k})`, 0);
     }
   }
@@ -424,6 +428,7 @@ export class Renderer {
   drawAirfield(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom; const d = sim.d;
     for (const a of d.aprons) this.poly(a.pts, PAL.pave);
+    for (const p of d.pads) this.poly(p, PAL.pave);
     // Taxiways (player) plus generated stubs into aprons and onto runways
     g.lineJoin = 'round';
     const taxis = sim.world.ways.filter(w => w.kind === 'taxi');
@@ -432,6 +437,7 @@ export class Renderer {
     this.drawFillets(sim);
     if (z > 0.6) {
       for (const t of taxis) this.line(t.a, t.b, 0.4, PAL.paveLine, 0, 'butt', 0.6);
+      for (const t of d.airExtra) this.line(t.a, t.b, 0.4, PAL.paveLine, 0, 'round', 0.6);   // self-laid taxilanes and links carry a centreline too
       for (const t of taxis) if (t.cls >= 3) {   // Code F: edge stripes
         const n = norm({ x: -(t.b.y - t.a.y), y: t.b.x - t.a.x }); const k = TAXI_CLASSES[1].width / 2 - 2;
         for (const s of [-k, k]) this.line(add(t.a, mul(n, s)), add(t.b, mul(n, s)), 0.3, PAL.paveLine, 0, 'butt', 0.5);
@@ -1123,8 +1129,8 @@ export class Renderer {
     const g = this.ctx; const z = this.cam.zoom;
     for (const gd of sim.d.gateGuides) {
       const sel = this.selected?.kind === 'zone' && this.selected.id === gd.zone.id;
-      if (!all && !sel) continue;
-      if (gd.served && !sel) continue;
+      // v0.19: stands lay themselves, so a guide is only worth showing while a taxiway is being drawn, on a side that has none
+      if (!all || gd.served || gd.land) continue;
       const a = add(gd.a, mul(gd.out, gd.ideal)), b = add(gd.b, mul(gd.out, gd.ideal));
       const a2 = add(gd.a, mul(gd.out, gd.reach)), b2 = add(gd.b, mul(gd.out, gd.reach));
       this.poly([add(gd.a, mul(gd.out, gd.ideal - 6)), add(gd.b, mul(gd.out, gd.ideal - 6)), b2, a2], 'rgba(47,93,124,0.06)');
@@ -1323,6 +1329,20 @@ export class Renderer {
     const tilted = this.tilt > 0.02;
     for (const zn of sim.d.zones) if (ZONES[zn.type].terminal && zn.level <= this.level) { this.path(this.rectPts(zn), tilted ? LEVELS[zn.level].z1 : 0); g.stroke(); }
     g.restore();
+  }
+
+  /** v0.19: the grips of the selected shape: square on an edge, round where an end swings or a hub turns. */
+  drawGrips(sim: Sim) {
+    if (this.selected?.kind !== 'zone' || this.mode3d) return;
+    const zn = sim.world.zones.find(q => q.id === this.selected!.id); if (!zn || zn.auto) return;
+    const g = this.ctx; const top = this.tilt > 0.02 ? LEVELS[zn.level].z1 : 0;
+    for (const gr of gripsOf(zn, canTurn(zn))) {
+      const [x, y] = this.P(gr.p.x, gr.p.y, top); const hot = this.gripHot === gr.grip; const r = hot ? 7 : 5.5;
+      g.fillStyle = hot ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2;
+      g.beginPath();
+      if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r') g.arc(x, y, r, 0, Math.PI * 2); else g.rect(x - r, y - r, 2 * r, 2 * r);
+      g.fill(); g.stroke();
+    }
   }
 
   drawGhost() {

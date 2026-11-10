@@ -5,13 +5,13 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped } from './shapes';
-import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName } from './gates';
+import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea } from './shapes';
+import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
 import { letLots } from './commerce';
@@ -127,7 +127,8 @@ export interface RunwayInfo {
   cls: Cls | -1; width: number; nodes: { n: number; s: number }[]; nodeA: number; nodeB: number;
 }
 /** `rect` is the apron's upright bounding box; `pts` its true outline (they differ beside a turned concourse). */
-export interface Apron { zone: Zone; rect: Rect; pts: Pt[]; outward: Pt; laneA: Pt; laneB: Pt; mouth: Pt; cls: Cls; letter: string }
+/** `self`: laid by the concourse itself, with no taxiway drawn alongside (v0.19). It gives way to anything the player builds on it. */
+export interface Apron { zone: Zone; rect: Rect; pts: Pt[]; outward: Pt; laneA: Pt; laneB: Pt; mouth: Pt; cls: Cls; letter: string; self?: boolean }
 export interface Gate {
   id: string; key: string; num: string; zone: Zone; apron: Apron; cls: Cls; door: Pt; stand: Pt; front: Pt; ang: number;
   frontNode: number; rwys: Set<number>[];          // runways that reach this gate, per aircraft class
@@ -172,6 +173,8 @@ export interface Terminal {
 
 export interface Derived {
   runways: RunwayInfo[]; aprons: Apron[]; gates: Gate[];
+  /** v0.19: paving in the corners where self-laid aprons on neighbouring faces meet. */
+  pads: Pt[][];
   air: Net; airExtra: { a: Pt; b: Pt; cls: number }[]; taxiLabels: TaxiLabel[]; taxiLetter: Map<number, string>;
   hotspots: Pt[]; cores: Core[]; ped: PNode[];
   road: Net; hwyEnds: number[]; attach: Map<number, number[]>; roadOK: Set<number>; crosswalks: Crosswalk[];
@@ -291,7 +294,7 @@ export function canPlaceZone(world: World, r: Rect, type: ZoneType, level: Level
     if (z.level === level) return { ok: false, reason: `Overlaps ${ZONES[z.type].short} on this level` };
     if (level === 1 && z.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
   }
-  for (const a of aprons) if (a.zone.id !== ignoreId && rectsOverlap(r, a.rect)) return { ok: false, reason: 'Overlaps an apron' };
+  for (const a of aprons) if (!a.self && a.zone.id !== ignoreId && rectsOverlap(r, a.rect)) return { ok: false, reason: 'Overlaps an apron' };
   const ins = inset(r, 2);
   for (const w of world.ways) {
     if (w.kind !== 'taxi' && level === 1) continue;                    // upper floors can bridge roads and sidewalks
@@ -361,7 +364,7 @@ export function canPlaceRound(world: World, p: Pt, size: number, aprons: Apron[]
   for (const q of rectCorners(box)) if (!segOnLand(p, q, { x: 0, y: 0, w: SITE.width, h: SITE.height })) return { ok: false, reason: 'Must stay on land' };
   if (Math.abs(p.y - SITE.highwayY) < R + 14) return { ok: false, reason: 'Too close to State Route 12' };
   for (const z of world.zones) if (z.level === 0 && rectSegDist(z, p, p) < R - 1) return { ok: false, reason: `Overlaps the ${ZONES[z.type].short.toLowerCase()}` };
-  for (const ap of aprons) if (rectSegDist(ap.rect, p, p) < R) return { ok: false, reason: 'Overlaps an apron' };
+  for (const ap of aprons) if (!ap.self && rectSegDist(ap.rect, p, p) < R) return { ok: false, reason: 'Overlaps an apron' };
   for (const rw of world.runways) if (segDist(p, rw.a, rw.b) < runwayWidth(dist(rw.a, rw.b)) / 2 + 60 + R) return { ok: false, reason: 'Inside the runway strip' };
   for (const w of world.ways) if (w.kind === 'taxi' && segDist(p, w.a, w.b) < R + 10) return { ok: false, reason: 'Too close to a taxiway' };
   for (const o of world.rounds ?? []) if (o.id !== ignoreId && dist(o, p) < R + roundOuter(o) + 6) return { ok: false, reason: 'Too close to another roundabout' };
@@ -383,11 +386,14 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
   }
   for (const w of world.ways) if (w.kind === 'taxi' && segsIntersect(a, b, w.a, w.b)) return { ok: false, reason: `${name}s can't cross a taxiway` };
   if (kind === 'walk') for (const rd of world.rounds ?? []) if (segDist(rd, a, b) < roundOuter(rd) - 2) return { ok: false, reason: "Sidewalks go round a roundabout, not through it" };
-  for (const ap of aprons) if (rectSegDist(inset(ap.rect, 2), a, b) === 0) return { ok: false, reason: `${name}s can't cross an apron` };
+  for (const ap of aprons) if (!ap.self && rectSegDist(inset(ap.rect, 2), a, b) === 0) return { ok: false, reason: `${name}s can't cross an apron` };
   for (const z of world.zones) if (z.level === 0 && rectSegDist(inset(z, 2), a, b) === 0)
     return { ok: false, reason: `${name}s end at the edge of the ${ZONES[z.type].short.toLowerCase()}; they can't run through it` };
   return { ok: true };
 }
+
+/** v0.19: can this shape be swung round by its ends? A pier or satellite can: a concourse that belongs to no site. */
+export const canTurn = (z: Zone) => z.type === 'concourse' && !z.sides && z.site === undefined;
 
 // ------------------------------------------------------------ wind
 export interface Wind { from: number; kt: number }
@@ -418,7 +424,15 @@ export function derive(source: World): Derived {
   const gates: Gate[] = [];
 
   // ---- Concourse gates (see gates.ts): every side facing a parallel taxiway within reach grows gates.
-  const GA = buildGateAreas(world, runways, runwayWidth);
+  //      v0.19: and every other open face lays its own apron and taxilane, clear of the roads and sidewalks drawn or laid so far.
+  //      The sidewalks and drives that lots and facilities lay for themselves are laid first, against the aprons of
+  //      drawn taxiways only (as before v0.19), so the landside claims its ground and no taxilane is laid across it.
+  const rects1 = buildGateAreas(world, runways, runwayWidth).aprons.map(a => a.rect);
+  const laid = autoWalks(world, world.zones, rects1);
+  const laidDrives = autoRoads(world, world.zones, rects1, SITE.highwayY, SITE.width, GROWTH.autoRoadReach, fore);
+  const keep: { a: Pt; b: Pt }[] = [];
+  for (const w of [...source.ways.filter(q => q.kind !== 'taxi'), ...fore, ...laid, ...laidDrives]) for (const [a, b] of waySegs(w)) keep.push({ a, b });
+  const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
   for (const [id, u] of GA.units) units.set(id, u);
   const gateLetter = GA.letters;
@@ -440,12 +454,30 @@ export function derive(source: World): Derived {
     if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
     else if (z.rot) {
       // an angled pier is laid out in its own upright frame, then every piece is turned into place
+      // (v0.19: its neighbours are brought into that frame too, as the box each one fills there, so the pier finds
+      //  its entry and its windowless walls where they really are)
       const zl = { ...z, rot: undefined };
-      C = carveConcourse(zl, world, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
+      const near = zonePts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot });   // the pier's outline, 2 m out
+      const local: World = { ...world, zones: world.zones.map(o => {
+        if (o.id === z.id) return zl;
+        // only the part of a neighbour that is at the pier counts, or its box would wall off stretches it never touches;
+        // one that is nowhere near is kept as a dot at its centre, for "which end faces security"
+        const part = polyClip(zonePts(o), near); const c = toLocal(z, centreOf(o));
+        const box = part.length >= 3 && polyArea(part) > 1 ? polyBox(part.map(p => toLocal(z, p))) : { x: c.x - 0.5, y: c.y - 0.5, w: 1, h: 1 };
+        return { ...o, ...box, rot: undefined, sides: undefined };
+      }) };
+      C = carveConcourse(zl, local, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
       for (const sh of C.shops) { sh.zone = z; sh.pts = sh.pts.map(p => toWorld(z, p)); sh.door = toWorld(z, sh.door); }
       for (const it of C.items) it.pts = it.pts.map(p => toWorld(z, p));
     } else C = carveConcourse(z, world, gates);
     shops.set(z.id, C.shops); budgets.set(z.id, C.budget); bandItems.set(z.id, C.items);
+  }
+  // v0.19: where one building runs into another the floor is left open: no lot stands in the overlap, so a pier
+  // drawn into a concourse has a way through instead of a row of shops across its mouth.
+  for (const [id, list] of shops) {
+    const z = world.zones.find(q => q.id === id)!;
+    const into = world.zones.filter(o => o.id !== id && o.level === z.level && (o.type === 'concourse' || o.type === 'security') && (shaped(o) || shaped(z)) && zonesOverlap(z, o, 24));
+    if (into.length) shops.set(id, list.filter(sh => !into.some(o => inZone(polyCentre(sh.pts), o))));
   }
   // ---- Tenants bid for the lots by footfall, visibility, dwell and position (see commerce.ts); best lots lease first.
   letLots(source, shops, budgets);
@@ -470,6 +502,8 @@ export function derive(source: World): Derived {
       }
     }
   }
+  // v0.19: taxilanes the concourses laid for themselves, and their links to the airfield
+  GA.lanes.forEach((l, i) => { airSegs.push({ a: l.a, b: l.b, kind: 'taxi', cls: l.cls, ref: -(LANE_REF + i) }); airExtra.push({ a: l.a, b: l.b, cls: l.cls }); });
   const air = buildNet(airSegs, 4);
   for (const g of gates) g.frontNode = nearestNode(air, g.front, 5);
   for (const r of runways) {
@@ -587,7 +621,7 @@ export function derive(source: World): Derived {
     vertical(c, zonesAt(c, 1), zonesAt(c, 0), false);
   }
   // v0.9: a lot that no sidewalk reaches lays its own to the nearest curb (frontage.ts)
-  const laid = autoWalks(world, zs, aprons.map(a => a.rect));
+  // (laid above, before the self-laid aprons: `laid`)
   // v0.10: AirTrain stations join into one line; riding it is a fast edge in the pedestrian network
   const tLinks = trainLinks(zs);
   const tNode = new Map<number, number>(); const tKeys = new Set<string>();
@@ -668,7 +702,7 @@ export function derive(source: World): Derived {
   // ---- Road network: the highway plus player roads; curbs and lots attach where a road ends.
   const HY = SITE.highwayY;
   // v0.10: facilities with no road at their edge lay their own access drive
-  const laidRoads = [...fore, ...autoRoads(world, zs, aprons.map(a => a.rect), HY, SITE.width, GROWTH.autoRoadReach, fore)];
+  const laidRoads = [...fore, ...laidDrives];
   const roads = [...world.ways.filter(w => w.kind === 'road'), ...laidRoads];
   const roadSegs: NSeg[] = [{ a: { x: 0, y: HY }, b: { x: SITE.width, y: HY }, kind: 'hwy', cls: 0, ref: -1, lanes: 6 }];
   // v0.11: curves become chords, straight roads split where generated curbs begin and end (so cars can pull in
@@ -761,7 +795,7 @@ export function derive(source: World): Derived {
     pair(ci, sec, "check-in can't reach security"); pair(sec, ga, "security can't reach the concourse"); pair(ga, cl, "the concourse can't reach baggage claim");
     if (ci.length && !roadCurbs.some(c => ci.some(z => zoneReach(c.id, z.id)))) T.problems.push('no road-served curb reaches check-in');
     if (cl.length && !roadCurbs.some(c => cl.some(z => zoneReach(c.id, z.id)))) T.problems.push('no road-served curb reaches baggage claim');
-    if (ga.length && !tg.length) T.problems.push('no gates yet: run a taxiway along a side of a concourse');
+    if (ga.length && !tg.length) T.problems.push('no gates: its concourse has no room for stands on any side');
     else if (tg.length && !tg.some(g => g.rwys[0].size > 0)) T.problems.push('no taxiway route from a runway to its gates');
     T.active = T.problems.length === 0;
     const pp = of('passport');
@@ -805,20 +839,24 @@ export function derive(source: World): Derived {
   else if (maxCls < 2) issues.push({ level: 'warn', text: `Longest runway is ${Math.round(longest).toLocaleString()} m: up to ${CLASSES[maxCls].example}. A320s need 2,100 m.` });
   if (runways.length && coverage < 0.9) issues.push({ level: 'warn', text: `Crosswind coverage is ${Math.round(coverage * 100)}%. Prevailing wind is from ${SITE.windFrom}°; align a runway with it.` });
   if (!has('concourse')) issues.push({ level: 'error', text: 'No concourse: aircraft have nowhere to park.' });
-  else if (!gates.length) issues.push({ level: 'error', text: 'No gates yet: run a taxiway along a side of a concourse.' });
+  else if (!gates.length) issues.push({ level: 'error', text: 'No gates: no concourse has room for stands. Give one an open side, clear of roads and the runway strip.' });
   for (const z of byType('concourse')) {
     const gs = GA.guides.filter(g => g.zone.id === z.id);
-    const C = CLASSES[zoneCls(z)];
     if (!GA.slots.some(sl => sl.zone.id === z.id)) {
       const why = gs.find(g => g.note)?.note;
-      issues.push({ level: 'info', zoneId: z.id, text: `Concourse ${gateLetter.get(z.id)} has no gates, so it is all shops and seating${why ? ` (${why})` : ''}. For gates, draw a taxiway along a side on the dashed guide, ${C.length + 22} m out (up to ${Math.max(150, 2 * (C.length + 22) + 40)} m).` });
+      issues.push({ level: 'info', zoneId: z.id, text: `Concourse ${gateLetter.get(z.id)} has no gates, so it is all shops and seating${why ? ` (${why})` : ''}. Stands lay themselves on any side with ${Math.round(selfDepth(zoneCls(z)))} m clear of buildings and roads, outside the runway strip.` });
     } else for (const g of gs) if (g.served && g.note) issues.push({ level: 'info', zoneId: z.id, text: `Concourse ${gateLetter.get(z.id)}, ${sideName(g.side).toLowerCase()} side: ${g.note}.` });
   }
+  const cutOff = new Set<number>();
   for (const ap of aprons) {
     const gs = gates.filter(g => g.apron === ap);
     const reachAny = gs.some(g => g.rwys[0].size > 0);
     if (runways.length && !reachAny) {
-      issues.push({ level: 'error', text: `Gates ${ap.letter}: the taxiway they face doesn't connect to a runway.`, zoneId: ap.zone.id });
+      if (ap.self) {
+        // one line and one missing link per building, not per face
+        if (cutOff.has(ap.zone.id)) continue; cutOff.add(ap.zone.id);
+        issues.push({ level: 'error', text: `Gates ${ap.letter}: their apron found no clear way to a taxiway or runway within ${APRON.reach} m. Draw a taxiway to it.`, zoneId: ap.zone.id });
+      } else issues.push({ level: 'error', text: `Gates ${ap.letter}: the taxiway they face doesn't connect to a runway.`, zoneId: ap.zone.id });
       const r = runways.reduce((m, q) => (segDist(ap.mouth, q.rw.a, q.rw.b) < segDist(ap.mouth, m.rw.a, m.rw.b) ? q : m));
       links.push({ a: ap.mouth, b: lerpPt(r.rw.a, r.rw.b, clamp(projT(ap.mouth, r.rw.a, r.rw.b), 0, 1)), text: 'No taxiway' });
     } else if (reachAny && !gs.some(g => gateAir(g, g.cls))) {
@@ -850,8 +888,10 @@ export function derive(source: World): Derived {
   issues.sort((p, q) => ['error', 'warn', 'info'].indexOf(p.level) - ['error', 'warn', 'info'].indexOf(q.level));
   if (!issues.some(i => i.level !== 'info')) issues.unshift({ level: 'info', text: `${terminals.filter(t => t.active).length === 1 ? 'Terminal is' : 'All terminals are'} open. Watch the queues.` });
 
+  // the same line about the same building is said once (two of its aprons can earn the same remark)
+  { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {
-    runways, aprons, gates, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
+    runways, aprons, gates, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,

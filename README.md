@@ -14,12 +14,13 @@ node scripts/roads.mjs     # curves, roundabouts and one-way loops
 node scripts/halls.mjs     # stacked halls and self-laid forecourts
 node scripts/satellites.mjs # satellite concourses and people movers
 node scripts/piers.mjs      # piers at any angle and round or polygonal hubs
+node scripts/aprons.mjs     # self-laid aprons and taxilanes, and reshaping by grips
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
 node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
-npm test                  # all eight sims
+npm test                  # all nine sims
 ```
 
-CI runs the type-check, build and all eight sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
+CI runs the type-check, build and all nine sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
 There is no server. The build is one self-contained HTML file (~840 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
@@ -33,15 +34,32 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Levels | `[` Ground · `]` Level 1 |
 | View | `T` 3D view · `H` queue and road-congestion heatmap · `C` commercial heatmap (footfall and revenue per lot) |
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
-| Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
+| Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it, or one of its grips to stretch, swing or resize it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.18)
+## What's in the alpha (v0.19)
+
+- **Shapes you can pull about, and aprons that lay themselves (v0.19):** building is now a matter of drawing a shape and pulling it until it looks right, with everything that depends on it following as you drag.
+  - **Stands lay themselves.** Every open side of a concourse, pier or hub lays its own apron: stands nose-in on the usual grid, a taxilane along their tails, and a link to the nearest taxiway, taxilane or runway within 400 m. No taxiway has to be drawn alongside. A round hub is ringed with aircraft; a pier has stands down both sides and round its tip; a runway and one concourse are already a working airfield.
+    - Stand depth is the nose-in gap, the aircraft, then the taxilane's clearance to an object: 22.5 m for code C aircraft and 47.5 m for code F (ICAO Annex 14, Table 3-1, as quoted in secondary sources). That comes to 69 m for A320 stands and 129 m for A380 stands.
+    - First come, first served: a stand needs its whole cell clear of other buildings, of aprons already laid, of roads and sidewalks (drawn, or laid by a hall, car park or facility for itself), and of the runway strip. The landside is laid first, so no taxilane crosses a forecourt, a lot's sidewalk or a facility's drive. A side that security or a hall stands against is landside and gets none.
+    - Taxilanes on neighbouring sides meet at the corner and the corner is paved. Where a building is too narrow for a stand on its end, the lanes on its two long sides meet round that end. A loose end runs straight on, straight out, or on a little and then out or round the end of the building, whichever is shortest. Joining a runway directly counts two and a half times its length, so a taxiway wins when one is near.
+    - A taxiway drawn parallel to a side still takes that side over, as before, with deeper stands if it is farther out.
+    - A self-laid apron gives way: build or draw a road across it and the stands there go. Stands can still be switched off one by one.
+  - **Grips.** Select a building and it shows its handles.
+    - A pier or satellite has a round grip on each end: drag one and the far end stays put while the near end follows the cursor, so the pier stretches and swings in one move (5° steps). Square grips on its sides set the width, 30 to 120 m.
+    - A hub has one grip on its rim: it sets the diameter, and turns a polygonal hub.
+    - Every upright module (hall, security, concourse, car park, curb and the rest) has a square grip on each edge: drag it and that edge moves while the opposite one stays. The baggage claim under a hall follows its check-in.
+    - Growing costs the extra floor area; shrinking gives 40% back. One drag is one undo step. `Esc` puts it back.
+  - **Everything follows as you drag.** While a grip or a building is dragged, and while a new concourse, pier, hub or hall is being drawn, the shape itself is in the world: its gates, aprons, taxilanes, shop lots, people mover and forecourt are rebuilt every frame under the cursor, before you let go. The clock stands still meanwhile. If the cursor goes somewhere the shape cannot, it stays at the last place that fits and the outline turns red with the reason. This is in the plan view; in 3D a drag still shows an outline.
+  - **New terminal is an empty site.** The New terminal tool now allocates the land and nothing else, so the terminal is yours to shape. The one-drag starter layout is still there as an option on the tool.
+  - **Fixed:** an angled pier now reads its neighbours in its own frame, so its entry and its windowless walls are where they really are; where one building runs into another no shop lot stands in the overlap, so a pier drawn into a concourse has an open mouth; a hub with two stands on a facet now gives both a holdroom.
+
 
 - **Round and polygonal hubs (v0.18):** the halls where piers and concourses meet.
   - **Hub tool (`0`).** Drag out from the centre. Choose Round, Hexagon or Octagon, from 60 to 400 m across; a polygon turns so a facet faces the way you drag.
   - **It merges like everything else.** Overlap a concourse, a pier or security and the hub becomes part of that building. Start piers inside it and they join too, at any angle, so a hub with piers fanning out of it is one terminal. A hub that touches nothing links itself by people mover.
   - **Inside, a hub is an atrium with shops round it.** A ring of lots lines the wall, 8–16 m deep, with tenants bidding for them like any concourse lot; every shopfront faces the atrium. No lot is carved where another building runs in: that stretch of wall is the way through. A hub under about 60 m is all atrium.
-  - **Gates.** A facet with a taxiway running parallel to it grows gates, with a holdroom band along that facet and the lots behind. A round hub offers twelve gate facets, a polygon one per side.
+  - **Gates.** Each facet has gates, with a holdroom band along that facet and the lots behind. A round hub offers twelve gate facets, a polygon one per side. Since v0.19 the stands lay themselves round the hub; a taxiway drawn parallel to a facet takes that facet over.
   - **Drawn as what it is:** in the plan a round or faceted hall with a glazed lantern over the atrium and roof ribs; in 3D a drum (or prism) with the lantern on top.
   - A hub can be moved, inspected and demolished like any module.
 
@@ -49,7 +67,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 - **Piers at any angle, and buildings that merge (v0.17):** the foundation for terminals that are not made of upright boxes.
   - **Pier tool (`9`).** Drag a line from where the pier starts to where it ends. It can run at any angle (it snaps to 5° steps), any length from 60 m, in a width of 40, 50 or 60 m.
   - **Shapes merge.** Start the pier inside a concourse and it becomes part of that building: people walk straight through where the two overlap, with no door to line up. Two piers drawn into the same end make a fork. A pier that touches nothing is a satellite and links itself by people mover, like any other.
-  - **Gates follow the angle.** Draw a taxiway parallel to either long side (the dashed guides turn with the pier) and gates, stands, aprons and jet bridges grow at that angle. Where a pier runs into a building, only the part of each face that is actually covered loses its gates: the pier keeps gates along the rest of its length, and the concourse keeps gates either side of where the pier joins.
+  - **Gates follow the angle.** Gates, stands, aprons and jet bridges grow at the pier's angle (by themselves since v0.19, or along a taxiway drawn parallel to a side). Where a pier runs into a building, only the part of each face that is actually covered loses its gates: the pier keeps gates along the rest of its length, and the concourse keeps gates either side of where the pier joins.
   - **Inside, a pier is a full concourse:** holdrooms behind its gates, a spine, shops and restaurants bidding for lots, footfall counted along its own length. It is laid out as an upright building and turned into place.
   - It can be moved (it keeps its angle), inspected and demolished like any module, in the plan and in 3D.
 
@@ -226,7 +244,8 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | `src/config.ts` | Content data: modules, aircraft, airlines, site, tuning, palette |
 | `src/geom.ts` | Geometry helpers and seeded RNG |
 | `src/net.ts` | Generic line networks: split drawn segments into graphs; Dijkstra, all-pairs routing |
-| `src/gates.ts` | Gate slots on each side of a concourse, sized by taxiway clearance |
+| `src/gates.ts` | Gate slots on each side of a concourse: along a drawn taxiway, or on an apron the side lays for itself, with its taxilane and link to the airfield |
+| `src/shapes.ts` | Turned rectangles and hubs: outlines, overlaps, and the grips that reshape them |
 | `src/frontage.ts` | Roads meeting terminals: curbs grown in the gap, two-level frontage roads, road guides; access drives, sidewalks and the AirTrain line that facilities lay for themselves |
 | `src/ways.ts` | Roads as drawn: curves cut into chords, one-way roads, roundabouts and how roads are cut back to their rings |
 | `src/traffic.ts` | Where each car is drawn: its lane, rounded corners, the gap to the car in front, brake lights |
@@ -248,10 +267,11 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
-- Shapes so far are straight piers at any angle and regular hubs (round, six or eight sides). There are no free-drawn outlines, curved piers or ellipses yet. A pier or hub cannot be turned, stretched or resized after it is built (demolish and redraw); halls and security stay upright. Where buildings overlap, both roofs are drawn, and in an opened terminal the part of a hub or pier outside the terminal's site is shown paler. In 3D an opened pier or hub shows as roofed massing, not its interior.
-- Gates on a round hub need a straight taxiway parallel to one of its twelve facets, so ringing a rotunda with aircraft takes a taxiway segment per facet; there is no curved taxilane.
+- Shapes so far are straight piers at any angle and regular hubs (round, six or eight sides). There are no free-drawn outlines, curved or tapered piers, or ellipses yet: bending a pier with a middle grip is next. Halls, security and concourses built inside a terminal site stay upright (their edges move, but they do not turn). Where buildings overlap, both roofs are drawn.
+- Self-laid aprons are simple: one depth per building (its aircraft size), stands square to each side, straight taxilanes with one bend at most in a link. A link does not find its way round an obstacle, cross a road, or join two aprons across a gap wider than 400 m; then the design check says the apron is cut off and a drawn taxiway is the fix. Where two buildings make an inside corner, the one built first takes the corner. A car park or facility beside a pier can cut an apron off with the sidewalk or drive it lays for itself. A side with a taxiway drawn along only part of it gets drawn-taxiway gates on that part and none on the rest. Self-laid aprons and taxilanes cost nothing to build.
+- Dragging rebuilds the whole layout each frame: a few milliseconds on a small airport, about 30 on one with fifteen buildings and 150 gates, so very large airports will drag less smoothly. The 3D view does not rebuild live. Grips are in the plan only.
 - A people mover is a single shuttle link between two concourses, always in a tunnel, with no landside leg: it does not yet run from a landside terminal building to an airside hall with security in between, loop through several stations, or carry bags (arriving bags still appear at the terminal's claim).
-- The one-drag terminal is one shape: a concourse bar, security and the hall in a line. It does not yet place itself at the right distance from a taxiway for gates (the dashed guides show where), size itself to demand, or add a car park.
+- The starter layout (an option on New terminal, off by default) is one shape: a concourse bar, security and the hall in a line. It does not size itself to demand or add a car park.
 - Sound has no volume control beyond on and off, and no per-vehicle sounds (cars, the AirTrain, announcements).
 - Curves are for roads only: taxiways and sidewalks are still straight. A curve has one bend (no S-curves in one piece), and curbs do not grow along curved roads. Lanes, gaps and brake lights are how traffic is drawn: the sim still moves each car along the centreline and slows it by how full the road is, so cars do not yet yield turn by turn at a junction or roundabout (a roundabout's benefit is modelled as road capacity). The IN and OUT drives of a car park are both two-way underneath.
 - The AirTrain is a people mover inside the airport. It does not run to the city, and trains are drawn on a timetable rather than carrying the riders you see.

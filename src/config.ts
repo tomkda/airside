@@ -48,7 +48,7 @@ export const ZONES: Record<ZoneType, ZoneDef> = {
     type: 'concourse', label: 'Concourse', short: 'Concourse', key: '5', terminal: true, groundOnly: false,
     costPerM2: 3100, upkeepPerM2: 0.48, unit: 'gates', m2PerUnit: 0, minW: 40, minH: 24,
     tierNames: ['Standard fit-out', 'Flagship dining & lounges'], tierCostPerM2: 800,
-    blurb: 'Gates grow on any side beside a taxiway, each with a holdroom behind it. A spine runs down the middle; shops, restaurants and lounges fill what is left.',
+    blurb: 'Every open side lays its own stands and taxilane, each gate with a holdroom behind it. Drag the handles to reshape it. A spine runs down the middle; shops, restaurants and lounges fill what is left.',
   },
   claim: {
     type: 'claim', label: 'Baggage claim', short: 'Claim', key: '7', terminal: true, groundOnly: false,
@@ -152,6 +152,12 @@ export const CLASSES: AcClass[] = [
 /** Largest class a runway of this length can serve, or -1. */
 export const rwyClass = (len: number): Cls | -1 => (len >= 3000 ? 3 : len >= 2100 ? 2 : len >= 1600 ? 1 : len >= 1200 ? 0 : -1);
 
+/** Self-laid aprons (v0.19): a concourse face with no taxiway alongside lays its own stands, taxilane and a link to the airfield.
+ *  Stand depth is the nose-in gap to the face, the aircraft, then the taxilane's clearance to an object:
+ *  22.5 m for code C, 47.5 m for code F (ICAO Annex 14 Vol I, Table 3-1, aircraft stand taxilane centre line to object;
+ *  taken from secondary sources, so check against the current edition before relying on it).
+ *  `reach` is how far a taxilane will run to find a taxiway or runway; joining a runway directly counts `runwayCost` times its length. */
+export const APRON = { self: true, nose: 8, laneClear: [22.5, 22.5, 22.5, 47.5], reach: 400, runwayCost: 2.5 };
 export const TAXI_CLASSES = [
   { cls: 2, name: 'Standard', note: 'up to A320', width: 23, costPerM: 9000 },
   { cls: 3, name: 'Code F', note: 'all aircraft incl. A380', width: 36, costPerM: 15000 },

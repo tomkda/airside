@@ -21,7 +21,9 @@ const conc = (w, x, y, ww, h) => w.zones.push({ id: w.nextId++, type: 'concourse
 run('sample', () => {}, 1);
 
 // one satellite 500 m east along the same taxiway
-run('one satellite', w => { conc(w, 3900, 2620, 400, 60); }, 3);
+// (v0.19: the satellite lays stands on every side, so the schedule grows to 30 flights by week 3; a few more
+//  check-in agents and screeners are hired for them, as a player would, so the result is about the satellite)
+run('one satellite', (w, sim) => { conc(w, 3900, 2620, 400, 60); sim.staff.agents += 4; sim.staff.screeners += 2; }, 3);
 
 // a chain: a second satellite beyond the first links to the first, not all the way back
 run('two satellites in a line', w => { conc(w, 3520, 2620, 300, 60); conc(w, 3980, 2620, 400, 60); }, 3);
