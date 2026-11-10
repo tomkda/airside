@@ -12,12 +12,13 @@ npm run check        # TypeScript type-check
 npm run simtest      # headless: runs 3 sim days and prints the daily report
 node scripts/roads.mjs     # curves, roundabouts and one-way loops
 node scripts/halls.mjs     # stacked halls and self-laid forecourts
+node scripts/satellites.mjs # satellite concourses and people movers
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
 node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
-npm test                  # all six sims
+npm test                  # all seven sims
 ```
 
-CI runs the type-check, build and all six sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
+CI runs the type-check, build and all seven sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
 
 There is no server. The build is one self-contained HTML file (~840 KB), with three.js (pinned, 0.170.0) bundled in for the 3D view.
 
@@ -25,7 +26,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 | Action | Input |
 | --- | --- |
-| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` hall (check-in over bag claim) · `4` security · `5` concourse · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
+| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` hall (check-in over bag claim) · `4` security · `5` concourse · `6` satellite concourse · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
 | Pan / zoom | drag empty space (or Shift-drag, right-drag) · scroll wheel · pinch on touch · in 3D: drag to orbit, right-drag to pan, scroll to zoom |
 | Detail | `A` airfield · `L` landside · `Enter` (or double-click a terminal) open a terminal · `Esc` step back out · zooming moves between them too |
 | Levels | `[` Ground · `]` Level 1 |
@@ -33,7 +34,17 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.15)
+## What's in the alpha (v0.16)
+
+- **Satellite concourses on a people mover (v0.16):** the first step towards airports shaped like Tampa, Orlando, Denver or Atlanta, where the gates stand out on the airfield away from the terminal.
+  - **Satellite tool (`6`).** Drag a concourse anywhere on the airfield. It needs no terminal site and does not have to touch anything.
+  - **It links itself.** A concourse that touches no terminal looks for the nearest concourse that already belongs to one, within 1,800 m, and joins it with an airside people mover: a station in each and a ride between them. It then counts as part of that terminal: its gates take that terminal's flights, and its passengers use that terminal's check-in, security and baggage claim. Nothing is drawn by hand, and if you move either building the link follows.
+  - **Chains and stars.** A second satellite links to whichever linked concourse is nearest, so satellites in a row chain outward (Denver, Atlanta) and satellites around a terminal each get their own line (Tampa, Orlando).
+  - **In the plan** the mover is a dashed twin line with its length, and a shuttle running back and forth. It is in a tunnel, so it crosses taxiways and aprons freely; in 3D only a station pavilion shows on each roof.
+  - **The ride** is eight times walking pace with a 1.5 minute average wait (planning figures from ACRP Report 37), and it does not count as walking for a passenger's mood. A mover costs upkeep by its length.
+  - Gates grow on a satellite exactly as on any concourse: on every side with a parallel taxiway at the right distance. The schedule fills a terminal's nearest gates first, so a satellite fills up as the airport gets busy.
+  - Out of reach, a lone concourse is still a closed terminal of its own, and the design check now says how far it can be.
+
 
 - **A terminal in one drag (v0.15):**
   - **New terminal lays out the whole terminal.** Drag the terminal's rectangle and a complete starter terminal appears inside it as you drag: a concourse along the edge that faces the airfield, security behind it, and the hall (check-in over baggage claim) on the far, landside edge. The game reads which edge is airside from the nearest taxiway (or runway, if there is no taxiway yet). Release and it is built; the pieces can then be moved, resized or demolished like any others.
@@ -219,6 +230,8 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
+- Every building is still an upright rectangle. Angled piers and the X, Y and star shapes of terminals like Mumbai T2 or Calgary need modules that can turn to any angle; that is the next foundation to build. Until then, piers at right angles can be made by placing concourses so they touch.
+- A people mover is a single shuttle link between two concourses, always in a tunnel, with no landside leg: it does not yet run from a landside terminal building to an airside hall with security in between, loop through several stations, or carry bags (arriving bags still appear at the terminal's claim).
 - The one-drag terminal is one shape: a concourse bar, security and the hall in a line. It does not yet place itself at the right distance from a taxiway for gates (the dashed guides show where), size itself to demand, or add a car park.
 - Sound has no volume control beyond on and off, and no per-vehicle sounds (cars, the AirTrain, announcements).
 - Curves are for roads only: taxiways and sidewalks are still straight. A curve has one bend (no S-curves in one piece), and curbs do not grow along curved roads. Lanes, gaps and brake lights are how traffic is drawn: the sim still moves each car along the centreline and slows it by how full the road is, so cars do not yet yield turn by turn at a junction or roundabout (a roundabout's benefit is modelled as road capacity). The IN and OUT drives of a car park are both two-way underneath.

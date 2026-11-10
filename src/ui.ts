@@ -12,14 +12,14 @@ import {
   Site, siteOf, fitSite, isTerminalModule, inBuildable, padRect,
 } from './world';
 import { rectsOverlap, rectSegDist } from './geom';
-import { ROUNDS } from './config';
+import { ROUNDS, MOVER } from './config';
 import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
 import { roadPlan } from './roads';
 import { Sound } from './sound';
 import { planTerminal, airsideOf, planCost, PlanPart, PLAN_MIN } from './terminalplan';
 
-export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round';
+export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round' | 'satellite';
 type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | { kind: 'round'; round: Round } | null;
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -42,6 +42,7 @@ const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: strin
   { id: 'checkin', label: 'Hall', key: '3', lod: 'terminal', icon: '<rect x="2" y="5" width="12" height="7"/><path d="M4 8h8"/>' },
   { id: 'security', label: 'Security', key: '4', lod: 'terminal', icon: '<rect x="2" y="4" width="12" height="9"/><path d="M5 4v9M8 4v9M11 4v9"/>' },
   { id: 'concourse', label: 'Concourse', key: '5', lod: 'terminal', icon: '<rect x="2" y="6" width="12" height="7"/><path d="M2 9.5h12M4 6V3M8 6V3M12 6V3M6 9.5v3.5M10 9.5v3.5"/>' },
+  { id: 'satellite', label: 'Satellite', key: '6', lod: 'landside', icon: '<rect x="1.5" y="3" width="6" height="4"/><rect x="8.5" y="9" width="6" height="4"/><path d="M5 7v2.5h6" stroke-dasharray="1.6 1.2"/>' },
   { id: 'passport', label: 'Passport', key: 'I', lod: 'terminal', unlock: 'intl', icon: '<rect x="3" y="2" width="10" height="12" rx="1"/><circle cx="8" cy="7" r="2"/><path d="M5.5 11.5h5"/>' },
   { id: 'road', label: 'Road', key: 'R', group: 'Landside', lod: 'landside', icon: '<path d="M2 5h12M2 11h12" stroke-width="1.6"/><path d="M3 8h2M7 8h2M11 8h2"/>' },
   { id: 'round', label: 'Roundabout', key: 'G', lod: 'landside', icon: '<circle cx="8" cy="8" r="5.2"/><circle cx="8" cy="8" r="1.6"/><path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15"/>' },
@@ -220,7 +221,7 @@ export class UI {
     else if (t === 'road') html = `<span class="label">Road</span>${seg('lanes', this.opt.lanes, ROAD_LANES.map(c => [c.lanes, c.name]))}<span class="label">Shape</span>${seg('shape', this.opt.shape, [[0, 'Straight'], [1, 'Curve']])}<span class="label">Traffic</span>${seg('oneway', this.opt.oneway, [[0, 'Two-way'], [1, 'One-way']])}`;
     else if (t === 'site') html = `<span class="label">New terminal</span>${seg('layout', this.opt.layout, [[1, 'Complete terminal<span class="opt-note"> · concourse, security and hall laid out for you</span>'], [0, 'Empty site']])}`;
     else if (t === 'round') html = `<span class="label">Roundabout</span>${seg('round', this.opt.round, ROUNDS.map((r, i) => [i, `${r.name}<span class="opt-note"> · ${r.note}</span>`]))}`;
-    else if (t === 'concourse') html = `<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
+    else if (t === 'concourse' || t === 'satellite') html = `<span class="label">Gates sized for</span>${seg('conc', this.opt.conc, CLASSES.map(c => [c.cls, c.example]))}`;
     el.innerHTML = html; el.hidden = !html;
   }
 
@@ -262,7 +263,7 @@ export class UI {
     if (groundOnly && this.ren.level !== 0 && t !== 'runway' && t !== 'taxi') this.setLevel(0);
     this.ren.ghost = null; this.ren.cursor = null;
     this.renderToolOpts();
-    this.ren.showGuides = t === 'taxi' || t === 'concourse';
+    this.ren.showGuides = t === 'taxi' || t === 'concourse' || t === 'satellite';
     this.ren.showFront = t === 'road' && !this.opt.shape;
     this.ren.setOrbitLeft(t === 'select');
     this.hint(this.toolHint());
@@ -288,6 +289,7 @@ export class UI {
     if (t === 'runway') return 'Drag to draw a runway · 1,200 m turboprop · 1,600 m E175 · 2,100 m A320 · 3,000 m A380';
     if (t === 'taxi') return `Drag to draw a taxiway · snaps to runways, aprons and other taxiways${this.opt.auto ? ' · drawn beside a runway, it links itself with end stubs and rapid exits' : ''}`;
     if (t === 'checkin') return `Drag the hall: check-in on Level 1 with baggage claim under it on Ground, as one building · put it against security · any road within ${FRONTAGE.reach} m of its open face and it lays its own two-level forecourt`;
+    if (t === 'satellite') return `Drag a satellite concourse anywhere on the airfield · within ${n0(MOVER.reach)} m of a terminal's concourse it links itself by people mover · sides with a parallel taxiway grow gates (dashed guides)`;
     if (t === 'round') return 'Click to place a roundabout · on a junction, a road end or anywhere along a road: every road that reaches it joins the ring · traffic keeps moving where a crossroads would stop it';
     if (t === 'road' && this.opt.shape) return `Drag to draw a curved road · it leaves in line with the road it starts from, or sweeps round a corner on open ground · ${this.opt.oneway ? 'one-way, in the direction you draw · ' : ''}select a road later and drag its middle handle to bend it`;
     if (t === 'road') return `Drag to draw a road (for cars)${this.opt.oneway ? ', one-way in the direction you draw' : ''} · bring one within ${FRONTAGE.reach} m of a hall and the hall lays its own forecourt to it · run it along a terminal face, ${FRONTAGE.minGap}–${FRONTAGE.maxGap} m out, and a curb grows there; where departures sit over arrivals it becomes a two-level road · snaps to the dashed guides`;
@@ -448,6 +450,7 @@ export class UI {
       const h = w && this.wayHandleAt(w, e.offsetX, e.offsetY);
       if (w && h) { this.drag = { mode: 'bend', ...base, way: w, handle: h, orig3: { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined } }; return; }
     }
+    if (t === 'satellite') { this.drag = { mode: 'zone', ...base, start: this.magnet(p, 1) }; return; }
     if (t in ZONES) { this.drag = { mode: 'zone', ...base, start: this.magnet(p, ZONES[t as ZoneType].groundOnly ? 0 : this.ren.level) }; return; }
     if (t === 'site') { this.drag = { mode: 'site', ...base, start: { x: snap(p.x, 10), y: snap(p.y, 10) } }; return; }
     if (t === 'select' && this.ren.selected?.kind === 'runway') {
@@ -588,16 +591,18 @@ export class UI {
       return;
     }
     if (dr.mode === 'zone') {
-      const t = this.tool as ZoneType;
+      const sat = this.tool === 'satellite';   // v0.16: a concourse out on the airfield, linked by people mover
+      const t = (sat ? 'concourse' : this.tool) as ZoneType;
       const hall = t === 'checkin';   // v0.12: one hall, check-in on Level 1 over baggage claim on Ground
-      const level = ZONES[t].groundOnly ? 0 : hall ? 1 : this.ren.level;
+      const level = ZONES[t].groundOnly ? 0 : hall || sat ? 1 : this.ren.level;
       const q = this.magnet(p, level);
       const r = { x: Math.min(dr.start.x, q.x), y: Math.min(dr.start.y, q.y), w: Math.abs(q.x - dr.start.x), h: Math.abs(q.y - dr.start.y) };
-      const chk = this.placeHall(r, t, level, -1);
+      const chk = sat ? canPlaceZone(this.world, r, 'concourse', 1, -1, this.sim.d.aprons) : this.placeHall(r, t, level, -1);
       const cost = area(r) * (ZONES[t].costPerM2 + (hall ? ZONES.claim.costPerM2 : 0));
+      const near = sat ? this.nearestConcourse(r) : null;
       const ok = chk.ok && this.sim.canAfford(cost);
       this.ren.ghost = { kind: 'zone', rect: r, ok };
-      this.hint(chk.ok ? (ok ? `${hall ? 'Check-in over baggage claim' : ZONES[t].label} · ${n0(r.w)} × ${n0(r.h)} m · ${this.estimateUnits(t, r)}${hall ? ` · ${this.estimateUnits('claim', r)}` : ''} · ${money(cost)}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
+      this.hint(chk.ok ? (ok ? `${hall ? 'Check-in over baggage claim' : ZONES[t].label} · ${n0(r.w)} × ${n0(r.h)} m · ${this.estimateUnits(t, r)}${hall ? ` · ${this.estimateUnits('claim', r)}` : ''}${sat ? (near && near.d < 1.5 ? ' · touching a concourse: it joins that building' : near && near.d <= MOVER.reach ? ` · people mover to ${near.name}: ${n0(near.d)} m, about ${(near.d / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} min` : ` · no concourse within ${n0(MOVER.reach)} m: it will stand alone until one is`) : ''} · ${money(cost)}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
       return;
     }
     if (dr.mode === 'move' && dr.zone) {
@@ -647,8 +652,10 @@ export class UI {
         if (r) this.toast(`Runway ${r.labels.join('/')} is now ${n0(r.length)} m · ${rwyClassLabel(r.length)}`);
       } else if (!pd.ok) this.toast(canPlaceRunway(this.world, pd.a, pd.b, dr.rw.id).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'zone' && g?.rect) {
-      const t = this.tool as ZoneType;
-      if (g.ok) this.buildZone(t, g.rect);
+      const sat = this.tool === 'satellite';
+      const t = (sat ? 'concourse' : this.tool) as ZoneType;
+      if (g.ok) this.buildZone(t, g.rect, sat);
+      else if (sat) { if (g.rect.w > 5 || g.rect.h > 5) this.toast(canPlaceZone(this.world, g.rect, 'concourse', 1, -1, this.sim.d.aprons).reason ?? 'Not enough money', 'bad'); }
       else if (g.rect.w > 5 || g.rect.h > 5) this.toast(this.placeHall(g.rect, t, ZONES[t].groundOnly ? 0 : t === 'checkin' ? 1 : this.ren.level, -1).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'site' && g?.rect) {
       if (g.ok) this.buildSite(g.rect);
@@ -761,6 +768,7 @@ export class UI {
     const chk = canPlaceZone(this.world, r, t, level, ignore, this.sim.d.aprons);
     if (!chk.ok || !TERMINAL_TOOLS.has(t)) return chk;
     const mine = ignore >= 0 ? this.world.zones.find(z => z.id === ignore) : undefined;
+    if (mine && mine.site === undefined && !siteOf(this.world, mine) && !(this.world.sites ?? []).some(o => rectsOverlap(r, o))) return chk;   // a satellite moves freely
     const st = mine ? siteOf(this.world, mine) : this.world.sites?.find(s => s.id === this.ren.focus);
     if (!st) return { ok: false, reason: 'Open a terminal first (double-click it), or allocate one with New terminal (N)' };
     if (!rectsOverlap(r, padRect(st, SITES.reach))) return { ok: false, reason: `Too far from ${this.siteName(st)}: keep modules within ${SITES.reach} m of its site, or start a New terminal` };
@@ -940,11 +948,21 @@ export class UI {
     return null;
   }
 
-  buildZone(t: ZoneType, r: Rect) {
+  /** The nearest concourse to a rectangle, for the people mover a satellite would get. */
+  nearestConcourse(r: Rect): { d: number; name: string } | null {
+    let best: { d: number; name: string } | null = null;
+    for (const z of this.world.zones) if (z.type === 'concourse') {
+      const d0 = Math.hypot(Math.max(0, r.x - (z.x + z.w), z.x - (r.x + r.w)), Math.max(0, r.y - (z.y + z.h), z.y - (r.y + r.h)));
+      if (!best || d0 < best.d) best = { d: d0, name: this.sim.d.termOf.get(z.id)?.name ?? 'the terminal' };
+    }
+    return best;
+  }
+
+  buildZone(t: ZoneType, r: Rect, sat = false) {
     const hall = t === 'checkin';
     const cost = area(r) * (ZONES[t].costPerM2 + (hall ? ZONES.claim.costPerM2 : 0));
     this.sim.spend(cost);
-    const z: Zone = { id: this.world.nextId++, type: t, level: ZONES[t].groundOnly ? 0 : hall ? 1 : this.ren.level, ...r, tier: 0 };
+    const z: Zone = { id: this.world.nextId++, type: t, level: ZONES[t].groundOnly ? 0 : hall || sat ? 1 : this.ren.level, ...r, tier: 0 };
     // v0.12: the hall is check-in on Level 1 with baggage claim under it on Ground, placed, moved and demolished as one
     const under: Zone | null = hall ? { id: this.world.nextId++, type: 'claim', level: 0, ...r, tier: 0, pair: z.id } : null;
     // a sensible number of counters to open with: about one per 500 m² of hall (the sample's ratio); the inspector's − / + changes it
@@ -953,7 +971,7 @@ export class UI {
     const roads0 = this.sim.d.autoRoads.filter(w => w.fore === 'face').length;
     if (t === 'concourse') z.cls = this.opt.conc;
     if (t === 'passport' && !(this.sim.staff.officers ?? 0)) { this.sim.staff.officers = 8; this.toast('8 passport officers hired. Adjust them in Operations.'); }
-    if (TERMINAL_TOOLS.has(t)) {
+    if (TERMINAL_TOOLS.has(t) && !sat) {
       const st = this.world.sites?.find(s => s.id === this.ren.focus) ?? siteOf(this.world, z);
       if (st) { z.site = st.id; this.world.zones.push(z); fitSite(this.world, st); } else this.world.zones.push(z);
     } else this.world.zones.push(z);
@@ -967,6 +985,12 @@ export class UI {
       const fc = this.sim.d.autoRoads.filter(w => w.fore === 'face').length > roads0;
       this.toast(`Hall built · ${u?.count ?? 0} check-in counters over ${this.sim.d.units.get(under.id)?.count ?? 0} carousels · ${money(cost)}`);
       this.toast(fc ? 'It laid its own forecourt: departures drop off on the upper deck, arrivals pick up below.' : this.sim.d.zones.some(c => c.auto && (c.auto.module === z.id || c.auto.module === under.id)) ? 'The road along its face is now its curb.' : `No road within ${FRONTAGE.reach} m of its face yet. Draw any road nearby and the hall lays its own forecourt to it.`, fc ? 'info' : 'warn');
+    } else if (sat) {
+      const mv = this.sim.d.trainLinks.find(l => l.apm && l.from === z.id); const T = this.sim.d.termOf.get(z.id);
+      this.toast(`Satellite concourse built · ${u?.count ?? 0} gates · ${money(cost)}`);
+      if (mv) { const L = dist(mv.a, mv.b); this.toast(`A people mover links it to ${T?.name ?? 'the terminal'}: ${n0(L)} m, about ${(L / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} minutes.`); this.ren.float('+ people mover', lerpPt(mv.a, mv.b, 0.5), '#2F5D7C'); }
+      else if (!T?.active) this.toast(`No concourse within ${n0(MOVER.reach)} m to link to. Build it nearer a terminal, or give it a terminal of its own.`, 'warn');
+      if (!(u?.count)) this.toast('No gates yet: run a taxiway along one of its sides (dashed guides).', 'warn');
     } else
     this.toast(`${ZONES[t].label} built · ${u?.count ?? 0} ${ZONES[t].unit} · ${money(cost)}`);
   }

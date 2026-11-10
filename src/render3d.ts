@@ -389,6 +389,10 @@ export class Renderer3D {
     // the AirTrain guideway: twin beams on pylons
     const beams: Strip[] = [];
     for (const l of d.trainLinks) {
+      if (l.apm) {   // a people mover runs underground: only its station pavilions show, on the concourse roofs
+        for (const p of [l.a, l.b]) misc.push({ x: p.x - 7, y: p.y - 7, w: 14, h: 14, z0: LEVELS[1].z1, z1: LEVELS[1].z1 + 3.2, c: '#2F5D7C' });
+        continue;
+      }
       const n = perp(l.a, l.b); const L = dist(l.a, l.b); const dv = norm(sub(l.b, l.a));
       for (const k of [-1.4, 1.4]) beams.push({ a: add(l.a, mul(n, k)), b: add(l.b, mul(n, k)), w: 1.1, z: 7.3, c: '#C9C2B4' });
       for (let u = 25; u < L - 10; u += 32) { const q = add(l.a, mul(dv, u)); misc.push({ x: q.x - 0.7, y: q.y - 0.7, w: 1.4, h: 1.4, z0: 0, z1: 7.2, c: '#A9A396' }); misc.push({ x: q.x - 2.4, y: q.y - 0.5, w: 4.8, h: 1, z0: 6.6, z1: 7.2, c: '#A9A396' }); }
@@ -563,7 +567,7 @@ export class Renderer3D {
       }
     }
     sim.d.trainLinks.forEach((l, i) => {
-      if (ng >= 2400) return;
+      if (ng >= 2400 || l.apm) return;
       const L = dist(l.a, l.b); const T = Math.max(1.5, L / (TUNE.walkSpeed * GROWTH.trainSpeed)) + 1; const ph = ((sim.t + i * 1.7) % (2 * T)) / T; const k = ph < 1 ? ph : 2 - ph;
       const e = Math.min(1, Math.max(0, (k * T - 0.5) / (T - 1))); const c = lerpPt(l.a, l.b, e);
       o.position.set(c.x, 9.2, c.y); o.rotation.set(0, -Math.atan2(l.b.y - l.a.y, l.b.x - l.a.x), 0); o.scale.set(20, 3, 2.8); o.updateMatrix();

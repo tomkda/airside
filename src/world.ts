@@ -3,9 +3,9 @@
 // vertical cores, pedestrian routing, fit-out frames and the design check.
 import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
-  rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, segIntersection, segsIntersect, pointInPoly, deg, segDist,
+  rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
@@ -181,7 +181,8 @@ export interface Derived {
   roadPieces: Piece[]; rounds: Round[];
   /** v0.13: road ids that are ramps up to a departures deck. Only cars bound for or leaving that deck use them. */
   rampRefs: Set<number>;
-  autoRoads: Way[]; trainLinks: { a: Pt; b: Pt }[]; served: Set<number>;
+  /** `apm`: an airside people mover between two concourses (v0.16), with the ids of the zones it joins. */
+  autoRoads: Way[]; trainLinks: { a: Pt; b: Pt; apm?: boolean; from?: number; to?: number }[]; served: Set<number>;
   isTrainNode(p: Pt): boolean;
   zoneAt(p: Pt, lv: Level): Zone | undefined;
   pedRoute(p: Pt, lv: Level, q: Pt, lvq: Level): Route | null;
@@ -541,6 +542,36 @@ export function derive(source: World): Derived {
   const tKey = (p: Pt) => `${Math.round(p.x)},${Math.round(p.y)}`;
   for (const z of zs) if (z.type === 'train') { const c = center(z); tNode.set(z.id, ped.push({ p: c, level: 0, zones: [z.id] }) - 1); tKeys.add(tKey(c)); }
   for (const l of tLinks) pedE.push([tNode.get(l.a.id)!, tNode.get(l.b.id)!, dist(center(l.a), center(l.b)) / GROWTH.trainSpeed + GROWTH.trainWait * TUNE.walkSpeed]);
+  // v0.16: a concourse that touches no terminal is a satellite. It links itself to the nearest concourse that is
+  // already part of a terminal (or of another linked satellite) with an airside people mover: a station in each,
+  // and a fast ride between them. Generated like a forecourt, never saved.
+  const movers: { a: Pt; b: Pt; from: number; to: number }[] = [];
+  {
+    const mods = zs.filter(z => TERMINAL_TYPES.has(z.type));
+    const par = new Map<number, number>(mods.map(z => [z.id, z.id]));
+    const root = (i: number): number => { const q = par.get(i)!; return q === i ? i : (par.set(i, root(q)), par.get(i)!); };
+    for (let i = 0; i < mods.length; i++) for (let j = i + 1; j < mods.length; j++) {
+      const A = mods[i], B = mods[j]; const ir = A.level !== B.level ? intersectRect(A, B) : null;
+      if ((A.level === B.level && shared(A, B)) || (ir && ir.w >= 16 && ir.h >= 16)) par.set(root(A.id), root(B.id));
+    }
+    const linked = new Set<number>(mods.filter(z => z.type === 'security').map(z => root(z.id)));
+    const concs = mods.filter(z => z.type === 'concourse');
+    const gap = (A: Rect, B: Rect) => Math.hypot(Math.max(0, A.x - (B.x + B.w), B.x - (A.x + A.w)), Math.max(0, A.y - (B.y + B.h), B.y - (A.y + A.h)));
+    for (let guard = 0; guard < 40; guard++) {
+      let best: { s: Zone; m: Zone; d: number } | null = null;
+      for (const sz of concs) if (!linked.has(root(sz.id))) for (const m of concs) if (linked.has(root(m.id))) {
+        const d0 = gap(sz, m); if (d0 <= MOVER.reach && (!best || d0 < best.d || (d0 === best.d && sz.id < best.s.id))) best = { s: sz, m, d: d0 };
+      }
+      if (!best) break;
+      const inset = (z: Zone) => Math.min(12, z.w / 2 - 1, z.h / 2 - 1);
+      const pa = clampToRect(center(best.m), best.s, inset(best.s)), pb = clampToRect(pa, best.m, inset(best.m));
+      const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.m.level, zones: [best.m.id] }) - 1;
+      pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
+      tKeys.add(tKey(pa)); tKeys.add(tKey(pb));
+      movers.push({ a: pa, b: pb, from: best.s.id, to: best.m.id });
+      linked.add(root(best.s.id));
+    }
+  }
   const walks = [...world.ways.filter(w => w.kind === 'walk'), ...laid];
   const walkNet = buildNet(walks.map(w => ({ a: w.a, b: w.b, kind: 'walk', cls: 0, ref: w.id })), 4);
   const wOff = ped.length;
@@ -663,7 +694,7 @@ export function derive(source: World): Derived {
     if (!ga.length) missing.push('a concourse'); if (!cl.length) missing.push('baggage claim');
     if (missing.length) {
       const others = terminals.filter(o => o !== T);
-      T.problems.push(`needs ${listOf(missing)}${others.length ? ': connect it to another terminal or build them touching it' : ''}`);
+      T.problems.push(`needs ${listOf(missing)}${others.length ? `: connect it to another terminal or build them touching it${ga.length && !sec.length ? `, or bring the concourse within ${MOVER.reach.toLocaleString()} m of a terminal's concourse for a people mover` : ''}` : ''}`);
       if (others.length) {
         const [a, b] = nearPair(T.zones, others.flatMap(o => o.zones));
         links.push({ a: center(a), b: center(b), text: 'Not connected' });
@@ -771,7 +802,7 @@ export function derive(source: World): Derived {
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
     roadPieces: pieces, rounds, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),
-    autoRoads: laidRoads, trainLinks: tLinks.map(l => ({ a: center(l.a), b: center(l.b) })), served, isTrainNode: (p: Pt) => tKeys.has(tKey(p)),
+    autoRoads: laidRoads, trainLinks: [...tLinks.map(l => ({ a: center(l.a), b: center(l.b) })), ...movers.map(m => ({ ...m, apm: true }))], served, isTrainNode: (p: Pt) => tKeys.has(tKey(p)),
   };
 }
 
