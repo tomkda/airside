@@ -43,6 +43,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
   - **Junction spaces.** Where two pieces of a building run into each other, the overlap and a few metres round it are kept clear as one open space that belongs to the building, not to either piece. By size it is a winter garden (under 400 m²), a food court (400–1,500 m²) or a hall with planting in the middle and seating round it (over 1,500 m², or where three pieces meet).
   - **Planted corners.** The floor the rounded outline adds in an inside corner joins the junction space next to it, or becomes a small garden of its own.
   - **Courtyards.** A hole enclosed by the building (four concourses round a square, a triangle between three piers) is a courtyard garden, open to the sky.
+  - Only a crossing counts: a concourse lengthened by drawing another over its end is just more concourse, and a round corner hall keeps its own middle.
   - No shop lot stands in any of these spaces, so the way through a junction is open.
   - Shown in the plan view at landside and terminal zoom, with trees, tables and a name. A building of one piece has none and is unchanged.
 

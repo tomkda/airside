@@ -122,6 +122,17 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   check('the enclosed square is one courtyard with trees', js.filter(j => j.kind === 'court').length === 1 && js.find(j => j.kind === 'court').seeds.every(t => t.t === 'tree') && js.find(j => j.kind === 'court').area > 50000);
   check('each corner where two concourses cross is a space of its own', js.filter(j => j.kind !== 'court' && j.ids.length === 2).length === 4);
   check('no stand is laid in the courtyard', !r.d.gateSlots.some(q => inPoly(q.stand, js.find(j => j.kind === 'court').outer))); }
+{ const w = newWorld(); runway(w); conc(w, 3000, 2700, 400, 50); conc(w, 3300, 2700, 400, 50);
+  const r = rep('a concourse lengthened by drawing over its end', w);
+  check('one piece drawn along another is more concourse, not a hall', r.d.junctions.length === 0); }
+{ const w = newWorld(); runway(w);
+  // two legs of a path meeting at (3400, 2800), with the round hall the Pier tool puts on the corner
+  conc(w, 3000, 2780, 400, 40); conc(w, 3400 - 200, 2800 - 20 + 200, 400, 40, { rot: Math.PI / 2 }); conc(w, 3360, 2760, 80, 80, { sides: 32 });
+  const r = rep('two legs and their corner hall', w);
+  check('the corner hall keeps its own middle: no junction space is laid over it', !r.d.junctions.some(j => Math.hypot(j.c.x - 3400, j.c.y - 2800) < 30 && j.kind !== 'garden')); }
+{ const w = newWorld(); runway(w); conc(w, 3000, 2700, 500, 50); conc(w, 3100, 2700, 40, 300); conc(w, 3160, 2700, 40, 300);
+  const r = rep('two fingers 20 m apart off one concourse', w); const js = r.d.junctions;
+  check('each finger has its own junction space, not one strip between them (' + js.map(j => j.kind + ' ' + Math.round(j.area)).join(', ') + ')', js.filter(j => j.ids.length === 2).length === 2 && !js.some(j => j.ids.length > 2)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

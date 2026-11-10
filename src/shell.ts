@@ -71,7 +71,7 @@ export interface Junction { level: number; kind: JunctionKind; rings: Pt[][]; ou
 // A food court wants room for a ring of counters and seating between them: at 1.4–1.9 m2 a seat (the usual food-court
 // planning range; Neufert gives 1.4–1.6 m2 for self-service dining), 400 m2 seats about 150 once aisles are taken out.
 // Above 1,500 m2 the space is a hall: a planted middle with seating round it.
-export const JUNCTION = { grow: 6, min: 30, food: 400, hall: 1500, tree: 9, table: 4.2 };
+export const JUNCTION = { grow: 6, min: 30, corner: 600, food: 400, hall: 1500, tree: 9, table: 4.2 };
 
 type Ex = { outer: IPath; holes: IPath[] };
 function clip(type: number, subj: IPath[], clipP: IPath[], subjFill = ClipperLib.PolyFillType.pftNonZero, clipFill = ClipperLib.PolyFillType.pftNonZero): Ex[] {
@@ -93,12 +93,14 @@ function edgeGap(p: Pt, rings: Pt[][]) {
 }
 /** Points on a grid inside a space, each nudged a little (the same way every time), `margin` clear of its edge. */
 function seedsIn(rings: Pt[][], outer: Pt[], step: number, margin: number, jitter: number): Pt[] {
+  // (the grid is hung on the space's own middle, so its planting moves with it when the building is dragged)
+  const o = centroid(outer); rings = rings.map(r => r.map(p => ({ x: p.x - o.x, y: p.y - o.y }))); outer = rings[0];
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const p of outer) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
   const out: Pt[] = []; const inside = (p: Pt) => rings.reduce((n, r) => n + (inPoly(p, r) ? 1 : 0), 0) % 2 === 1;
   for (let gy = Math.floor(y0 / step); gy * step <= y1; gy++) for (let gx = Math.floor(x0 / step); gx * step <= x1; gx++) {
     const h = Math.sin(gx * 127.1 + gy * 311.7) * 43758.5453; const r1 = h - Math.floor(h); const h2 = Math.sin(gx * 269.5 + gy * 183.3) * 24634.6345; const r2 = h2 - Math.floor(h2);
     const p = { x: (gx + (gy & 1 ? 0.5 : 0)) * step + (r1 - 0.5) * jitter, y: gy * step + (r2 - 0.5) * jitter };
-    if (inside(p) && edgeGap(p, rings) >= margin) out.push(p);
+    if (inside(p) && edgeGap(p, rings) >= margin) out.push({ x: p.x + o.x, y: p.y + o.y });
   }
   return out;
 }
@@ -112,31 +114,60 @@ export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type
     const shell = sh.rings.map(toPath); const EO = ClipperLib.PolyFillType.pftEvenOdd;
     // where two pieces overlap (a hall already has its own open middle, so a pier running into one is left to the hall)
     const cores: { ring: Pt[]; ids: number[] }[] = [];
+    const hubs = zs.map((z, i) => (z.sides ? P[i] : null)).filter((q): q is IPath => !!q);
+    const boxes = P.map(q => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const v of q) { x0 = Math.min(x0, v.X); y0 = Math.min(y0, v.Y); x1 = Math.max(x1, v.X); y1 = Math.max(y1, v.Y); } return { x0, y0, x1, y1 }; });
+    const areas = P.map(q => Math.abs(area(fromPath(q))));
     for (let i = 0; i < zs.length; i++) for (let j = i + 1; j < zs.length; j++) {
       if (zs[i].sides || zs[j].sides) continue;
-      for (const e of clip(ClipperLib.ClipType.ctIntersection, [P[i]], [P[j]])) cores.push({ ring: fromPath(e.outer), ids: [zs[i].id, zs[j].id] });
+      const a = boxes[i], b = boxes[j]; if (a.x1 < b.x0 || b.x1 < a.x0 || a.y1 < b.y0 || b.y1 < a.y0) continue;
+      // a junction is a crossing. One piece drawn along or inside another (a concourse lengthened by drawing over
+      // its end) is just more concourse: the two run the same way, or the overlap is most of a piece.
+      const axis = (z: Shaped) => (z.rot ?? 0) + (z.w >= z.h ? 0 : Math.PI / 2);
+      if (!zs[i].bend && !zs[j].bend && Math.abs(Math.cos(axis(zs[i]) - axis(zs[j]))) > 0.94) continue;   // within 20 degrees of parallel
+      let over = clip(ClipperLib.ClipType.ctIntersection, [P[i]], [P[j]]);
+      const oa = over.reduce((n, e) => n + Math.abs(area(fromPath(e.outer))), 0);
+      if (oa > 0.5 * Math.min(areas[i], areas[j])) continue;
+      // (two legs of a path both end inside their corner hall: that part is the hall's)
+      if (hubs.length) over = clip(ClipperLib.ClipType.ctDifference, flat(over), hubs);
+      for (const e of over) if (Math.abs(area(fromPath(e.outer))) >= JUNCTION.min) cores.push({ ring: fromPath(e.outer), ids: [zs[i].id, zs[j].id] });
     }
     // floor the shell added in its inside corners
-    const fill = flat(clip(ClipperLib.ClipType.ctDifference, shell, P, EO));
+    // (a large stretch of it, like the gap closed between two piers standing close side by side, is a garden of its
+    //  own; only a corner's worth joins the junction beside it)
+    const fills = clip(ClipperLib.ClipType.ctDifference, shell, P, EO);
+    const big = fills.filter(e => Math.abs(area(fromPath(e.outer))) > JUNCTION.corner), fill = flat(fills.filter(e => !big.includes(e)));
     const grown = cores.length ? offset(cores.map(c => toPath(c.ring)), JUNCTION.grow) : [];
     let space = flat(clip(ClipperLib.ClipType.ctIntersection, flat(clip(ClipperLib.ClipType.ctUnion, [...grown, ...fill], [])), shell, ClipperLib.PolyFillType.pftNonZero, EO));
     space = offset(offset(space, -1.5), 1.5);   // slivers along a wall are not a space
-    for (const e of clip(ClipperLib.ClipType.ctUnion, space, [])) {
+    if (big.length) space = flat(clip(ClipperLib.ClipType.ctDifference, space, flat(big)));
+    for (const e of clip(ClipperLib.ClipType.ctUnion, space, [], ClipperLib.PolyFillType.pftNonZero)) {
       const outer = fromPath(e.outer); const rings = [outer, ...e.holes.map(fromPath)];
       const a = Math.abs(area(outer)) - e.holes.reduce((n, h) => n + Math.abs(area(fromPath(h))), 0); if (a < JUNCTION.min) continue;
       const mine = cores.filter(c => inPoly(centroid(c.ring), outer)); const ids = [...new Set(mine.flatMap(c => c.ids))];
       const kind: JunctionKind = !mine.length ? 'garden' : a >= JUNCTION.hall || ids.length > 2 && a >= JUNCTION.food ? 'hall' : a >= JUNCTION.food ? 'food' : 'garden';
       out.push({ level: sh.level, kind, rings, outer, area: a, c: centroid(outer), ids, seeds: plant(kind, rings, outer) });
     }
+    for (const e of clip(ClipperLib.ClipType.ctUnion, offset(offset(flat(big), -1.5), 1.5), [])) {
+      const outer = fromPath(e.outer); const rings = [outer, ...e.holes.map(fromPath)]; const a = Math.abs(area(outer)); if (a < JUNCTION.min) continue;
+      out.push({ level: sh.level, kind: 'garden', rings, outer, area: a, c: centroid(outer), ids: [], seeds: plant('garden', rings, outer) });
+    }
     // a hole right through the building is a courtyard
     for (const r of sh.rings) if (r !== sh.outer && inPoly(r[0], sh.outer) && Math.abs(area(r)) >= JUNCTION.min) out.push({ level: sh.level, kind: 'court', rings: [r], outer: r, area: Math.abs(area(r)), c: centroid(r), ids: [], seeds: plant('court', [r], r) });
   }
   return out;
 }
+// (derive runs on every frame of a drag, and planting is half the cost of a junction: a space that has not changed
+//  shape keeps the planting it had)
+const planted = new Map<string, Junction['seeds']>();
 function plant(kind: JunctionKind, rings: Pt[][], outer: Pt[]): Junction['seeds'] {
+  let k = kind; for (const r of rings) { k += '|' + r.length; for (const p of r) k += ',' + Math.round(p.x * 10) + ',' + Math.round(p.y * 10); }
+  let v = planted.get(k); if (!v) { if (planted.size > 400) planted.clear(); v = plant0(kind, rings, outer); planted.set(k, v); }
+  return v;
+}
+function plant0(kind: JunctionKind, rings: Pt[][], outer: Pt[]): Junction['seeds'] {
   const size = (p: Pt) => { const h = Math.sin(p.x * 12.9898 + p.y * 78.233) * 43758.5453; return 0.8 + 0.4 * (h - Math.floor(h)); };
   // (a large courtyard is planted more openly: about eighty trees however big it is)
-  const step = kind === 'court' ? Math.max(JUNCTION.tree, Math.sqrt(Math.abs(area(outer))) / 9) : JUNCTION.tree;
+  const step = kind === 'court' ? Math.max(JUNCTION.tree, Math.round(Math.sqrt(Math.abs(area(outer))) / 9 / 3) * 3) : JUNCTION.tree;
   const trees = (m: number) => seedsIn(rings, outer, step, m, step / 3).map(p => ({ ...p, t: 'tree' as const, s: size(p) }));
   const tables = (m: number) => seedsIn(rings, outer, JUNCTION.table, m, 0.6).map(p => ({ ...p, t: 'table' as const, s: 1 }));
   if (kind === 'garden') return trees(2.2);
