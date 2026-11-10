@@ -5,6 +5,7 @@ import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import 
 const entry = `
 import { Sim } from './src/sim';
 import { sampleWorld } from './src/sample';
+import { planTerminal, airsideOf } from './src/terminalplan';
 const run = (name, edit, days = 2) => {
   const sim = new Sim(sampleWorld(), 7); const w = sim.world;
   edit(w, sim); sim.relayout(); sim.startDay();
@@ -53,6 +54,19 @@ run('second terminal beside a passing road', w => {
   hall(w, 3830, 2760, 340, 100, site);
   w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 3320, y: 3230 }, b: { x: 4500, y: 3230 }, cls: 0, lanes: 2 });
 }, 3);
+
+// v0.15, a terminal in one drag: on bare ground with a runway and a taxiway, a site's starter layout (concourse on
+// the edge facing the taxiway, security, the hall) plus two roads is a working airport
+run('terminal laid out from one rectangle', (w, sim) => {
+  w.zones = []; w.sites = []; w.rounds = []; w.ways = w.ways.filter(q => q.kind === 'taxi');
+  const site = { id: w.nextId++, x: 2780, y: 2600, w: 540, h: 290 }; w.sites.push(site);
+  const air = airsideOf(site, w); const parts = planTerminal(site, air); const ids = parts.map(() => w.nextId++);
+  parts.forEach((q, i) => w.zones.push({ id: ids[i], type: q.type, level: q.level, ...q.rect, tier: 0, site: site.id, cls: q.type === 'concourse' ? 2 : undefined,
+    pair: q.type === 'checkin' ? ids[parts.findIndex(o => o.type === 'claim')] : q.type === 'claim' ? ids[parts.findIndex(o => o.type === 'checkin')] : undefined, units: q.type === 'checkin' ? 48 : undefined }));
+  console.log('  airside edge:', air, '| parts:', parts.map(q => q.type + ' ' + q.rect.w + 'x' + q.rect.h).join(', '));
+  const R = (ax, ay, bx, by) => w.ways.push({ id: w.nextId++, kind: 'road', a: { x: ax, y: ay }, b: { x: bx, y: by }, cls: 0, lanes: 2 });
+  R(2600, 5700, 2600, 3200); R(2600, 3200, 3500, 3200);
+});
 
 // a hall with no road anywhere near: no forecourt, and the design check says so
 run('hall with no road in reach', w => { w.ways = w.ways.filter(q => q.kind !== 'road'); w.rounds = []; }, 0);

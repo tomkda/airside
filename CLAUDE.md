@@ -28,13 +28,13 @@ Healthy results:
 - terminals.mjs shows 0 stranded passengers. Its frontage check shows `G arr, L1 dep` and Terminal 1 open in every line: self-laid frontage 1 with nothing drawn, 0 with a road drawn 20 m or 42 m off the face (that road grows the curbs), and 1 again at 82 m and when the road is removed.
 - growth.mjs shows 8 facilities served, the far garage served by AirTrain, 0 missed and 0 stranded, international flights scheduled, and several hundred AirTrain riders a day.
 - roads.mjs shows Terminal 1 open with 0 missed, 0 stranded and 0 wrong-way cars in every scenario except the reversed loop, which must close the terminal and raise the one-way warning. Cars go round the ring wherever there is a roundabout, and far fewer cars overlap as drawn than on the centreline.
-- halls.mjs shows Terminal 1 open with `G arr, L1 dep` curbs and a deck in every case but the last: a self-laid forecourt (1 frontage, 2 links, 2 ramps) on the sample and with separate check-in and claim; no forecourt where the frontage road is drawn by hand; 4 links where the road stops short and off to one side; and Terminal 1 closed with no forecourt when no road is in reach. No car uses a ramp unless it is bound for the deck.
+- halls.mjs shows Terminal 1 open with `G arr, L1 dep` curbs and a deck in every case but the last: a self-laid forecourt (1 frontage, 2 links, 2 ramps) on the sample and with separate check-in and claim; no forecourt where the frontage road is drawn by hand; 4 links where the road stops short and off to one side; and Terminal 1 closed with no forecourt when no road is in reach. No car uses a ramp unless it is bound for the deck. The one-rectangle terminal reports its airside edge as `n` and opens with 0 stranded.
 - stress.mjs strands passengers on purpose on the day it moves check-in (arrivals too since v0.14, because the hall's curbs go with it), and on the days it cuts the road or the taxiway. Cutting the walkways no longer strands anyone, because the lot lays its own sidewalk (v0.9). That is expected.
 
 ## Architecture
 
 - **One file out.** scripts/build.mjs bundles src/ with esbuild into a single HTML page. There is no server. three.js (pinned 0.170.0) is the only runtime dependency and is bundled in; it is used by render3d.ts alone.
-- **The sim never touches the DOM.** config, geom, net, ways, world, gates, bands, commerce, frontage, roads, scenery, goals, layout and sim are pure logic.
+- **The sim never touches the DOM.** config, geom, net, ways, terminalplan, world, gates, bands, commerce, frontage, roads, scenery, goals, layout and sim are pure logic.
   - render.ts (plan) and render3d.ts (3D, three.js, with models3d.ts) read sim state and never write it. traffic.ts is pure too.
   - scenery.ts places trees, lamps, floodlight masts and the control tower from the layout (cached per derive); both renderers draw from it.
   - ui.ts owns input and panels.
@@ -54,6 +54,7 @@ Healthy results:
 - **Aircraft classes** (config.ts `CLASSES`): turboprop, regional jet, A320, A380. Each sets runway length, gate spacing, stand depth, seats and turnaround.
 - **Terminal sites** (v0.8): `world.sites` are allocated with New terminal; each module carries `site`.
   - A terminal is a site plus the modules on it. A module with no site joins the site of whatever it connects to on foot.
+  - v0.15: terminalplan.ts (pure) gives a new site its starter layout: `airsideOf()` picks the edge facing the nearest taxiway or runway, `planTerminal()` returns the concourse, security and hall rectangles. ui.ts `buildSite()` builds them unless the tool is set to Empty site, and hires staff for a second terminal.
   - The UI places terminal modules only in the open terminal, then calls `fitSite()` so the site grows to fit.
 - **Levels of detail** (v0.8): `ren.lod` is `airfield`, `landside` or `terminal`, and `ren.focus` is the open site.
   - ui.ts switches them by zoom (`LOD` in config.ts) or explicitly. Each tool declares its level.
@@ -115,7 +116,7 @@ Healthy results:
 
 ## Roadmap
 
-Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. v0.10: growth unlocks, self-connecting landside facilities, international flights, the AirTrain, proper road junctions and curbside, undo, weather and airline offers. v0.11: curved roads with bend handles, roundabouts that roads join by themselves, and one-way roads and loops. v0.14: the starter airport rebuilt on the hall and its forecourt, and forecourt links that turn a corner. v0.13: deck ramps that split from and rejoin the approach road, and a version stamp. v0.12: check-in and claim as one stacked hall that lays its own two-level forecourt, cars drawn in lanes with gaps and brake lights, and sound. Next in that direction: curved taxiways and sidewalks, curbs along curved and angled frontages, cars that yield turn by turn in the sim; gates and holdrooms that respond to the taxiway and apron as you drag them, and moving modules in 3D.
+Foundation (v0.8): three levels of detail, terminal sites, roads and terminals adapting to each other (curbs, two-level frontage roads, snapping), and a 3D view. v0.9: a detailed 3D model and richer plan, goals and a star rating, build feedback, and lots that lay their own sidewalks. v0.10: growth unlocks, self-connecting landside facilities, international flights, the AirTrain, proper road junctions and curbside, undo, weather and airline offers. v0.11: curved roads with bend handles, roundabouts that roads join by themselves, and one-way roads and loops. v0.15: a terminal laid out in one drag. v0.14: the starter airport rebuilt on the hall and its forecourt, and forecourt links that turn a corner. v0.13: deck ramps that split from and rejoin the approach road, and a version stamp. v0.12: check-in and claim as one stacked hall that lays its own two-level forecourt, cars drawn in lanes with gaps and brake lights, and sound. Next in that direction: curved taxiways and sidewalks, curbs along curved and angled frontages, cars that yield turn by turn in the sim; gates and holdrooms that respond to the taxiway and apron as you drag them, and moving modules in 3D.
 
 The concourse interiors plan has four phases.
 
