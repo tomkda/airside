@@ -25,6 +25,12 @@ const pier = (w, cx, cy, len, wid, deg) => conc(w, cx - len / 2, cy - wid / 2, l
 const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b: { x: 4500, y: 2300 } });
 
 { const r = rep('sample', sampleWorld());
+  // v0.27: the deck's ramps peel off the approach roads as a lane and widen as they climb
+  const dk = r.d.decks[0]; const n = dk.pts.length;
+  const links = r.d.autoRoads.filter(w => w.fore === 'link'); const offLink = p => Math.min(...links.map(w => { const dx = w.b.x - w.a.x, dy = w.b.y - w.a.y, L = Math.hypot(dx, dy); return Math.abs((p.x - w.a.x) * dy - (p.y - w.a.y) * dx) / L; }));
+  const linkX = [offLink(dk.pts[0]), offLink(dk.pts[n - 1])];
+  check('each ramp leaves its approach road one lane wide, off the centreline (' + dk.ws[0].toFixed(1) + ' m wide, ' + linkX[0].toFixed(1) + ' m off)', r.d.decks.length === 1 && Math.abs(dk.ws[0] - 3.8) < 0.01 && Math.abs(dk.ws[n - 1] - 3.8) < 0.01 && Math.min(...linkX) > 3 && Math.min(...linkX) < 7 && dk.zs[0] === 0 && dk.zs[n - 1] === 0);
+  const top = dk.zs.indexOf(1); check('it widens as it climbs and is as wide as the deck where it lands', top > 5 && dk.ws.slice(0, top + 1).every((w, i, a) => !i || w >= a[i - 1] - 1e-9) && Math.abs(dk.ws[top] - dk.width) < 0.01);
   check('a one-piece building has no junction spaces', r.d.junctions.length === 0 && ![...r.d.shops.values()].flat().some(sh => sh.plaza));
   check('the sample gains an end stand each side', r.d.gates.length === 14 && r.reach === 14);
   check('no stands on the landside face', !Object.keys(r.by).some(k => k.includes(':s')));

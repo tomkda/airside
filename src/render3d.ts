@@ -328,7 +328,7 @@ export class Renderer3D {
     for (const dk of d.decks) {
       // v0.13: the slab follows the deck's own path, climbing along each ramp from the road it splits from
       const z1 = LEVELS[1].z0;
-      add3(slabPath(dk.pts, dk.zs.map(k => 0.2 + (z1 - 0.2) * k), dk.ws.map(w => Math.max(11, w) + 2), 0.8, '#B9B2A4'));
+      add3(slabPath(dk.pts, dk.zs.map(k => 0.2 + (z1 - 0.2) * k), dk.ws.map(w => w + 1.2), 0.8, '#8E8A83'));
       const cum = [0]; for (let i = 1; i < dk.pts.length; i++) cum.push(cum[i - 1] + dist(dk.pts[i - 1], dk.pts[i]));
       for (let u = 0; u <= cum[cum.length - 1]; u += 30) {
         let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
