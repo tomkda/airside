@@ -71,7 +71,7 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
 { // two days of flying from a pier nobody drew a taxiway to
   const sim = new Sim(sampleWorld(), 7); const z = pier(sim.world, 3568, 2718, 400, 50, 20);
   // the main concourse's own gates are switched off, so every flight has to use the pier
-  const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); main.off = [...Array(12).keys()].map(i => 'n' + i).concat(['e0', 'w0']);
+  const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); sim.relayout(); main.off = sim.d.gateSlots.filter(q => q.zone.id === main.id).map(q => q.key);   // every stand of the main concourse, whatever it is called
   sim.relayout(); sim.startDay();
   const used = new Set(); let st = null;
   sim.onDayEnd = r => { st = r.stats; console.log('flying:', r.label, '| flights', st.flights, '(' + used.size + ' at the pier\\'s self-laid gates)', 'missed', st.missed, 'stranded', st.stranded, 'cancelled', st.cancelled); };

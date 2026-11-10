@@ -10,7 +10,7 @@ import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rect
 import { APRON, CLASSES, Cls, SITE, TAXI_CLASSES } from './config';
 import { roundOuter, Round } from './ways';
 import type { World, Zone, Way, Apron, Gate, RunwayInfo } from './world';
-import { zonePts, zoneParts, toWorld, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts, arcOf, frameOf, inZone } from './shapes';
+import { zonePts, zoneParts, toWorld, toLocal, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts, arcOf, frameOf, inZone, heart } from './shapes';
 import { pointInPoly } from './geom';
 
 /** n, e, s, w for a rectangle (of its own frame); `f0.`, `f1.` … for the facets of a round or polygonal hall (v0.18). */
@@ -36,7 +36,11 @@ export interface GateOpts {
   keep?: { a: Pt; b: Pt }[];
   /** v0.23: which building (shell) each concourse piece belongs to. Pieces of one building share a gate letter and one run of gate numbers. */
   group?: Map<number, number>;
+  /** v0.24: buildings of several pieces. Their stands walk the building's one outline, not each piece's own walls. */
+  walks?: Walk[];
 }
+/** A building's outline to lay stands along: the pieces it is made of, its outer boundary, and all its rings (holes too). */
+export interface Walk { ids: number[]; outer: Pt[]; rings: Pt[][] }
 
 export const standDepth = (c: number) => CLASSES[c].length + 22;          // building face to taxiway centreline
 /** Face to taxilane centreline for an apron a concourse lays itself: nose-in gap, aircraft, then the taxilane's clearance (see APRON). */
@@ -89,6 +93,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
   const units = new Map<number, { max: number; count: number }>();
   const taxis = world.ways.filter(w => w.kind === 'taxi');
   let idx = 0;
+  const walked = new Set<number>(); if (opts.self && APRON.self) for (const w of opts.walks ?? []) for (const id of w.ids) walked.add(id);
   const groupOf = (id: number) => opts.group?.get(id) ?? -1 - id; const letterOfGroup = new Map<number, string>(); const numOf = new Map<number, number>();
   const nextNum = (id: number) => { const g = groupOf(id); const n = (numOf.get(g) ?? 0) + 1; numOf.set(g, n); return n; };
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
@@ -96,6 +101,8 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
     let letter = letterOfGroup.get(groupOf(z.id));
     if (!letter) { letter = idx < 26 ? String.fromCharCode(65 + idx) : `G${idx + 1}`; idx++; letterOfGroup.set(groupOf(z.id), letter); }
     letters.set(z.id, letter);
+    // v0.24: a piece of a multi-piece building has no stands of its own: the building's outline is walked as a whole
+    if (walked.has(z.id)) { counts.set(z.id, { k: 0, n: 0 }); continue; }
     const off = new Set(z.off ?? []);
     let k = 0, nSlots = 0;
     for (const sd of sidesOf(z)) {
@@ -187,7 +194,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
     counts.set(z.id, { k, n: nSlots });
   }
   // v0.19: every other open face lays its own apron, taxilane and link to the airfield.
-  const laid = opts.self && APRON.self ? selfAprons(world, runways, runwayWidth, pending, aprons, gates, slots, counts, opts.keep ?? [], nextNum) : { lanes: [], pads: [] };
+  const laid = opts.self && APRON.self ? selfAprons(world, runways, runwayWidth, pending, aprons, gates, slots, counts, opts.keep ?? [], nextNum, opts.walks ?? [], letters) : { lanes: [], pads: [] };
   for (const [id, c] of counts) units.set(id, { max: c.n, count: c.k });
   return { gates, aprons, slots, guides, letters, units, lanes: laid.lanes, pads: laid.pads };
 }
@@ -229,7 +236,7 @@ interface Run { pts: Pt[]; cls: Cls; zone: number; outs: [Pt, Pt, Pt]; corner: [
 type LaneR = Lane & { run?: Run };
 
 function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, pending: Pending[],
-  aprons: Apron[], gates: Gate[], slots: GateSlot[], counts: Map<number, Count>, keep: { a: Pt; b: Pt }[], nextNum: (zoneId: number) => number): { lanes: Lane[]; pads: Pt[][] } {
+  aprons: Apron[], gates: Gate[], slots: GateSlot[], counts: Map<number, Count>, keep: { a: Pt; b: Pt }[], nextNum: (zoneId: number) => number, walks: Walk[], letters: Map<number, string>): { lanes: Lane[]; pads: Pt[][] } {
   const taxis = world.ways.filter(w => w.kind === 'taxi');
   const outlines = world.zones.map(z => { const pts = zonePts(z); return { z, pts, box: polyBox(pts) }; });
   // most things are nowhere near most other things: a box test first keeps this cheap enough to run every frame of a drag
@@ -237,6 +244,101 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
   const onSite = (p: Pt) => inRect(p, SITE.buildable) && !pointInPoly(p, SITE.lake);
   const nearRunway = (p: Pt) => runways.some(r => segDist(p, r.rw.a, r.rw.b) < runwayWidth(r.length) / 2 + 40);
   const runs: Run[] = [];
+
+  // ---- v0.24: buildings of several pieces. Stands walk the one outline of the whole building: round its eased
+  //      corners, past its filled-in junctions, with no wedge of dead apron where two pieces meet. A stand is
+  //      placed wherever one fits, stepping along the wall: its cell is the wedge between the wall's normals at
+  //      its two edges, so stands fan out round an outside curve and close up (or drop out) round an inside one.
+  for (const W of walks) {
+    const zs = W.ids.map(id => world.zones.find(q => q.id === id)).filter((q): q is Zone => !!q); if (!zs.length) continue;
+    let zc = (zs[0].cls ?? 2) as Cls; let C = CLASSES[zc]; let sp = C.gateSpacing; let D = selfDepth(zc); let clear = APRON.laneClear[zc];
+    const setCls = (c: Cls) => { zc = c; C = CLASSES[c]; sp = C.gateSpacing; D = selfDepth(c); clear = APRON.laneClear[c]; };
+    const ownerAt = (door: Pt) => zs.find(q => inZone(door, q)) ?? zs.reduce((best, q) => (dist(heart(q), door) < dist(heart(best), door) ? q : best));
+    const inShell = new Set(W.ids); const letter = letters.get(zs[0].id) ?? 'A';
+    let ring = W.outer.slice(); { let a = 0; for (let i = 0; i < ring.length; i++) { const p = ring[i], q = ring[(i + 1) % ring.length]; a += p.x * q.y - q.x * p.y; } if (a < 0) ring.reverse(); }
+    const cum = [0]; for (let i = 0; i < ring.length; i++) cum.push(cum[i] + dist(ring[i], ring[(i + 1) % ring.length]));
+    const total = cum[ring.length]; if (total < 60) continue;
+    const at = (s0: number): Pt => { let s1 = ((s0 % total) + total) % total; let lo = 0, hi = ring.length; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cum[m] <= s1) lo = m; else hi = m; } const a = ring[lo], b = ring[(lo + 1) % ring.length]; const L = cum[lo + 1] - cum[lo] || 1; return lerpPt(a, b, (s1 - cum[lo]) / L); };
+    const nrm = (s0: number): Pt => { const d = norm(sub(at(s0 + 5), at(s0 - 5))); return { x: d.y, y: -d.x }; };
+    const inside = (p: Pt) => { let n = 0; for (const r of W.rings) if (pointInPoly(p, r)) n++; return n % 2 === 1; };
+    const others = outlines.filter(o => !inShell.has(o.z.id));
+    // a straight wall that a processing module stands against is landside along its whole length, as before
+    const landWalls: { a: Pt; b: Pt }[] = [];
+    for (const q of zs) if (!q.sides) for (const sd of sidesOf(q)) {
+      if (sd.curve !== undefined) continue;
+      const al0 = norm(sub(sd.b, sd.a)); const thin = [add(sd.a, add(al0, mul(sd.out, 0.5))), add(sd.b, add(mul(al0, -1), mul(sd.out, 0.5))), add(sd.b, add(mul(al0, -1), mul(sd.out, 6))), add(sd.a, add(al0, mul(sd.out, 6)))];
+      if (others.some(o => LANDSIDE.has(o.z.type) && polyArea(polyClip(o.pts, thin)) > 2)) landWalls.push({ a: sd.a, b: sd.b });
+    }
+    type Slot = GateSlot & { tan: Pt; s: number; w: number; drawn: boolean };
+    const got: Slot[] = []; const per = new Map<string, number>();
+    let s0 = 0; let prev: Pt[] | null = null;
+    while (s0 + 20 <= total + 0.01) {
+      // each stand is sized for the piece its gate is in (a building can mix aircraft sizes)
+      { const m0 = at(s0 + sp / 2); const c0 = (ownerAt(add(m0, mul(nrm(s0 + sp / 2), -7))).cls ?? 2) as Cls; if (c0 !== zc) setCls(c0); }
+      // how much wall it takes: enough that the wings, half an aircraft out, are one spacing apart. Round an outside
+      // curve that is less wall than a spacing; round an inside curve, more.
+      let w = sp; const dw = APRON.nose + C.length / 2;
+      for (let it = 0; it < 3; it++) { const ww = dist(add(at(s0), mul(nrm(s0), dw)), add(at(s0 + w), mul(nrm(s0 + w), dw))) || 1; w = Math.max(0.55 * sp, Math.min(1.9 * sp, (w * sp) / ww)); }
+      if (s0 + w > total + 0.01) break;
+      const a = at(s0), b = at(s0 + w), m = at(s0 + w / 2); const na = nrm(s0), nb = nrm(s0 + w), nm = nrm(s0 + w / 2);
+      const tan = norm(sub(b, a));
+      // a taxiway drawn along this stretch of wall is the stands' taxilane, as it always was: they reach out to it
+      let via: Way | null = null, Dc = D;
+      for (const tw of taxis) {
+        if (Math.abs(dot(norm(sub(tw.b, tw.a)), tan)) < 0.985) continue;
+        const t = rayHit(m, nm, tw.a, tw.b); if (t < standDepth(zc) - 1 || t > sideReach(zc)) continue;
+        if (!via || t < Dc) { via = tw; Dc = t; }
+      }
+      const cell = [add(a, mul(na, 0.5)), add(b, mul(nb, 0.5)), add(b, mul(nb, Dc)), add(a, mul(na, Dc))];
+      const front = add(m, mul(nm, Dc));
+      const tail = dot(sub(cell[2], cell[3]), tan);
+      const cb = polyBox(cell); const hitsBox = (r: Rect, mg = 0) => r.x - mg <= cb.x + cb.w && r.x + r.w + mg >= cb.x && r.y - mg <= cb.y + cb.h && r.y + r.h + mg >= cb.y;
+      const over = (pts: Pt[]) => { const c = polyClip(pts, cell); return c.length >= 3 && polyArea(c) > 3; };
+      const own = () => { for (const d of [8, Dc / 3, (2 * Dc) / 3, Dc]) for (const k of [0.04, 0.5, 0.96]) { const w0 = lerpPt(a, b, k), n0 = norm(lerpPt(na, nb, k)); if (inside(add(w0, mul(n0, d)))) return true; } return false; };
+      const ok = tail >= 0.45 * sp && dist(a, b) > w * 0.8                       // the wall is not too tightly curved here, either way
+        && [cell[2], cell[3], front].every(p => onSite(p) && !nearRunway(p))
+        && !own()
+        && !landWalls.some(lw => segDist(m, lw.a, lw.b) < 4)
+        && !(prev && over(prev)) && !(got.length && got[0].cell !== prev && over(got[0].cell))
+        && !others.some(o => (LANDSIDE.has(o.z.type) && pointInPoly(add(m, mul(nm, 3)), o.pts)) || (hitsBox(o.box) && zoneParts(o.z).some(over)))
+        && !aprons.some(ap => hitsBox(ap.rect) && over(ap.pts))
+        && !keep.some(k => hitsBox({ x: Math.min(k.a.x, k.b.x), y: Math.min(k.a.y, k.b.y), w: Math.abs(k.b.x - k.a.x), h: Math.abs(k.b.y - k.a.y) }, 8) && over(fat(k.a, k.b, 8)))
+        && !taxis.some(w => w !== via && over(fat(w.a, w.b, (w.cls >= 3 ? TAXI_CLASSES[1].width : TAXI_CLASSES[0].width) / 2 + 4)))
+        && !(world.rounds ?? []).some(rd => { const R = roundOuter(rd) + 4; return over([{ x: rd.x - R, y: rd.y - R }, { x: rd.x + R, y: rd.y - R }, { x: rd.x + R, y: rd.y + R }, { x: rd.x - R, y: rd.y + R }]); })
+        && !others.some(o => nearBox(front, o.box, clear) && polyDist(front, o.pts) < clear - 0.5)
+        && !keep.some(k => segDist(front, k.a, k.b) < 12);
+      if (!ok) { s0 += 6; continue; }
+      // which piece the gate belongs to (its door is in it), and its key in that piece's own terms
+      const door = add(m, mul(nm, -7));
+      const z = ownerAt(door);
+      let side: string;
+      if (z.sides) { const c = heart(z); const n = gateFacets(z); const ang = Math.atan2(door.y - c.y, door.x - c.x) - (z.rot ?? 0) + Math.PI / 2; side = `f${(((Math.round(ang / ((2 * Math.PI) / n)) % n) + n) % n)}.`; }
+      else { const q = toLocal(z, door), F = frameOf(z); const dn = q.y - F.y, ds = F.y + F.h - q.y, dw = q.x - F.x, de = F.x + F.w - q.x; const mn = Math.min(dn, ds, dw, de); side = mn === dn ? 'n' : mn === ds ? 's' : mn === dw ? 'w' : 'e'; }
+      const pk = `${z.id}:${side}`; const i = per.get(pk) ?? 0; per.set(pk, i + 1); const key = `${side}${i}`;
+      const sl: Slot = { key, id: `${z.id}-${key}`, zone: z, side, i, cls: zc, on: !(z.off ?? []).includes(key), door, stand: add(m, mul(nm, C.length / 2 + APRON.nose)), front, ang: Math.atan2(-nm.y, -nm.x), outward: nm, cell, tan, s: s0, w, drawn: !!via };
+      got.push(sl); slots.push(sl); const cnt = counts.get(z.id)!; cnt.n++;
+      prev = cell; s0 += w;
+    }
+    if (!got.length) continue;
+    // runs of neighbouring stands; a run that goes all the way round is a ring
+    const groups: Slot[][] = []; let cur: Slot[] = [];
+    for (const sl of got) { const p0 = cur[cur.length - 1]; if (p0 && (sl.s - p0.s > p0.w + 7 || sl.cls !== p0.cls || sl.drawn !== p0.drawn)) { groups.push(cur); cur = []; } cur.push(sl); }
+    if (cur.length) groups.push(cur);
+    const wraps = groups.length > 0 && got[0].s + total - got[got.length - 1].s <= got[got.length - 1].w + 7 && got[0].cls === got[got.length - 1].cls && got[0].drawn === got[got.length - 1].drawn;
+    if (wraps && groups.length > 1) { const last = groups.pop()!; groups[0] = [...last, ...groups[0]]; }
+    for (const run of groups) {
+      const first = run[0], last = run[run.length - 1]; const whole = wraps && groups.length === 1; const rc = first.cls; const rsp = CLASSES[rc].gateSpacing;
+      const pts = [first.cell[0], ...run.map(q => q.cell[1]), ...[...run].reverse().map(q => q.cell[2]), first.cell[3]];
+      const midSl = run[Math.floor(run.length / 2)];
+      const ap: Apron = { zone: first.zone, rect: polyBox(pts), pts, outward: midSl.outward, laneA: first.front, laneB: last.front, mouth: midSl.front, cls: rc, letter, self: !first.drawn };
+      aprons.push(ap);
+      for (const sl of run) if (sl.on) { counts.get(sl.zone.id)!.k++; gates.push({ id: sl.id, key: sl.key, num: `${letter}${nextNum(sl.zone.id)}`, zone: sl.zone, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] }); }
+      if (first.drawn) continue;   // these stand on a drawn taxiway: no taxilane of their own
+      const lane = whole ? [...run.map(q => q.front), first.front] : [add(first.front, mul(first.tan, -rsp / 2)), ...run.map(q => q.front), add(last.front, mul(last.tan, rsp / 2))];
+      runs.push({ pts: lane, cls: rc, zone: first.zone.id, outs: [first.outward, last.outward, midSl.outward], corner: [[first.cell[0], first.cell[3]], [last.cell[1], last.cell[2]]], ap, ext: [rsp / 2, rsp / 2], joined: [whole, whole], T: selfDepth(rc) + rsp });
+    }
+  }
+
   for (const { z, sd, guide, zc, letter } of pending) {
     const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a));
     const C = CLASSES[zc]; const sp = C.gateSpacing; const D = selfDepth(zc); const clear = APRON.laneClear[zc];

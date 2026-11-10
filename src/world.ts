@@ -453,7 +453,8 @@ export function derive(source: World): Derived {
   // v0.23: one outline per building; its pieces share a gate letter and one run of gate numbers
   const shells = shellsOf(source.zones); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
   const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
-  const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group });
+  const shellWalks = shells.filter(sh => sh.ids.length > 1).map(sh => ({ ids: sh.ids, outer: sh.outer, rings: sh.rings }));
+  const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group, walks: shellWalks });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
   for (const [id, u] of GA.units) units.set(id, u);
   const gateLetter = GA.letters;
