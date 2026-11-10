@@ -34,6 +34,8 @@ export interface GateOpts {
   self?: boolean;
   /** Roads and sidewalks, drawn and laid, as straight pieces: self-laid stands and taxilanes keep clear of them. */
   keep?: { a: Pt; b: Pt }[];
+  /** v0.23: which building (shell) each concourse piece belongs to. Pieces of one building share a gate letter and one run of gate numbers. */
+  group?: Map<number, number>;
 }
 
 export const standDepth = (c: number) => CLASSES[c].length + 22;          // building face to taxiway centreline
@@ -87,9 +89,12 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
   const units = new Map<number, { max: number; count: number }>();
   const taxis = world.ways.filter(w => w.kind === 'taxi');
   let idx = 0;
+  const groupOf = (id: number) => opts.group?.get(id) ?? -1 - id; const letterOfGroup = new Map<number, string>(); const numOf = new Map<number, number>();
+  const nextNum = (id: number) => { const g = groupOf(id); const n = (numOf.get(g) ?? 0) + 1; numOf.set(g, n); return n; };
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     const zc = (z.cls ?? 2) as Cls;
-    const letter = idx < 26 ? String.fromCharCode(65 + idx) : `G${idx + 1}`; idx++;
+    let letter = letterOfGroup.get(groupOf(z.id));
+    if (!letter) { letter = idx < 26 ? String.fromCharCode(65 + idx) : `G${idx + 1}`; idx++; letterOfGroup.set(groupOf(z.id), letter); }
     letters.set(z.id, letter);
     const off = new Set(z.off ?? []);
     let k = 0, nSlots = 0;
@@ -156,7 +161,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
         aprons.push(ap);
         for (const sl of run) if (sl.on) {
           k++;
-          gates.push({ id: sl.id, key: sl.key, num: `${letter}${k}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
+          gates.push({ id: sl.id, key: sl.key, num: `${letter}${nextNum(z.id)}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
         }
         run = [];
       };
@@ -182,7 +187,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
     counts.set(z.id, { k, n: nSlots });
   }
   // v0.19: every other open face lays its own apron, taxilane and link to the airfield.
-  const laid = opts.self && APRON.self ? selfAprons(world, runways, runwayWidth, pending, aprons, gates, slots, counts, opts.keep ?? []) : { lanes: [], pads: [] };
+  const laid = opts.self && APRON.self ? selfAprons(world, runways, runwayWidth, pending, aprons, gates, slots, counts, opts.keep ?? [], nextNum) : { lanes: [], pads: [] };
   for (const [id, c] of counts) units.set(id, { max: c.n, count: c.k });
   return { gates, aprons, slots, guides, letters, units, lanes: laid.lanes, pads: laid.pads };
 }
@@ -224,7 +229,7 @@ interface Run { pts: Pt[]; cls: Cls; zone: number; outs: [Pt, Pt, Pt]; corner: [
 type LaneR = Lane & { run?: Run };
 
 function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, pending: Pending[],
-  aprons: Apron[], gates: Gate[], slots: GateSlot[], counts: Map<number, Count>, keep: { a: Pt; b: Pt }[]): { lanes: Lane[]; pads: Pt[][] } {
+  aprons: Apron[], gates: Gate[], slots: GateSlot[], counts: Map<number, Count>, keep: { a: Pt; b: Pt }[], nextNum: (zoneId: number) => number): { lanes: Lane[]; pads: Pt[][] } {
   const taxis = world.ways.filter(w => w.kind === 'taxi');
   const outlines = world.zones.map(z => { const pts = zonePts(z); return { z, pts, box: polyBox(pts) }; });
   // most things are nowhere near most other things: a box test first keeps this cheap enough to run every frame of a drag
@@ -328,7 +333,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       aprons.push(ap);
       for (const sl of run) if (sl.on) {
         cnt.k++;
-        gates.push({ id: sl.id, key: sl.key, num: `${letter}${cnt.k}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
+        gates.push({ id: sl.id, key: sl.key, num: `${letter}${nextNum(z.id)}`, zone: z, apron: ap, cls: sl.cls, door: sl.door, stand: sl.stand, front: sl.front, ang: sl.ang, outward: sl.outward, frontNode: -1, rwys: [new Set(), new Set(), new Set(), new Set()] });
       }
       // the taxilane runs half a stand past each end where there is room, so the end stands can push back
       const room = (p: Pt) => onSite(p) && !outlines.some(o => o.z.id !== z.id && nearBox(p, o.box, 10) && polyDist(p, o.pts) < 10) && !aprons.some(o => o !== ap && nearBox(p, o.rect, 0) && within(p, o.pts, 1)) && !keep.some(k => segDist(p, k.a, k.b) < 10);

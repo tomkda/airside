@@ -15,6 +15,7 @@ import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, se
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
 import { letLots } from './commerce';
+import { Shell, shellsOf } from './shell';
 
 export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
@@ -188,6 +189,8 @@ export interface Terminal {
 
 export interface Derived {
   runways: RunwayInfo[]; aprons: Apron[]; gates: Gate[];
+  /** v0.23: each building's airside as one rounded outline (shell.ts), and which shell a concourse piece belongs to. */
+  shells: Shell[]; shellOf: Map<number, Shell>;
   /** v0.19: paving in the corners where self-laid aprons on neighbouring faces meet. */
   pads: Pt[][];
   air: Net; airExtra: { a: Pt; b: Pt; cls: number }[]; taxiLabels: TaxiLabel[]; taxiLetter: Map<number, string>;
@@ -447,7 +450,10 @@ export function derive(source: World): Derived {
   const laidDrives = autoRoads(world, world.zones, rects1, SITE.highwayY, SITE.width, GROWTH.autoRoadReach, fore);
   const keep: { a: Pt; b: Pt }[] = [];
   for (const w of [...source.ways.filter(q => q.kind !== 'taxi'), ...fore, ...laid, ...laidDrives]) for (const [a, b] of waySegs(w)) keep.push({ a, b });
-  const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep });
+  // v0.23: one outline per building; its pieces share a gate letter and one run of gate numbers
+  const shells = shellsOf(source.zones); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
+  const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
+  const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
   for (const [id, u] of GA.units) units.set(id, u);
   const gateLetter = GA.letters;
@@ -930,7 +936,7 @@ export function derive(source: World): Derived {
   // the same line about the same building is said once (two of its aprons can earn the same remark)
   { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {
-    runways, aprons, gates, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
+    runways, aprons, gates, shells, shellOf, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,

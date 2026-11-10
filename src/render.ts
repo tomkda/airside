@@ -60,6 +60,7 @@ export class Renderer {
   ghost: Ghost | null = null;
   /** v0.19: the grip of the selected shape under the pointer, if any. */
   gripHot: Grip | null = null;
+  private shellIds: Map<number, unknown> = new Map();   // zones drawn as part of a shell this frame
   cursor: Pt | null = null;
   showGuides = false;          // taxiway / concourse tools show where gates would grow    // snapped cursor point while a drawing tool is active
 
@@ -621,6 +622,7 @@ export class Renderer {
     zones.sort((a, b) => a.level - b.level || (a.y + a.h) - (b.y + b.h));
     const tilted = this.tilt > 0.02;
     const labels: [Zone, number][] = [];
+    const shellsDone = new Set<unknown>(); this.shellIds = sim.d.shellOf;
     if (!tilted) for (const zn of zones) if (zn.level <= active) this.shadow(zn, LEVELS[zn.level].z1 * 0.9);
     for (const zn of zones) {
       const L = LEVELS[zn.level];
@@ -634,8 +636,21 @@ export class Renderer {
         const [x1, y1] = this.P(zn.x + zn.w, y2, top), [x0, y0] = this.P(zn.x, y2, top);
         g.lineTo(x1, y1); g.lineTo(x0, y0); g.closePath(); g.fill();
       }
-      this.poly(this.rectPts(zn), isActive ? PAL.bldgTop : (tilted ? PAL.bldg : PAL.bldgGhost), top);
-      if (isActive || tilted) { g.strokeStyle = 'rgba(40,36,30,0.35)'; g.lineWidth = 1; this.path(this.rectPts(zn), top); g.stroke(); }
+      // v0.23: a building's concourses are drawn as one shell: one floor, one edge, corners rounded. The pieces it is
+      // made of are not drawn on their own (in the tilted view they still are).
+      const shell = !tilted ? sim.d.shellOf.get(zn.id) : undefined;
+      if (shell) {
+        if (!shellsDone.has(shell)) {
+          shellsDone.add(shell);
+          g.beginPath();
+          for (const r of shell.rings) { r.forEach((p, i) => { const [x, y] = this.P(p.x, p.y, top); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); }
+          g.fillStyle = isActive ? PAL.bldgTop : PAL.bldgGhost; g.fill('evenodd');
+          if (isActive) { g.strokeStyle = 'rgba(40,36,30,0.5)'; g.lineWidth = 1.2; g.stroke(); }
+        }
+      } else {
+        this.poly(this.rectPts(zn), isActive ? PAL.bldgTop : (tilted ? PAL.bldg : PAL.bldgGhost), top);
+        if (isActive || tilted) { g.strokeStyle = 'rgba(40,36,30,0.35)'; g.lineWidth = 1; this.path(this.rectPts(zn), top); g.stroke(); }
+      }
       if (isActive && detail(zn)) {
         if (this.overlay) this.heat(sim, zn, top);
         if (this.commerce && zn.type === 'concourse') this.flowBand(sim, zn, top);
@@ -962,7 +977,7 @@ export class Renderer {
     const z = this.cam.zoom; if (z < 0.2) return;
     const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
     g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
-    { const F = frameOf(zn); this.path(zn.sides ? this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, sides: zn.sides }) : this.part(zn, { x: F.x + k, y: F.y + k, w: F.w - 2 * k, h: F.h - 2 * k }), top); g.stroke(); }
+    if (!this.shellIds.has(zn.id) || this.tilt > 0.02) { const F = frameOf(zn); this.path(zn.sides ? this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, sides: zn.sides }) : this.part(zn, { x: F.x + k, y: F.y + k, w: F.w - 2 * k, h: F.h - 2 * k }), top); g.stroke(); }
     if (zn.sides) {
       // a hall's roof: a glazed lantern over the atrium, with ribs out to the wall
       const R = Math.min(zn.w, zn.h) / 2; const c = centreOf(zn); const lr = R * 0.42;
@@ -1151,7 +1166,7 @@ export class Renderer {
   zoneLabel(sim: Sim, zn: Zone, top: number) {
     const z = this.cam.zoom;
     if (z < 0.42) return;
-    if (zn.sides && Math.min(zn.w, zn.h) < 80 && z < 1.2) return;   // a small corner hall between two piers needs no name of its own until you are close
+    if (zn.sides && Math.min(zn.w, zn.h) < 80 && z < 1.2 && (sim.d.shellOf.get(zn.id)?.ids.length ?? 1) < 2) return;   // a small corner hall between two piers needs no name of its own until you are close
     const u = sim.d.units.get(zn.id);
     const def = ZONES[zn.type];
     let c = heart(zn);   // (the middle of the building itself: a bent pier's box centre can lie outside it)
@@ -1160,11 +1175,15 @@ export class Renderer {
     const big = zn.type === 'curb' || zn.type === 'parking';
     const px = clamp(10 * z, 8, 11);
     const bg = 'rgba(240,232,215,0.82)';
+    // v0.23: a building of several pieces is named once, on its largest piece, with the whole building's numbers
+    const shell = zn.type === 'concourse' ? sim.d.shellOf.get(zn.id) : undefined; const many = !!shell && shell.ids.length > 1;
+    if (many) { const big0 = shell!.ids.map(id => sim.d.zones.find(q => q.id === id)!).reduce((m, q) => (q.w * q.h > m.w * m.h ? q : m)); if (big0.id !== zn.id) return; }
     const title = zn.type === 'concourse' ? `CONCOURSE ${sim.d.gateLetter.get(zn.id) ?? ''}` : def.short.toUpperCase();
     this.label(title, c, top, px, big ? PAL.ink2 : PAL.ink, { weight: 700, spacing: 2, bg });
     if (u && z > 0.65) {
       const ls = sim.d.lease.get(zn.id);
-      const sub2 = zn.type === 'concourse' ? `${u.count} gates · ${ls?.count ?? 0} of ${ls?.max ?? 0} lots open` : `${u.count} ${def.unit}`;
+      const sum = (f: (id: number) => number) => (many ? shell!.ids.reduce((t, id) => t + f(id), 0) : f(zn.id));
+      const sub2 = zn.type === 'concourse' ? `${sum(id => sim.d.units.get(id)?.count ?? 0)} gates · ${sum(id => sim.d.lease.get(id)?.count ?? 0)} of ${sum(id => sim.d.lease.get(id)?.max ?? 0)} lots open` : `${u.count} ${def.unit}`; void ls;
       this.label(sub2, { x: c.x, y: c.y + 13 / (z * this.yScale) }, top, px - 1.5, PAL.ink2, { weight: 500, spacing: 1, bg });
     }
   }
