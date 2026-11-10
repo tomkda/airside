@@ -130,7 +130,7 @@ for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 
   check('a path is one building: no people mover, and the far leg has working gates', T && T.active && T.gateAreas === 4 && d.trainLinks.filter(l => l.apm).length === 0 && g2.length >= 6 && g2.every(g => g.rwys[0].size > 0)); }
 { // two days of flying from the bent pier alone
   const { w, z } = mk(-110, { w: 420 });
-  const sim = new Sim(w, 7); const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); main.off = [...Array(12).keys()].map(i => 'n' + i).concat(['e0', 'w0']);
+  const sim = new Sim(w, 7); const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); sim.relayout(); main.off = sim.d.gateSlots.filter(q => q.zone.id === main.id).map(q => q.key);   // every stand of the main concourse, whatever it is called
   sim.relayout(); sim.startDay(); let outside = 0, seen = 0, tick = 0; const used = new Set(); let st = null;
   sim.onDayEnd = r => { st = r.stats; console.log('flying:', r.label, '| flights', st.flights, '(' + used.size + ' at the bent pier so far)', 'missed', st.missed, 'stranded', st.stranded, '| people seen in the pier', seen, '(outside any building: ' + outside + ')'); };
   while (sim.day < 2) { sim.step(0.25); for (const f of sim.flights) if (f.gate && f.gate.zone.id === z.id) used.add(f.id);
