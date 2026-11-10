@@ -300,6 +300,9 @@ export const FRONTAGE = {
 // v0.17: piers at any angle. Widths are the usual single- and double-loaded pier widths (ACRP Report 25, vol. 2:
 // about 25–30 m for gates one side with a corridor, 40–60 m for gates both sides with shops between).
 export const PIER = { minLen: 60, widths: [40, 50, 60], snapDeg: 5 };
+// v0.18: round and polygonal halls. Real rotundas and hub halls run from about 60 m (a satellite's central hall) to
+// 250 m or more across (the hub of an X-shaped terminal).
+export const HALL = { minDia: 60, maxDia: 400, shapes: [{ sides: 32, name: 'Round' }, { sides: 6, name: 'Hexagon' }, { sides: 8, name: 'Octagon' }] };
 // v0.16: the airside people mover that links a remote concourse to its terminal. ACRP Report 37 (Guidebook for
 // Planning and Implementing Automated People Mover Systems at Airports) gives airside shuttles cruising at
 // 40–55 km/h on headways of about two minutes; satellites sit 300–1,200 m from the terminal at Tampa, Orlando,

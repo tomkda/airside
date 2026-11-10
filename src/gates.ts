@@ -9,10 +9,11 @@
 import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rectsOverlap, rectSegDist } from './geom';
 import { CLASSES, Cls } from './config';
 import type { World, Zone, Way, Apron, Gate, RunwayInfo } from './world';
-import { zonePts, toWorld, dirWorld, polyClip, polyArea, polyBox } from './shapes';
+import { zonePts, toWorld, dirWorld, polyClip, polyArea, shaped, hallPts } from './shapes';
 import { pointInPoly } from './geom';
 
-export type SideKey = 'n' | 'e' | 's' | 'w';
+/** n, e, s, w for a rectangle (of its own frame); `f0.`, `f1.` … for the facets of a round or polygonal hall (v0.18). */
+export type SideKey = string;
 export interface GateSlot {
   key: string; id: string; zone: Zone; side: SideKey; i: number; cls: Cls; on: boolean;
   door: Pt; stand: Pt; front: Pt; ang: number; outward: Pt; cell: Pt[];
@@ -24,11 +25,18 @@ export interface SideGuide {
 
 export const standDepth = (c: number) => CLASSES[c].length + 22;          // building face to taxiway centreline
 export const sideReach = (c: number) => Math.max(150, 2 * standDepth(c) + 40); // farthest a taxiway can be and still count
-export const SIDE_NAMES: Record<SideKey, string> = { n: 'North', e: 'East', s: 'South', w: 'West' };
+export const SIDE_NAMES: Record<string, string> = { n: 'North', e: 'East', s: 'South', w: 'West' };
+export const sideName = (s: SideKey) => SIDE_NAMES[s] ?? `Facet ${Number(s.slice(1)) + 1}`;
+/** A round hall offers gates on twelve facets, a polygonal one on each of its sides. */
+export const gateFacets = (z: Zone) => (!z.sides ? 4 : z.sides >= 24 ? 12 : z.sides);
 
 const inset = (r: Rect, k: number): Rect => ({ x: r.x + k, y: r.y + k, w: Math.max(0, r.w - 2 * k), h: Math.max(0, r.h - 2 * k) });
 
 export function sidesOf(z: Zone) {
+  if (z.sides) {
+    const pts = hallPts(z, 0, gateFacets(z));
+    return pts.map((a, k) => { const b = pts[(k + 1) % pts.length]; const d = norm(sub(b, a)); return { side: `f${k}.` as SideKey, a, b, out: { x: d.y, y: -d.x } }; });
+  }
   const sides = [
     { side: 'n' as SideKey, a: { x: z.x, y: z.y }, b: { x: z.x + z.w, y: z.y }, out: { x: 0, y: -1 } },
     { side: 'e' as SideKey, a: { x: z.x + z.w, y: z.y }, b: { x: z.x + z.w, y: z.y + z.h }, out: { x: 1, y: 0 } },
@@ -88,11 +96,11 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
       const stripPts = [add(sd.a, add(mul(al, 1), mul(sd.out, 1))), add(sd.b, add(mul(al, -1), mul(sd.out, 1))), add(sd.b, add(mul(al, -1), mul(sd.out, D))), add(sd.a, add(mul(al, 1), mul(sd.out, D)))];
       const cut = (pts: Pt[]) => { const c = polyClip(pts, stripPts); if (c.length >= 3 && polyArea(c) > 2) blocked.push(proj(c)); };
       for (const o of world.zones) if (o.id !== z.id) {
-        if (z.rot || o.rot) cut(zonePts(o));
+        if (shaped(z) || shaped(o)) cut(zonePts(o));
         else if (rectsOverlap(inset(o, 1), strip)) blocked.push(proj([{ x: o.x, y: o.y }, { x: o.x + o.w, y: o.y + o.h }, { x: o.x + o.w, y: o.y }, { x: o.x, y: o.y + o.h }]));
       }
       for (const ap of aprons) {
-        if (z.rot || ap.zone.rot) cut(ap.pts);
+        if (shaped(z) || shaped(ap.zone)) cut(ap.pts);
         else if (rectsOverlap(inset(ap.rect, 1), strip)) blocked.push(proj([{ x: ap.rect.x, y: ap.rect.y }, { x: ap.rect.x + ap.rect.w, y: ap.rect.y + ap.rect.h }, { x: ap.rect.x + ap.rect.w, y: ap.rect.y }, { x: ap.rect.x, y: ap.rect.y + ap.rect.h }]));
       }
       for (const w of world.ways) if (w.kind !== 'taxi' && rectSegDist(inset(strip, 2), w.a, w.b) === 0) blocked.push(proj([w.a, w.b]));

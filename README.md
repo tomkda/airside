@@ -13,7 +13,7 @@ npm run simtest      # headless: runs 3 sim days and prints the daily report
 node scripts/roads.mjs     # curves, roundabouts and one-way loops
 node scripts/halls.mjs     # stacked halls and self-laid forecourts
 node scripts/satellites.mjs # satellite concourses and people movers
-node scripts/piers.mjs      # piers at any angle, merged and standing apart
+node scripts/piers.mjs      # piers at any angle and round or polygonal hubs
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
 node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
 npm test                  # all eight sims
@@ -27,7 +27,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 | Action | Input |
 | --- | --- |
-| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` hall (check-in over bag claim) · `4` security · `5` concourse · `6` satellite concourse · `9` pier at any angle · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
+| Tools | `V` select · `1` runway · `2` taxiway · `N` new terminal · `3` hall (check-in over bag claim) · `4` security · `5` concourse · `6` satellite concourse · `9` pier at any angle · `0` round or polygonal hub · `I` passport control · `R` road · `G` roundabout · `7` curb · `8` parking · `S` sidewalk · `B` bus station · `U` rideshare · `K` rental cars · `O` hotel · `M` AirTrain · `X` demolish |
 | Pan / zoom | drag empty space (or Shift-drag, right-drag) · scroll wheel · pinch on touch · in 3D: drag to orbit, right-drag to pan, scroll to zoom |
 | Detail | `A` airfield · `L` landside · `Enter` (or double-click a terminal) open a terminal · `Esc` step back out · zooming moves between them too |
 | Levels | `[` Ground · `]` Level 1 |
@@ -35,7 +35,16 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · drag a selected module to move it · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.17)
+## What's in the alpha (v0.18)
+
+- **Round and polygonal hubs (v0.18):** the halls where piers and concourses meet.
+  - **Hub tool (`0`).** Drag out from the centre. Choose Round, Hexagon or Octagon, from 60 to 400 m across; a polygon turns so a facet faces the way you drag.
+  - **It merges like everything else.** Overlap a concourse, a pier or security and the hub becomes part of that building. Start piers inside it and they join too, at any angle, so a hub with piers fanning out of it is one terminal. A hub that touches nothing links itself by people mover.
+  - **Inside, a hub is an atrium with shops round it.** A ring of lots lines the wall, 8–16 m deep, with tenants bidding for them like any concourse lot; every shopfront faces the atrium. No lot is carved where another building runs in: that stretch of wall is the way through. A hub under about 60 m is all atrium.
+  - **Gates.** A facet with a taxiway running parallel to it grows gates, with a holdroom band along that facet and the lots behind. A round hub offers twelve gate facets, a polygon one per side.
+  - **Drawn as what it is:** in the plan a round or faceted hall with a glazed lantern over the atrium and roof ribs; in 3D a drum (or prism) with the lantern on top.
+  - A hub can be moved, inspected and demolished like any module.
+
 
 - **Piers at any angle, and buildings that merge (v0.17):** the foundation for terminals that are not made of upright boxes.
   - **Pier tool (`9`).** Drag a line from where the pier starts to where it ends. It can run at any angle (it snaps to 5° steps), any length from 60 m, in a width of 40, 50 or 60 m.
@@ -239,7 +248,8 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 ## Known gaps (next up, per the roadmap)
 
 - Construction is instant; no build time or disruption yet.
-- Only concourses can turn, and only as straight piers. Round and polygonal halls (the hubs where piers meet at Mumbai T2 or Calgary) are next, on the same merge-by-overlap rule. A pier cannot yet be turned or stretched after it is built (demolish and redraw), halls and security stay upright, and the 3D view shows an opened pier as its roofed massing, not its interior. Where two buildings overlap, both roofs are drawn.
+- Shapes so far are straight piers at any angle and regular hubs (round, six or eight sides). There are no free-drawn outlines, curved piers or ellipses yet. A pier or hub cannot be turned, stretched or resized after it is built (demolish and redraw); halls and security stay upright. Where buildings overlap, both roofs are drawn, and in an opened terminal the part of a hub or pier outside the terminal's site is shown paler. In 3D an opened pier or hub shows as roofed massing, not its interior.
+- Gates on a round hub need a straight taxiway parallel to one of its twelve facets, so ringing a rotunda with aircraft takes a taxiway segment per facet; there is no curved taxilane.
 - A people mover is a single shuttle link between two concourses, always in a tunnel, with no landside leg: it does not yet run from a landside terminal building to an airside hall with security in between, loop through several stations, or carry bags (arriving bags still appear at the terminal's claim).
 - The one-drag terminal is one shape: a concourse bar, security and the hall in a line. It does not yet place itself at the right distance from a taxiway for gates (the dashed guides show where), size itself to demand, or add a car park.
 - Sound has no volume control beyond on and off, and no per-vehicle sounds (cars, the AirTrain, announcements).

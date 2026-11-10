@@ -11,7 +11,7 @@ import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
-import { turn, centreOf } from './shapes';
+import { turn, centreOf, hallPts, shaped } from './shapes';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -24,7 +24,7 @@ export function heatRamp(v: number, alpha = 1) {
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Ghost {
-  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect & { rot?: number }; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
+  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect & { rot?: number; sides?: number }; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
   way?: { kind: WayKind; cls: number; lanes: number }; snapA?: boolean; snapB?: boolean;
   extras?: { a: Pt; b: Pt; cls: number }[];
   /** v0.15: the modules a new terminal would be laid out with. */
@@ -111,7 +111,8 @@ export class Renderer {
     if (close) g.closePath();
   }
   /** The corners of a rectangle. A turned zone (v0.17) gives its turned corners; `pivot` turns a part of one about the zone's centre. */
-  rectPts(r: Rect & { rot?: number; pivot?: Pt }): Pt[] {
+  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number }): Pt[] {
+    if (r.sides) return hallPts(r);   // a round or polygonal hall (v0.18)
     const c = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
     if (!r.rot) return c;
     const pv = r.pivot ?? { x: r.x + r.w / 2, y: r.y + r.h / 2 };
@@ -808,7 +809,7 @@ export class Renderer {
   shadow(r: Rect, h: number) {
     const k = h * 0.55; const g = this.ctx;
     g.fillStyle = 'rgba(40,36,30,0.13)';
-    if ((r as { rot?: number }).rot) { this.path(this.rectPts(r).map(p => ({ x: p.x + k, y: p.y + k }))); g.fill(); return; }
+    if (shaped(r)) { this.path(this.rectPts(r).map(p => ({ x: p.x + k, y: p.y + k }))); g.fill(); return; }
     this.path([{ x: r.x + r.w, y: r.y }, { x: r.x + r.w + k, y: r.y + k }, { x: r.x + r.w + k, y: r.y + r.h + k }, { x: r.x + k, y: r.y + r.h + k }, { x: r.x, y: r.y + r.h }, { x: r.x + r.w, y: r.y + r.h }]); g.fill();
   }
 
@@ -902,7 +903,7 @@ export class Renderer {
   drawApronJoints(sim: Sim) {
     const z = this.cam.zoom; if (z < 0.9) return;
     const g = this.ctx; g.strokeStyle = 'rgba(40,36,30,0.07)'; g.lineWidth = 1; g.beginPath();
-    for (const ap of sim.d.aprons) { if (ap.zone.rot) continue; const r = ap.rect;
+    for (const ap of sim.d.aprons) { if (shaped(ap.zone)) continue; const r = ap.rect;
       for (let x = r.x + 7.5; x < r.x + r.w; x += 7.5) { const [x0, y0] = this.P(x, r.y), [x1, y1] = this.P(x, r.y + r.h); g.moveTo(x0, y0); g.lineTo(x1, y1); }
       for (let y = r.y + 7.5; y < r.y + r.h; y += 7.5) { const [x0, y0] = this.P(r.x, y), [x1, y1] = this.P(r.x + r.w, y); g.moveTo(x0, y0); g.lineTo(x1, y1); } }
     g.stroke();
@@ -949,8 +950,14 @@ export class Renderer {
     const z = this.cam.zoom; if (z < 0.2) return;
     const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
     g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
-    this.path(this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, pivot: centreOf(zn) }), top); g.stroke();
-    if (zn.type === 'concourse') {
+    this.path(this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, pivot: centreOf(zn), sides: zn.sides }), top); g.stroke();
+    if (zn.sides) {
+      // a hall's roof: a glazed lantern over the atrium, with ribs out to the wall
+      const R = Math.min(zn.w, zn.h) / 2; const c = centreOf(zn); const lr = R * 0.42;
+      const lan = this.rectPts({ x: c.x - lr, y: c.y - lr, w: 2 * lr, h: 2 * lr, rot: zn.rot, sides: zn.sides });
+      this.poly(lan, 'rgba(176,192,196,0.5)', top); g.strokeStyle = 'rgba(40,36,30,0.25)'; this.path(lan, top); g.stroke();
+      if (z > 0.5) { const out = hallPts(zn, -k, zn.sides >= 24 ? 16 : zn.sides), inn = hallPts({ ...zn, x: c.x - lr, y: c.y - lr, w: 2 * lr, h: 2 * lr }, 0, out.length); g.beginPath(); out.forEach((p, i) => { const [x0, y0] = this.P(p.x, p.y, top), [x1, y1] = this.P(inn[i].x, inn[i].y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); }); g.stroke(); }
+    } else if (zn.type === 'concourse') {
       const horiz = zn.w >= zn.h; const wC = Math.min(12, (horiz ? zn.h : zn.w) * 0.28);
       const r0 = horiz ? { x: zn.x + 8, y: zn.y + zn.h / 2 - wC / 2, w: zn.w - 16, h: wC } : { x: zn.x + zn.w / 2 - wC / 2, y: zn.y + 8, w: wC, h: zn.h - 16 };
       const r = { ...r0, rot: zn.rot, pivot: centreOf(zn) };
