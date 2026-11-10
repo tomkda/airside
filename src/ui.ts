@@ -67,6 +67,8 @@ const isWay = (t: Tool): t is WayKind => t === 'taxi' || t === 'road' || t === '
 /** `hold`: the sim stands still while a shape is being dragged (v0.19). */
 export interface Controls { speed: number; paused: boolean; hold?: boolean; save(): void; loadSample(): void; clearSite(): void }
 /** How far a grip can take a shape. */
+/** The floor a zone was paid for: a bent pier's or a hub's true outline, not its box. */
+const floorArea = (z: Zone) => (z.bend || z.sides ? polyArea(zonePts(z)) : z.w * z.h);
 const GRIP: GripLimits = { minLen: PIER.minLen, minWide: 30, maxWide: 120, minDia: HALL.minDia, maxDia: HALL.maxDia, snapDeg: PIER.snapDeg };
 
 export class UI {
@@ -418,10 +420,12 @@ export class UI {
     if (kind === 'taxi') {
       for (const r of this.world.runways) { consider(r.a, 4); consider(r.b, 4); consider(onSeg(r.a, r.b), 2); }
       for (const gd of this.sim.d.gateGuides) {
+        if (gd.curved) continue;   // no straight taxiway runs along a curved wall
         const a = { x: gd.a.x + gd.out.x * gd.ideal, y: gd.a.y + gd.out.y * gd.ideal }, b = { x: gd.b.x + gd.out.x * gd.ideal, y: gd.b.y + gd.out.y * gd.ideal };
         consider(a, 3); consider(b, 3); consider(onSeg(a, b), 3);
       }
       for (const ap of this.aprons) {
+        if (ap.pts.length > 4) continue;   // a curved apron's taxilane is not the line between its ends
         if (inRect(p, ap.rect, tol)) consider(onSeg(ap.laneA, ap.laneB), 3);
         consider(ap.laneA, 3); consider(ap.laneB, 3);
       }
@@ -1253,13 +1257,13 @@ export class UI {
     let refund = 0, what = '';
     if (h.kind === 'site') {
       const st = h.site; const mine = this.world.zones.filter(z => z.site === st.id || (z.site === undefined && isTerminalModule(z) && inRect(center4(z), st)));
-      refund = mine.reduce((t, z) => t + area(z) * ZONES[z.type].costPerM2 * 0.4, 0); what = this.siteName(st);
+      refund = mine.reduce((t, z) => t + floorArea(z) * ZONES[z.type].costPerM2 * 0.4, 0); what = this.siteName(st);
       this.world.zones = this.world.zones.filter(z => !mine.includes(z));
       this.world.sites = (this.world.sites ?? []).filter(s => s !== st);
       if (this.ren.focus === st.id) this.setLod('landside', null);
     } else if (h.kind === 'zone') {
       const z = h.zone; const tw = this.twin(z);
-      refund = area(z) * ZONES[z.type].costPerM2 * 0.4 + (tw ? area(tw) * ZONES[tw.type].costPerM2 * 0.4 : 0); what = tw ? 'Hall (check-in and baggage claim)' : ZONES[z.type].label;
+      refund = floorArea(z) * ZONES[z.type].costPerM2 * 0.4 + (tw ? floorArea(tw) * ZONES[tw.type].costPerM2 * 0.4 : 0); what = tw ? 'Hall (check-in and baggage claim)' : ZONES[z.type].label;
       this.world.zones = this.world.zones.filter(q => q !== z && q !== tw);
     } else if (h.kind === 'way') {
       const w = h.way; refund = wayLen(w) * wayCostPerM(w.kind, w.cls, w.lanes) * 0.4; what = wayName(w.kind);
@@ -1470,7 +1474,7 @@ export class UI {
       stats = (z.auto ? `<dt>Grown by</dt><dd>the road ${n0(z.auto.gap)} m off the ${ZONES[this.sim.d.zones.find(m => m.id === z.auto!.module)?.type ?? 'checkin'].short.toLowerCase()} face · ${deck}</dd>` : '') + `<dt>Bays in use</dt><dd>${proc.bays?.filter(Boolean).length ?? 0} of ${u.count}</dd><dt>Cars queuing</dt><dd class="${q > 8 ? 'bad' : ''}">${q}</dd>
         <dt>Road access</dt><dd class="${s.d.roadOK.has(z.id) ? '' : 'bad'}">${s.d.roadOK.has(z.id) ? 'Connected' : 'None: draw a road to its edge'}</dd>`;
     } else if (z.type === 'parking') {
-      const fl = z.floors ?? 1; const deckCost = area(z) * GROWTH.deckCostPerM2;
+      const fl = z.floors ?? 1; const deckCost = floorArea(z) * GROWTH.deckCostPerM2;
       stats = `<dt>Decks</dt><dd>${s.has('garage') ? `<span class="stepper"><button class="step" data-act="deck-" aria-label="Fewer decks">−</button><b>${fl}</b><button class="step" data-act="deck+" aria-label="More decks">+</button></span>
           <span class="muted">${fl > 1 ? 'garage' : 'surface lot'} · ${money(deckCost)} a deck</span>` : `1 <span class="muted small">· decks unlock at ${n0(UNLOCKS.find(u => u.id === 'garage')!.at)} departures a day</span>`}</dd>
         <dt>Stalls used</dt><dd>${n0(s.lotUsed)} of ${n0(s.lotCapacity())} (all lots)</dd>
@@ -1516,12 +1520,12 @@ export class UI {
         <dt>Customers now</dt><dd>${inNow}</dd>
         <dt>Today so far</dt><dd>${n0(day.visits)} visits · ${money(day.rev)}</dd>
         ${this.dutyFreeHTML(z)}
-        <dt>Mezzanine</dt><dd>${s.has('mezz') ? `<div class="seg"><button data-act="mezz0" aria-pressed="${!z.mezz}">None</button><button data-act="mezz1" aria-pressed="${!!z.mezz}">Lounge floor${z.mezz ? '' : ` · ${money(area(z) * GROWTH.mezzCostPerM2 * 0.3)}`}</button></div>
+        <dt>Mezzanine</dt><dd>${s.has('mezz') ? `<div class="seg"><button data-act="mezz0" aria-pressed="${!z.mezz}">None</button><button data-act="mezz1" aria-pressed="${!!z.mezz}">Lounge floor${z.mezz ? '' : ` · ${money(floorArea(z) * GROWTH.mezzCostPerM2 * 0.3)}`}</button></div>
           <span class="muted small">A floor over the spine: one more lounge, and every lounge holds twice as many.</span>` : `<span class="muted small">Unlocks at ${n0(UNLOCKS.find(u => u.id === 'mezz')!.at)} departures a day.</span>`}</dd>
         <dt></dt><dd class="muted small">Every gate claims ${Math.round(holdDepth(z.cls ?? 2))} m of holdroom behind its frontage. Remove gates on a side to free that wall for window restaurants and lounges; widen the concourse to fit both.</dd>
         ${this.lotHTML(z, sel.key)}`;
     }
-    const upCost = area(z) * def.tierCostPerM2;
+    const upCost = floorArea(z) * def.tierCostPerM2;
     const clsSeg = z.type === 'concourse' ? `<div class="tier"><span class="label">Gates sized for</span><div class="seg">${CLASSES.map(c =>
       `<button data-act="cls${c.cls}" aria-pressed="${(z.cls ?? 2) === c.cls}">${c.example}</button>`).join('')}</div>
       <span class="muted small">${CLASSES[z.cls ?? 2].gateSpacing} m per gate · taxiway ${standDepth(z.cls ?? 2)}–${sideReach(z.cls ?? 2)} m from the building. Bigger gates fit fewer per side; a closer taxiway gets smaller gates.</span></div>` : '';
@@ -1529,7 +1533,7 @@ export class UI {
       <h2>${def.label} <span class="lvl">${LEVELS[z.level].short}</span></h2>
       <p class="muted">${def.blurb}</p>
       <dl class="kv">
-        <dt>Size</dt><dd>${arcOf(z) ? `${n0(arcOf(z)!.La)} m round the bend × ${n0(z.h)} m · radius ${n0(arcOf(z)!.R)} m · ${n0(polyArea(zonePts(z)))} m²` : `${n0(z.w)} × ${n0(z.h)} m · ${n0(area(z))} m²`}</dd>
+        <dt>Size</dt><dd>${arcOf(z) ? `${n0(arcOf(z)!.La)} m round the bend × ${n0(z.h)} m · radius ${n0(arcOf(z)!.R)} m · ${n0(polyArea(zonePts(z)))} m²` : `${n0(z.w)} × ${n0(z.h)} m · ${n0(floorArea(z))} m²`}</dd>
         ${(() => { const T = s.d.termOf.get(z.id); return T ? `<dt>Terminal</dt><dd class="${T.active ? '' : 'bad'}">${T.name} · ${T.active ? 'open' : 'closed'}</dd>` : ''; })()}
         ${z.type === 'concourse' ? this.gateSidesHTML(z) : ''}
         ${u.max && z.type !== 'concourse' && !z.auto ? `<dt>${z.type === 'claim' ? 'Carousels built' : def.unit[0].toUpperCase() + def.unit.slice(1)}</dt><dd>
@@ -1545,7 +1549,7 @@ export class UI {
           <button data-act="tier1" aria-pressed="${z.tier === 1}">${def.tierNames[1]}${z.tier === 0 ? ` · ${money(upCost)}` : ''}</button>
         </div>
       </div>
-      <button class="btn danger" data-act="demolish">Demolish (${money(area(z) * def.costPerM2 * 0.4)} back)</button>`}`;
+      <button class="btn danger" data-act="demolish">Demolish (${money(floorArea(z) * def.costPerM2 * 0.4)} back)</button>`}`;
   }
 
   /** Walk-through duty free: only where the concourse's entry wall is shared with security. */
@@ -1821,16 +1825,16 @@ export class UI {
     else if ((a === 'units-' || a === 'units+') && z) {
       const u = s.d.units.get(z.id)!; z.units = clamp(u.count + (a === 'units+' ? 1 : -1), 1, u.max); this.changed();
     } else if (a === 'tier1' && z && z.tier === 0) {
-      if (!pay(area(z) * ZONES[z.type].tierCostPerM2)) return;
+      if (!pay(floorArea(z) * ZONES[z.type].tierCostPerM2)) return;
       z.tier = 1; this.toast(`${ZONES[z.type].short} upgraded: ${ZONES[z.type].tierNames[1]}`); this.changed();
     } else if (a === 'tier0' && z && z.tier === 1) { z.tier = 0; this.changed(); }
     else if ((a === 'deck+' || a === 'deck-') && z && z.type === 'parking') {
       const fl = z.floors ?? 1; const nf = clamp(fl + (a === 'deck+' ? 1 : -1), 1, GROWTH.maxDecks);
-      if (nf > fl && !pay(area(z) * GROWTH.deckCostPerM2)) return;
+      if (nf > fl && !pay(floorArea(z) * GROWTH.deckCostPerM2)) return;
       if (nf !== fl) { z.floors = nf; this.changed(); this.toast(nf > 1 ? `Garage: ${nf} decks, ${n0(s.d.units.get(z.id)?.count ?? 0)} stalls` : 'Back to a surface lot'); }
     }
     else if ((a === 'mezz0' || a === 'mezz1') && z && z.type === 'concourse') {
-      if (a === 'mezz1' && !z.mezz) { if (!pay(area(z) * GROWTH.mezzCostPerM2 * 0.3)) return; z.mezz = true; this.toast('Mezzanine added over the spine: one more lounge, double lounge capacity'); }
+      if (a === 'mezz1' && !z.mezz) { if (!pay(floorArea(z) * GROWTH.mezzCostPerM2 * 0.3)) return; z.mezz = true; this.toast('Mezzanine added over the spine: one more lounge, double lounge capacity'); }
       else if (a === 'mezz0') z.mezz = false;
       this.changed();
     }
@@ -1840,7 +1844,7 @@ export class UI {
     }
     else if (a.startsWith('cls') && z) {
       const c = Number(a.slice(3)) as Cls; const cur = (z.cls ?? 2) as number;
-      if (c > cur && !pay((c - cur) * area(z) * 350)) return;
+      if (c > cur && !pay((c - cur) * floorArea(z) * 350)) return;
       z.cls = c; z.units = undefined; this.changed();
       this.toast(`Gates resized for ${CLASSES[c].example}: ${s.d.units.get(z.id)?.count ?? 0} gates`);
     } else if (a === 'taxiF' && w && w.cls < 3) {

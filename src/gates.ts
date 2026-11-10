@@ -10,7 +10,7 @@ import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rect
 import { APRON, CLASSES, Cls, SITE, TAXI_CLASSES } from './config';
 import { roundOuter, Round } from './ways';
 import type { World, Zone, Way, Apron, Gate, RunwayInfo } from './world';
-import { zonePts, zoneParts, toWorld, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts, arcOf, frameOf } from './shapes';
+import { zonePts, zoneParts, toWorld, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts, arcOf, frameOf, inZone } from './shapes';
 import { pointInPoly } from './geom';
 
 /** n, e, s, w for a rectangle (of its own frame); `f0.`, `f1.` … for the facets of a round or polygonal hall (v0.18). */
@@ -252,7 +252,6 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       const fwd = sd.side === 'n' ? 1 : -1;                      // sides run clockwise: north west to east, south east to west
       const u0 = sd.side === 'n' ? F.x : F.x + F.w;
       // landside: a processing module stands against this wall
-      const body = zoneParts(z);
       const against = (o: { z: Zone; pts: Pt[] }) => { for (let k = 0; k <= 12; k++) { const p = P(F.x + (F.w * k) / 12, 3); if (pointInPoly(p, o.pts)) return true; } return false; };
       if (outlines.some(o => o.z.id !== z.id && LANDSIDE.has(o.z.type) && against(o))) { guide.land = true; continue; }
       for (let i = 0; i < n; i++) {
@@ -262,9 +261,12 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
         const tan = norm(sub(cell[2], cell[3]));
         const cb = polyBox(cell); const hitsBox = (r: Rect, m = 0) => r.x - m <= cb.x + cb.w && r.x + r.w + m >= cb.x && r.y - m <= cb.y + cb.h && r.y + r.h + m >= cb.y;
         const over = (pts: Pt[]) => { const c = polyClip(pts, cell); return c.length >= 3 && polyArea(c) > 3; };
+        // its own building is tested exactly (by `inZone`), at points through the cell beyond the wall: the outline is
+        // only chords of the true wall, and clipping against it would find the wall itself in the way
+        const own = () => { for (const d of [6, D / 3, (2 * D) / 3, D]) for (const k of [-0.5, 0, 0.5]) if (inZone(P(u + 2 * k * h * 0.96, d), z)) return true; return false; };
         const free = [cell[2], cell[3], front].every(p => onSite(p) && !nearRunway(p))
           && !outlines.some(o => o.z.id !== z.id && hitsBox(o.box) && zoneParts(o.z).some(over))
-          && !body.some(over)                                    // a tight horseshoe: its own other arm is in the way
+          && !own()                                              // a tight horseshoe: its own other arm is in the way
           && !aprons.some(ap => hitsBox(ap.rect) && over(ap.pts))
           && !keep.some(k => hitsBox({ x: Math.min(k.a.x, k.b.x), y: Math.min(k.a.y, k.b.y), w: Math.abs(k.b.x - k.a.x), h: Math.abs(k.b.y - k.a.y) }, 8) && over(fat(k.a, k.b, 8)))
           && !taxis.some(w => over(fat(w.a, w.b, (w.cls >= 3 ? TAXI_CLASSES[1].width : TAXI_CLASSES[0].width) / 2 + 4)))

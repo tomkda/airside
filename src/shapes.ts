@@ -62,7 +62,8 @@ export function maxBend(w: number, h: number): number {
   return Math.max(0, Math.min(half * 0.85, Rm > half ? Rm - Math.sqrt(Rm * Rm - half * half) : half));
 }
 /** How many straight pieces a bent bar is drawn and tested with. */
-const arcSteps = (A: Arc) => Math.max(3, Math.min(48, Math.ceil((2 * A.th) / 0.12)));
+/** (Set by how far a straight piece may stand off the true curve: 15 cm at the outer wall, whatever the radius.) */
+const arcSteps = (A: Arc, h = 60) => Math.max(3, Math.min(96, Math.ceil((2 * A.th) / (2 * Math.acos(1 - 0.15 / (A.R + h / 2))))));
 export function turn(p: Pt, c: Pt, ang: number): Pt {
   const cs = Math.cos(ang), sn = Math.sin(ang); const dx = p.x - c.x, dy = p.y - c.y;
   return { x: c.x + dx * cs - dy * sn, y: c.y + dx * sn + dy * cs };
@@ -99,7 +100,8 @@ export function bendPath(z: Shaped, pts: Pt[], closed = false): Pt[] {
 /** A bent bar as a row of short turned rectangles, each standing on its own centre: what the 3D model is built from. */
 export function barPieces(z: Shaped): Shaped[] {
   const A = arcOf(z); if (!A) return [z];
-  const n = arcSteps(A); const F = frameOf(z); const out: Shaped[] = [];
+  // (the model can be coarser than the outline: a length every 7 degrees or so, and never shorter than the bar is wide if that can be helped)
+  const n = Math.max(3, Math.min(48, Math.ceil((2 * A.th) / 0.12))); const F = frameOf(z); const out: Shaped[] = [];
   for (let i = 0; i < n; i++) {
     const u = F.x + ((i + 0.5) / n) * F.w; const m = toWorld(z, { x: u, y: F.y + F.h / 2 });
     const phi = (((i + 0.5) / n) - 0.5) * 2 * A.th; const w = ((A.R + z.h / 2) * 2 * A.th) / n + 0.4;
@@ -116,7 +118,7 @@ export function zonePts(z: Shaped): Pt[] {
   const A = arcOf(z);
   if (A) {
     // a bent bar: its north wall west to east, then its south wall back
-    const n = arcSteps(A); const F = frameOf(z); const out: Pt[] = [];
+    const n = arcSteps(A, z.h); const F = frameOf(z); const out: Pt[] = [];
     for (let i = 0; i <= n; i++) out.push(toWorld(z, { x: F.x + (i / n) * F.w, y: F.y }));
     for (let i = n; i >= 0; i--) out.push(toWorld(z, { x: F.x + (i / n) * F.w, y: F.y + F.h }));
     return out;

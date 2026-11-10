@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
 import { derive, canPlacePier } from './src/world';
+import * as W0 from './src/world';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
 import { inZone, zonePts, arcOf, frameOf, toLocal, toWorld, polyArea, regrip, gripsOf, maxBend, minBendRadius, heart } from './src/shapes';
@@ -58,6 +59,14 @@ for (const bend of [120, -120]) {
   const mine = d.gates.filter(g => g.zone.id === z.id);
   console.log('a short pier bent as far as it goes (radius', Math.round(arcOf(z).R) + ' m):', mine.length, 'gates,', mine.filter(g => g.key[0] === 'n').length, 'on the inside |', d.gateGuides.find(g => g.zone.id === z.id && g.side === 'n')?.note ?? '');
   check('no stands on the inside of a bend too tight for them', mine.filter(g => g.key[0] === 'n').length === 0 && mine.length > 0); }
+{ // gentle bends and big aircraft: the building's own wall must never count as an obstacle to its own stands
+  const { newWorld } = W0; const count = (bend, cls, w0 = 600) => { const w = newWorld(); w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b: { x: 4500, y: 2300 } });
+    const z = { id: w.nextId++, type: 'concourse', level: 1, x: 2700, y: 2900, w: w0, h: 50, tier: 0, cls, bend }; w.zones.push(z);
+    const g = derive(w).gates.filter(q => q.zone.id === z.id); return { n: g.filter(q => q.key[0] === 'n').length, s: g.filter(q => q.key[0] === 's').length }; };
+  const flat = count(undefined, 2), g8 = count(8, 2), g30 = count(30, 2), big = count(120, 3, 700), bigFlat = count(undefined, 3, 700);
+  console.log('a 600 m bar, A320 stands a side: straight', flat.n + '/' + flat.s, '| bent 8 m', g8.n + '/' + g8.s, '| bent 30 m', g30.n + '/' + g30.s, '|| a 700 m A380 bar: straight', bigFlat.n + '/' + bigFlat.s, '| bent 120 m', big.n + '/' + big.s);
+  check('a gentle bend keeps about as many stands as a straight bar', Math.abs(g8.n - flat.n) <= 1 && Math.abs(g8.s - flat.s) <= 1 && g30.n >= flat.n - 2 && g30.s >= flat.s);
+  check('A380 stands on both walls of a bent bar', big.s >= bigFlat.s && big.n >= 1); }
 { // a straight pier drawn into the bent one joins it
   const { w, z } = mk(120); const tip = toWorld(z, { x: frameOf(z).x + frameOf(z).w - 20, y: z.y + z.h / 2 });
   const p2 = { id: w.nextId++, type: 'concourse', level: 1, x: tip.x - 10, y: tip.y - 25, w: 300, h: 50, tier: 0, cls: 2, rot: -0.9 }; w.zones.push(p2);

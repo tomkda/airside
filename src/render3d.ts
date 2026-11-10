@@ -437,7 +437,7 @@ export class Renderer3D {
         // v0.20: a bent pier is modelled as a row of short straight lengths, each turned to the curve
         for (const q of barPieces(z)) {
           const n0 = [solid.length, glazing.length, roofs.length];
-          massing({ ...z, x: q.x, y: q.y, w: q.w, h: q.h, rot: undefined, bend: undefined }, L.z0, L.z1, sel, solid, glazing, roofs);
+          massing({ ...z, x: q.x, y: q.y, w: q.w, h: q.h, rot: undefined, bend: undefined }, L.z0, L.z1, sel, solid, glazing, roofs, true);
           const pv = centreOf(q); [solid, glazing, roofs].forEach((arr, k) => { for (let i = n0[k]; i < arr.length; i++) { arr[i].rot = q.rot; arr[i].px = pv.x; arr[i].py = pv.y; } });
         }
         continue;
@@ -701,17 +701,18 @@ function mergeTwo(a: THREE.BufferGeometry, b: THREE.BufferGeometry) {
  * A module as an architectural model: a dark plinth, a glazed band with mullions every 7.5 m, a white roof slab
  * with a slight overhang, and on top either a clerestory along a concourse's spine or a couple of plant enclosures.
  */
-function massing(z: Zone, z0: number, z1: number, sel: boolean, solid: Box[], glazing: Box[], roofs: Box[]) {
+function massing(z: Zone, z0: number, z1: number, sel: boolean, solid: Box[], glazing: Box[], roofs: Box[], piece = false) {
   const top = z1 - 0.4;
   solid.push({ ...z, z0, z1: z0 + 0.7, c: PLINTH });
   glazing.push({ x: z.x + 0.6, y: z.y + 0.6, w: z.w - 1.2, h: z.h - 1.2, z0: z0 + 0.7, z1: top - 1.1, c: sel ? '#8FB0C6' : GLASS[z.type] });
   roofs.push({ x: z.x - 0.8, y: z.y - 0.8, w: z.w + 1.6, h: z.h + 1.6, z0: top - 1.1, z1: top, c: sel ? '#CFE0EA' : ROOF });
   const mull = (x: number, y: number) => solid.push({ x: x - 0.18, y: y - 0.18, w: 0.36, h: 0.36, z0: z0 + 0.7, z1: top - 1.1, c: MULLION });
   for (let x = z.x + 0.6; x <= z.x + z.w - 0.5; x += 7.5) { mull(x, z.y + 0.6); mull(x, z.y + z.h - 0.6); }
-  for (let y = z.y + 0.6 + 7.5; y < z.y + z.h - 0.6; y += 7.5) { mull(z.x + 0.6, y); mull(z.x + z.w - 0.6, y); }
+  if (!piece) for (let y = z.y + 0.6 + 7.5; y < z.y + z.h - 0.6; y += 7.5) { mull(z.x + 0.6, y); mull(z.x + z.w - 0.6, y); }
   if (z.type === 'concourse') {
-    const horiz = z.w >= z.h; const wC = Math.min(12, (horiz ? z.h : z.w) * 0.28);
-    const r: Rect = horiz ? { x: z.x + 8, y: z.y + z.h / 2 - wC / 2, w: z.w - 16, h: wC } : { x: z.x + z.w / 2 - wC / 2, y: z.y + 8, w: wC, h: z.h - 16 };
+    // one length of a bent pier: its clerestory runs along it whatever its proportions, end to end, to meet the next
+    const horiz = piece || z.w >= z.h; const wC = Math.min(12, (horiz ? z.h : z.w) * 0.28);
+    const r: Rect = piece ? { x: z.x - 0.2, y: z.y + z.h / 2 - wC / 2, w: z.w + 0.4, h: wC } : horiz ? { x: z.x + 8, y: z.y + z.h / 2 - wC / 2, w: z.w - 16, h: wC } : { x: z.x + z.w / 2 - wC / 2, y: z.y + 8, w: wC, h: z.h - 16 };
     if (z.mezz) { const m: Rect = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; glazing.push({ ...m, z0: top, z1: top + 4.2, c: GLASS.concourse }); roofs.push({ x: m.x - 0.7, y: m.y - 0.7, w: m.w + 1.4, h: m.h + 1.4, z0: top + 4.2, z1: top + 4.8, c: ROOF }); return; }
     glazing.push({ ...r, z0: top, z1: top + 2.2, c: GLASS.concourse });
     roofs.push({ x: r.x - 0.5, y: r.y - 0.5, w: r.w + 1, h: r.h + 1, z0: top + 2.2, z1: top + 2.7, c: ROOF });

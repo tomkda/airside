@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend } from './shapes';
+import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
@@ -466,13 +466,14 @@ export function derive(source: World): Derived {
       //  its entry and its windowless walls where they really are)
       // (v0.20: a bent pier too: its frame is as long as its arc, and what is laid out on it is carried onto the curve)
       const zl = { ...z, ...frameOf(z), rot: undefined, bend: undefined };
-      const near = zonePts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot, bend: z.bend });   // the pier's outline, 2 m out
+      const nearParts = zoneParts({ x: z.x - 2, y: z.y - 2, w: z.w + 4, h: z.h + 4, rot: z.rot, bend: z.bend });   // the pier's outline, 2 m out
       const local: World = { ...world, zones: world.zones.map(o => {
         if (o.id === z.id) return zl;
         // only the part of a neighbour that is at the pier counts, or its box would wall off stretches it never touches;
         // one that is nowhere near is kept as a dot at its centre, for "which end faces security"
-        const part = polyClip(zonePts(o), near); const c = toLocal(z, centreOf(o));
-        const box = part.length >= 3 && polyArea(part) > 1 ? polyBox(part.map(p => toLocal(z, p))) : { x: c.x - 0.5, y: c.y - 0.5, w: 1, h: 1 };
+        // (a bent pier's outline is not convex, so the neighbour is clipped wedge by wedge and the pieces boxed together)
+        const part = nearParts.flatMap(q => { const c0 = polyClip(zonePts(o), q); return c0.length >= 3 && polyArea(c0) > 1 ? c0 : []; }); const c = toLocal(z, heart(o));
+        const box = part.length >= 3 ? polyBox(part.map(p => toLocal(z, p))) : { x: c.x - 0.5, y: c.y - 0.5, w: 1, h: 1 };
         return { ...o, ...box, rot: undefined, sides: undefined };
       }) };
       C = carveConcourse(zl, local, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
@@ -700,18 +701,20 @@ export function derive(source: World): Derived {
   const bent = zs.filter(z => arcOf(z));
   const thread = (from: Pt, lv0: Level, r: Route): Route => {
     if (!bent.length) return r;
-    const pts: Pt[] = [], lvs: Level[] = []; let a = from, la = lv0;
+    const pts: Pt[] = [], lvs: Level[] = []; let a = from, la = lv0; let extra = 0;
     for (let i = 0; i < r.pts.length; i++) {
       const b = r.pts[i], lb = r.lvs[i];
       const z = la === lb ? bent.find(q => q.level === la && inZone(a, q, 1) && inZone(b, q, 1)) : undefined;
       if (z) {
         const ua = toLocal(z, a), ub = toLocal(z, b); const F = frameOf(z); const k = Math.floor(Math.abs(ub.x - ua.x) / 24);
         // drift to the centreline over the first and last stretch, and keep to it in between
-        for (let j = 1; j <= k; j++) { const t = j / (k + 1); const w = Math.min(1, t * (k + 1) / 2, (1 - t) * (k + 1) / 2); const y0 = ua.y + (ub.y - ua.y) * t; pts.push(toWorld(z, { x: ua.x + (ub.x - ua.x) * t, y: y0 + (F.y + F.h / 2 - y0) * w })); lvs.push(lb); }
+        let prev = a, walked = 0;
+        for (let j = 1; j <= k; j++) { const t = j / (k + 1); const w = Math.min(1, t * (k + 1) / 2, (1 - t) * (k + 1) / 2); const y0 = ua.y + (ub.y - ua.y) * t; const q = toWorld(z, { x: ua.x + (ub.x - ua.x) * t, y: y0 + (F.y + F.h / 2 - y0) * w }); pts.push(q); lvs.push(lb); walked += dist(prev, q); prev = q; }
+        if (k) extra += walked + dist(prev, b) - dist(a, b);   // the walk round the bend is longer than the chord the route was costed on
       }
       pts.push(b); lvs.push(lb); a = b; la = lb;
     }
-    return { pts, lvs, len: r.len };
+    return { pts, lvs, len: r.len + extra };
   };
   const pedRoute = (p: Pt, lv: Level, q: Pt, lvq: Level): Route | null => {
     const za = zoneAt(p, lv), zb = zoneAt(q, lvq);
