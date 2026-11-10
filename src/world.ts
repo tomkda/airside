@@ -15,7 +15,7 @@ import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, se
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
 import { letLots } from './commerce';
-import { Shell, shellsOf } from './shell';
+import { Shell, shellsOf, Junction, junctionsOf, inJunction } from './shell';
 
 export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
@@ -191,6 +191,8 @@ export interface Derived {
   runways: RunwayInfo[]; aprons: Apron[]; gates: Gate[];
   /** v0.23: each building's airside as one rounded outline (shell.ts), and which shell a concourse piece belongs to. */
   shells: Shell[]; shellOf: Map<number, Shell>;
+  /** v0.25: the spaces a building of several pieces keeps for itself (halls, food courts, gardens, courtyards). */
+  junctions: Junction[];
   /** v0.19: paving in the corners where self-laid aprons on neighbouring faces meet. */
   pads: Pt[][];
   air: Net; airExtra: { a: Pt; b: Pt; cls: number }[]; taxiLabels: TaxiLabel[]; taxiLetter: Map<number, string>;
@@ -453,6 +455,7 @@ export function derive(source: World): Derived {
   // v0.23: one outline per building; its pieces share a gate letter and one run of gate numbers
   const shells = shellsOf(source.zones); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
   const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
+  const junctions = junctionsOf(shells, source.zones);
   const shellWalks = shells.filter(sh => sh.ids.length > 1).map(sh => ({ ids: sh.ids, outer: sh.outer, rings: sh.rings }));
   const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group, walks: shellWalks });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
@@ -504,6 +507,11 @@ export function derive(source: World): Derived {
     const z = world.zones.find(q => q.id === id)!;
     const into = world.zones.filter(o => o.id !== id && o.level === z.level && (o.type === 'concourse' || o.type === 'security') && (shaped(o) || shaped(z)) && zonesOverlap(z, o, 24));
     if (into.length) shops.set(id, list.filter(sh => !into.some(o => inZone(polyCentre(sh.pts), o))));
+  }
+  // v0.25: and no lot stands in a space the building keeps for itself (a junction hall, food court or garden)
+  if (junctions.length) for (const [id, list] of shops) {
+    const z = world.zones.find(q => q.id === id)!; const js = junctions.filter(j => j.level === z.level && j.kind !== 'court'); if (!js.length) continue;
+    shops.set(id, list.filter(sh => { const c = polyCentre(sh.pts); return !js.some(j => inJunction(c, j)); }));
   }
   // ---- Tenants bid for the lots by footfall, visibility, dwell and position (see commerce.ts); best lots lease first.
   letLots(source, shops, budgets);
@@ -937,7 +945,7 @@ export function derive(source: World): Derived {
   // the same line about the same building is said once (two of its aprons can earn the same remark)
   { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {
-    runways, aprons, gates, shells, shellOf, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
+    runways, aprons, gates, shells, shellOf, junctions, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,

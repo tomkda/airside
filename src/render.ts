@@ -663,6 +663,33 @@ export class Renderer {
       } else if (isActive) this.roofPlan(zn, top);
       this.selectOutline(zn, top);
     }
+    // v0.25: the spaces a building keeps for itself where its pieces meet: a hall, a food court or a garden, and
+    // courtyards open to the sky. Drawn over the floor, under the labels.
+    if (!tilted && this.lod !== 'airfield') for (const j of sim.d.junctions) {
+      if (j.level !== active) continue;
+      const court = j.kind === 'court', green = court || j.kind === 'garden'; const zz = this.cam.zoom;
+      g.beginPath();
+      for (const r of j.rings) { r.forEach((p, i) => { const [x, y] = this.P(p.x, p.y); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); }
+      g.fillStyle = court ? 'rgba(150,160,112,0.85)' : green ? 'rgba(168,172,128,0.55)' : j.kind === 'food' ? 'rgba(214,196,160,0.6)' : 'rgba(222,210,184,0.6)'; g.fill('evenodd');
+      if (court) { g.strokeStyle = 'rgba(40,36,30,0.5)'; g.lineWidth = 1.2; g.stroke(); }
+      else if (this.lod === 'terminal') { g.setLineDash([3, 3]); g.strokeStyle = 'rgba(40,36,30,0.28)'; g.lineWidth = 0.8; g.stroke(); g.setLineDash([]); }
+      if (zz < 0.5) continue;
+      for (const t of j.seeds) {
+        const [x, y] = this.P(t.x, t.y);
+        if (t.t === 'tree') {
+          const r = 2.6 * t.s * zz;
+          g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fillStyle = 'rgba(120,134,86,0.75)'; g.fill(); g.strokeStyle = 'rgba(70,82,52,0.7)'; g.lineWidth = 0.7; g.stroke();
+          if (zz > 1.2) { g.beginPath(); g.arc(x, y, 0.35 * zz, 0, Math.PI * 2); g.fillStyle = 'rgba(70,82,52,0.8)'; g.fill(); }
+        } else if (this.lod === 'terminal') {
+          const r = 0.6 * zz; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fillStyle = 'rgba(248,240,224,0.95)'; g.fill(); g.strokeStyle = 'rgba(40,36,30,0.5)'; g.lineWidth = 0.6; g.stroke();
+          if (zz > 1.6) { g.fillStyle = 'rgba(60,54,46,0.7)'; for (const [dx, dy] of [[1.1, 0], [-1.1, 0], [0, 1.1], [0, -1.1]]) g.fillRect(x + dx * zz - 0.28 * zz, y + dy * zz - 0.28 * zz, 0.56 * zz, 0.56 * zz); }
+        }
+      }
+      if (this.lod === 'terminal' && zz > 0.9 && j.area > 150) {
+        const name = court ? 'COURTYARD' : j.kind === 'garden' ? 'GARDEN' : j.kind === 'food' ? 'FOOD COURT' : 'HALL';
+        this.label(name, j.c, 0, 9, 'rgba(40,36,30,0.75)', { weight: 600, spacing: 1.5, align: 'center', bg: 'rgba(240,232,214,0.8)' });
+      }
+    }
     for (const zn of zones) if (zn.level > active && this.lod === 'terminal') {
       const top = tilted ? LEVELS[zn.level].z1 : 0;
       g.setLineDash([5, 4]); g.strokeStyle = 'rgba(40,36,30,0.45)'; g.lineWidth = 1; this.path(this.rectPts(zn), top); g.stroke(); g.setLineDash([]);
