@@ -56,23 +56,26 @@ export function roadPlan(d: Derived): RoadPlan {
     segs.push({ a, b, w: widthOf(e.kind, e.lanes), lanes: e.kind === 'hwy' ? 6 : e.lanes, hwy: e.kind === 'hwy', ref: e.ref, eid: e.id, trimA: Math.min(setback[e.u], e.len * 0.45), trimB: Math.min(setback[e.v], e.len * 0.45) });
   }
   // ---- paths: chain edges of one road through the nodes where nothing else joins
-  const through = (n: number) => { const a = net.adj[n]; return a.length === 2 && net.edges[a[0]].ref === net.edges[a[1]].ref && net.edges[a[0]].kind === net.edges[a[1]].kind && !isRingRef(net.edges[a[0]].ref); };
+  // (v0.28: a deck ramp leaving or joining a road does not break it: the road, and its median, run on past the ramp)
+  const legsOf = (n: number, ramp: boolean) => ramp ? net.adj[n] : net.adj[n].filter(k => !d.rampRefs.has(net.edges[k].ref));
+  const through = (n: number, ramp = false) => { const a = legsOf(n, ramp); return a.length === 2 && net.edges[a[0]].ref === net.edges[a[1]].ref && net.edges[a[0]].kind === net.edges[a[1]].kind && !isRingRef(net.edges[a[0]].ref); };
   const paths: RoadPath[] = []; const seen = new Uint8Array(net.edges.length);
   for (const e0 of net.edges) {
     if (seen[e0.id] || isRingRef(e0.ref)) continue;
+    const rp = d.rampRefs.has(e0.ref);
     const walk = (from: number, eid: number) => {   // nodes after `from`, following the chain
       const out: number[] = []; let n = from, k = eid;
       for (let guard = 0; guard < 4000; guard++) {
         const e = net.edges[k]; seen[k] = 1; n = e.u === n ? e.v : e.u; out.push(n);
-        if (!through(n)) break;
-        const nx = net.adj[n][0] === k ? net.adj[n][1] : net.adj[n][0];
+        if (!through(n, rp)) break;
+        const lg = legsOf(n, rp); const nx = lg[0] === k ? lg[1] : lg[0];
         if (seen[nx]) break; k = nx;
       }
       return out;
     };
     const fwd = walk(e0.u, e0.id);
     let back: number[] = [];
-    if (through(e0.u)) { const k = net.adj[e0.u][0] === e0.id ? net.adj[e0.u][1] : net.adj[e0.u][0]; if (!seen[k]) back = walk(e0.u, k); }
+    if (through(e0.u, rp)) { const lg = legsOf(e0.u, rp); const k = lg[0] === e0.id ? lg[1] : lg[0]; if (!seen[k]) back = walk(e0.u, k); }
     const ns = [...back.reverse(), e0.u, ...fwd];
     const pts = ns.map(n => net.nodes[n]); const len = polyLen(pts);
     const n0 = ns[0], n1 = ns[ns.length - 1];
@@ -154,7 +157,7 @@ export function roadPlan(d: Derived): RoadPlan {
     // planted medians on four-lane two-way roads, between the junction setbacks
     if (!s.hwy && !s.ow && s.lanes >= 4 && t1 - t0 > 14) medians.push(sliceLine(s.pts, t0, t1));
     // one-way roads: an arrow in every lane, every 50 m or so
-    if (s.ow && t1 - t0 > 8) {
+    if (s.ow && !s.ramp && t1 - t0 > 8) {   // (a deck ramp is drawn with its deck, and marks its own lane)
       const lanes = s.lanes >= 4 ? 4 : 2; const n = Math.max(1, Math.round((t1 - t0) / 50));
       for (let i = 0; i < n; i++) {
         const at = pointAt(s.pts, t0 + ((i + 0.5) / n) * (t1 - t0)); const nr = right(at.d);

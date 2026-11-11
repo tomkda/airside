@@ -25,12 +25,23 @@ const pier = (w, cx, cy, len, wid, deg) => conc(w, cx - len / 2, cy - wid / 2, l
 const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b: { x: 4500, y: 2300 } });
 
 { const r = rep('sample', sampleWorld());
-  // v0.27: the deck's ramps peel off the approach roads as a lane and widen as they climb
-  const dk = r.d.decks[0]; const n = dk.pts.length;
-  const links = r.d.autoRoads.filter(w => w.fore === 'link'); const offLink = p => Math.min(...links.map(w => { const dx = w.b.x - w.a.x, dy = w.b.y - w.a.y, L = Math.hypot(dx, dy); return Math.abs((p.x - w.a.x) * dy - (p.y - w.a.y) * dx) / L; }));
-  const linkX = [offLink(dk.pts[0]), offLink(dk.pts[n - 1])];
-  check('each ramp leaves its approach road one lane wide, off the centreline (' + dk.ws[0].toFixed(1) + ' m wide, ' + linkX[0].toFixed(1) + ' m off)', r.d.decks.length === 1 && Math.abs(dk.ws[0] - 3.8) < 0.01 && Math.abs(dk.ws[n - 1] - 3.8) < 0.01 && Math.min(...linkX) > 3 && Math.min(...linkX) < 7 && dk.zs[0] === 0 && dk.zs[n - 1] === 0);
+  // v0.28: each deck ramp meets its approach road as a built ramp does: beside it, never on top of it
+  const dk = r.d.decks[0]; const links = r.d.autoRoads.filter(w => w.fore === 'link');
+  const offLink = p => Math.min(...links.map(w => { const dx = w.b.x - w.a.x, dy = w.b.y - w.a.y, L = Math.hypot(dx, dy), t = ((p.x - w.a.x) * dx + (p.y - w.a.y) * dy) / (L * L); return t < -0.02 || t > 1.02 ? Infinity : Math.abs((p.x - w.a.x) * dy - (p.y - w.a.y) * dx) / L; }));
+  const near = dk.pts.map((p, i) => ({ p, w: dk.ws[i], z: dk.zs[i], off: offLink(p) })).filter(q => q.off < 40);
+  check('no part of a ramp lies on its approach road (closest ' + Math.min(...near.map(q => q.off - q.w / 2)).toFixed(2) + ' m from the centreline, the road is 8 m each side)', near.length > 20 && near.every(q => q.off - q.w / 2 >= 7.99));
+  check('a ramp stays at grade until it is 2 m clear of the road', near.every(q => q.z === 0 || q.off - q.w / 2 - 8 >= 1.99));
+  const rps = r.d.autoRoads.filter(w => w.fore === 'ramp'); const geo = rps.filter(w => w.rg).map(w => w.rg);
+  const len = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  check('each ramp is a taper, a speed-change lane and a curve, one-way', geo.length === 2 && rps.length === 8 && rps.every(w => w.oneway) && geo.every(g => len(g.T, g.P) >= 30 && len(g.P, g.N) >= 30));
+  check('one goes up, from the right of traffic coming in; the other comes down, onto the right of traffic going out', geo.filter(g => g.up).length === 1 && geo.every(g => (g.u.y * g.n.x - g.u.x * g.n.y > 0) === g.up));
+  check('the taper starts on the approach road and the lane runs alongside it', geo.every(g => offLink(g.T) < 0.01 && Math.abs(offLink(g.P) - 9.9) < 0.01 && Math.abs(offLink(g.N) - 9.9) < 0.01));
+  check('each ramp has a painted gore and a broken line along its lane', dk.gores.length === 2 && dk.seams.length === 2 && dk.arrows.length === 4);
   const top = dk.zs.indexOf(1); check('it widens as it climbs and is as wide as the deck where it lands', top > 5 && dk.ws.slice(0, top + 1).every((w, i, a) => !i || w >= a[i - 1] - 1e-9) && Math.abs(dk.ws[top] - dk.width) < 0.01);
+  // v0.28: the ground road curves round each forecourt corner, and the frontage road and links stop short of it
+  const cs = r.d.autoRoads.filter(w => w.fore === 'corner'), fc = r.d.autoRoads.find(w => w.fore === 'face');
+  check('the ground road rounds both forecourt corners on a 35 m curve', cs.length === 2 && cs.every(k => k.c && Math.abs(Math.hypot(k.a.x - k.c.x, k.a.y - k.c.y) - 35) < 0.01 && Math.abs(Math.hypot(k.b.x - k.c.x, k.b.y - k.c.y) - 35) < 0.01));
+  check('the frontage road and its links meet the curves end to end', cs.every(k => [fc.a, fc.b].some(p => Math.hypot(p.x - k.a.x, p.y - k.a.y) < 0.01) && links.some(w => Math.hypot(w.a.x - k.b.x, w.a.y - k.b.y) < 0.01)));
   check('a one-piece building has no junction spaces', r.d.junctions.length === 0 && ![...r.d.shops.values()].flat().some(sh => sh.plaza));
   check('the sample gains an end stand each side', r.d.gates.length === 14 && r.reach === 14);
   check('no stands on the landside face', !Object.keys(r.by).some(k => k.includes(':s')));
@@ -146,6 +157,23 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
 { const w = newWorld(); runway(w); conc(w, 3000, 2700, 500, 50); conc(w, 3100, 2700, 40, 300); conc(w, 3160, 2700, 40, 300);
   const r = rep('two fingers 20 m apart off one concourse', w); const js = r.d.junctions;
   check('each finger has its own junction space, not one strip between them (' + js.map(j => j.kind + ' ' + Math.round(j.area)).join(', ') + ')', js.filter(j => j.ids.length === 2).length === 2 && !js.some(j => j.ids.length > 2)); }
+// v0.28: ramps on approach roads of other lengths, and what they end at (cases found by review)
+const hallAt = (w, x, y, ww, hh) => { const a = w.nextId++, b = w.nextId++; w.zones.push({ id: a, type: 'checkin', level: 1, x, y, w: ww, h: hh, tier: 0, pair: b }, { id: b, type: 'claim', level: 0, x, y, w: ww, h: hh, tier: 0, pair: a }); };
+const road = (w, a, b) => w.ways.push({ id: w.nextId++, kind: 'road', a, b, cls: 0, lanes: 4 });
+{ const w = newWorld(); hallAt(w, 2850, 2960, 300, 80); road(w, { x: 2500, y: 3268 }, { x: 3500, y: 3268 });
+  w.rounds = [2766, 3234].map(x => ({ id: w.nextId++, x, y: 3268, size: 1 }));
+  const d = derive(w); const geo = d.autoRoads.filter(q => q.rg).map(q => q.rg);
+  const clear = Math.min(...geo.map(g => Math.min(...w.rounds.map(r => Math.hypot(g.T.x - r.x, g.T.y - r.y) - 28))));
+  check('approach roads that end at a large roundabout: the taper ends well clear of its outer kerb (' + clear.toFixed(0) + ' m)', geo.length === 2 && clear >= 29.9); }
+{ const w = newWorld(); hallAt(w, 2850, 2960, 300, 80); road(w, { x: 2500, y: 3200 }, { x: 3500, y: 3200 });
+  const d = derive(w); const geo = d.autoRoads.filter(q => q.rg).map(q => q.rg); const face = d.autoRoads.find(q => q.fore === 'face'); const dk = d.decks[0];
+  const runs = d.autoRoads.filter(q => q.fore === 'link').map(q => Math.hypot(q.b.x - q.a.x, q.b.y - q.a.y));
+  check('a road 160 m off the hall (links ' + runs.map(v => v.toFixed(0)).join(' and ') + ' m) still gets a ramp at each end, beside the road', geo.length === 2 && geo.every(g => Math.hypot(g.T.x - g.N.x, g.T.y - g.N.y) >= 40));
+  const lo = Math.min(face.a.x, face.b.x), hi = Math.max(face.a.x, face.b.x);
+  check('every point of its deck is over its frontage road or on its own ramps', dk.pts.every(p => (p.x >= lo - 0.5 && p.x <= hi + 0.5) || geo.some(g => Math.min(Math.abs(p.x - g.T.x), Math.abs(p.x - g.D.x)) < 80))); }
+{ const w = newWorld(); hallAt(w, 2850, 5392, 300, 80);
+  const d = derive(w); const ramps = d.road.edges.filter(e => d.rampRefs.has(e.ref));
+  check('beside the highway: every piece of a ramp is one-way, and none is a stub to the highway', ramps.length > 0 && ramps.every(e => e.ow)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

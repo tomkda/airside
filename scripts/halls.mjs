@@ -12,7 +12,7 @@ const run = (name, edit, days = 2) => {
   const d = sim.d; const fore = d.autoRoads.filter(r => r.fore);
   const curbs = d.zones.filter(z => z.auto).map(z => (z.level ? 'L1 ' : 'G ') + z.auto.deck).sort().join(', ') || 'none';
   console.log(name + ':', d.terminals.map(t => t.name + (t.active ? ' open' : ' CLOSED (' + t.problems.join('; ') + ')')).join(' | '),
-    '| forecourt: ' + fore.filter(r => r.fore === 'face').length + ' frontage, ' + fore.filter(r => r.fore === 'link').length + ' links, ' + fore.filter(r => r.fore === 'ramp').length + ' ramps | curbs: ' + curbs + ' | decks ' + d.decks.length,
+    '| forecourt: ' + fore.filter(r => r.fore === 'face').length + ' frontage, ' + fore.filter(r => r.fore === 'link').length + ' links, ' + fore.filter(r => r.fore === 'ramp' && r.part === 'curve').length + ' ramps | curbs: ' + curbs + ' | decks ' + d.decks.length,
     '| issues:', d.issues.filter(i => i.level === 'error').map(i => i.text));
   let onRamp = 0, wrongRamp = 0; const seen = new Set(); const E = sim.d.road.edges;
   sim.onDayEnd = r => { const s = r.stats; console.log('  ' + r.label, '| flights', s.flights, 'pax', s.paxDep + s.paxArr, 'missed', s.missed, 'stranded', s.stranded, '| sat', r.sat.toFixed(0), '| cars up a ramp', onRamp, '(not for the deck: ' + wrongRamp + ')'); onRamp = 0; };

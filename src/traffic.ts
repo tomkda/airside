@@ -29,6 +29,7 @@ function laneOffset(sim: Sim, e: Edge | undefined, id: number, forward: boolean)
     const r = sim.d.rounds.find(q => q.id === -e.ref - RING_REF); const def = r ? roundDef(r) : undefined;
     return def && def.lanes > 1 ? (id % 2 ? 2.3 : -2.3) : 0;
   }
+  if (e.ow && e.lanes <= 1) return 0;   // v0.28: a ramp's single speed-change lane
   if (e.ow) {
     const slots = e.lanes >= 4 ? [-6, -2, 2, 6] : [-2.25, 2.25];
     return slots[id % slots.length] * (forward ? 1 : -1);

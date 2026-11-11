@@ -1097,23 +1097,43 @@ export class Renderer {
       // v0.13: the deck is drawn along its own path, so a ramp that curves off the approach road reads as the road dividing
       // v0.27: and it is drawn as a road: the same surface, edge lines and lane lines as the road it leaves, between
       // parapets. What says it is in the air is its shadow, which draws away from it as it climbs.
+      const ASPH = '#9C968A';   // the ground roads' own surface (drawRoads), so a ramp at grade reads as more of the road
+      const n = dk.pts.length; const ab = dk.abut;
+      // v0.28: the gore, where the ramp parts from the road: painted pavement with chevrons, between two solid lines
+      for (const gp of dk.gores) {
+        this.poly(gp, ASPH);
+        if (z > 0.5) {
+          g.save(); this.path(gp); g.clip();
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const p of gp) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+          const span = x1 - x0 + y1 - y0;
+          for (let k = -span; k < span; k += 3.2) this.line({ x: x0 + k, y: y0 }, { x: x0 + k + span, y: y0 + span }, 0.45, PAL.roadLine, 0, 'butt', 0.6);
+          g.restore();
+        }
+      }
       const pts = ribbon(dk.pts, dk.ws);
       const lift = dk.pts.map((p, i) => ({ x: p.x + dk.zs[i] * 5, y: p.y + dk.zs[i] * 6 }));
       this.poly(ribbon(lift, dk.ws), 'rgba(40,36,30,0.22)');
-      this.poly(pts, PAL.road);
-      g.strokeStyle = 'rgba(60,54,46,0.85)'; g.lineWidth = Math.max(1, 0.7 * z); g.lineJoin = 'round'; this.path(pts); g.stroke();
+      this.poly(pts, ASPH);
+      // the deck's own edges: not where the ramp runs alongside the road, where its edge is the road's edge
+      const edges: [Pt[], number][] = [[pts.slice(0, n), -1], [pts.slice(n).reverse(), 1]];
+      g.strokeStyle = 'rgba(60,54,46,0.85)'; g.lineWidth = Math.max(1, 0.7 * z); g.lineJoin = 'round';
+      for (const [e, sd] of edges) { let cur: Pt[] = []; e.forEach((p, i) => { cur.push(p); if (i + 1 < n && ab[i] === sd && ab[i + 1] === sd) { if (cur.length > 1) { this.path(cur, 0, false); g.stroke(); } cur = []; } }); if (cur.length > 1) { this.path(cur, 0, false); g.stroke(); } }
       const cum = [0]; for (let i = 1; i < dk.pts.length; i++) cum.push(cum[i - 1] + dist(dk.pts[i - 1], dk.pts[i]));
       const L = cum[cum.length - 1];
       const i0 = dk.zs.findIndex(v => v >= 1), i1 = dk.zs.length - 1 - [...dk.zs].reverse().findIndex(v => v >= 1);
       if (z > 0.35) {
-        // a line a set way off the centreline: `f` of the half width where the deck is at least `min` wide
+        // a line a set way off the centreline: `f` of the half width where the deck is at least `min` wide (an edge
+        // line stops where that edge is the road's)
         const side = (f: number, min: number, inset = 0): Pt[][] => {
           const runs: Pt[][] = []; let cur: Pt[] = [];
-          const e = ribbon(dk.pts, dk.ws.map(w => Math.abs(f) * Math.max(0, w - inset * 2))); const n = dk.pts.length;
-          dk.pts.forEach((_, i) => { if (dk.ws[i] >= min) cur.push(f < 0 ? e[i] : f > 0 ? e[2 * n - 1 - i] : dk.pts[i]); else { if (cur.length > 1) runs.push(cur); cur = []; } });
+          const e = ribbon(dk.pts, dk.ws.map(w => Math.abs(f) * Math.max(0, w - inset * 2)));
+          dk.pts.forEach((_, i) => { if (dk.ws[i] >= min && !(f && ab[i] === Math.sign(f))) cur.push(f < 0 ? e[i] : f > 0 ? e[2 * n - 1 - i] : dk.pts[i]); else { if (cur.length > 1) runs.push(cur); cur = []; } });
           if (cur.length > 1) runs.push(cur); return runs;
         };
-        for (const f of [-1, 1]) for (const r of side(f, 0, 0.7)) this.pline(r, 0.18, PAL.roadLine, 'butt', 0.5);   // edge lines
+        for (const f of [-1, 1]) for (const r of side(f, 0.5, 0.7)) this.pline(r, 0.18, PAL.roadLine, 'butt', 0.5);   // edge lines
+        // the speed-change lane is divided from the road by a broken line where the road's solid edge line was
+        for (const sm of dk.seams) { this.pline(sm, 0.6, ASPH, 'butt', 1); g.setLineDash([Math.max(2, 4 * z), Math.max(2, 4 * z)]); this.pline(sm, 0.22, PAL.roadLine, 'butt', 0.6); g.setLineDash([]); }
+        if (z > 1) for (const ar of dk.arrows) this.arrow(ar.p, ar.ang, 'ahead', PAL.roadLine);
         g.setLineDash([Math.max(2, 4 * z), Math.max(3, 7 * z)]);
         for (const r of side(0, DECK.two - 0.5)) if (dk.width < 12) this.pline(r, 0.2, PAL.roadLine, 'butt', 0.5);
         // a two-lane ramp has one lane line; the deck has one each side of its centre line
@@ -1121,10 +1141,10 @@ export class Renderer {
           const two = dk.pts.map((_, i) => dk.ws[i] < dk.width - 0.5);
           const cut = (keep: (i: number) => boolean, line: Pt[]) => { const runs: Pt[][] = []; let cur: Pt[] = []; line.forEach((p, i) => { if (keep(i)) cur.push(p); else { if (cur.length > 1) runs.push(cur); cur = []; } }); if (cur.length > 1) runs.push(cur); return runs; };
           for (const r of cut(i => two[i] && dk.ws[i] >= DECK.two - 0.5, dk.pts)) this.pline(r, 0.2, PAL.roadLine, 'butt', 0.5);
-          const n = dk.pts.length; const q = ribbon(dk.pts, dk.ws.map(w => w / 2));
+          const q = ribbon(dk.pts, dk.ws.map(w => w / 2));
           for (const line of [q.slice(0, n), q.slice(n).reverse()]) for (const r of cut(i => !two[i], line)) this.pline(r, 0.2, PAL.roadLine, 'butt', 0.5);
           g.setLineDash([]);
-          for (const r of cut(i => !two[i], dk.pts)) { this.pline(r, 0.5, PAL.roadLine, 'butt', 1.4); this.pline(r, 0.22, PAL.road, 'butt', 0.5); }   // a double centre line
+          for (const r of cut(i => !two[i], dk.pts)) { this.pline(r, 0.5, PAL.roadLine, 'butt', 1.4); this.pline(r, 0.22, ASPH, 'butt', 0.5); }   // a double centre line
         }
         g.setLineDash([]);
       }
@@ -1140,8 +1160,9 @@ export class Renderer {
         const rot = Math.atan2((b.y - a.y) * this.yScale, b.x - a.x); const up = Math.cos(rot) < 0;
         this.label('UPPER DECK · DEPARTURES', lerp2(a, b, 0.5), 0, 8, '#F4EDDF', { weight: 800, spacing: 1.4, rot: up ? rot + Math.PI : rot });
         // say what the fork is, once per ramp, where it leaves the ground
-        if (z > 0.9) for (const [p, q] of [[dk.pts[0], dk.pts[1]], [dk.pts[dk.pts.length - 1], dk.pts[dk.pts.length - 2]]]) if (dk.pts.length > 4) {
-          const r2 = Math.atan2((q.y - p.y) * this.yScale, q.x - p.x); const m = lerp2(p, q, 2.2);
+        const lo = dk.zs.findIndex(v => v > 0.15), hi = dk.zs.length - 1 - [...dk.zs].reverse().findIndex(v => v > 0.15);
+        if (z > 0.9) for (const [p, q] of [[dk.pts[Math.max(0, lo - 1)], dk.pts[lo]], [dk.pts[Math.min(n - 1, hi + 1)], dk.pts[hi]]]) if (dk.pts.length > 4 && lo > 0) {
+          const r2 = Math.atan2((q.y - p.y) * this.yScale, q.x - p.x); const m = q;
           this.label('RAMP', m, 0, 6.5, '#F4EDDF', { weight: 800, spacing: 1, rot: Math.cos(r2) < 0 ? r2 + Math.PI : r2 });
         }
       }

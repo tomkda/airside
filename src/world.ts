@@ -47,9 +47,19 @@ export type WayKind = 'taxi' | 'road' | 'walk';
 /** v0.11: a road may curve (`c` is the control point of a quadratic curve) and may be one-way, from a to b. */
 export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lanes: number; c?: Pt; oneway?: boolean;
   /** Generated, never saved (v0.12): part of a hall's own forecourt, along its face or linking it to a road. */
-  fore?: 'face' | 'link' | 'ramp';
+  fore?: 'face' | 'link' | 'ramp' | 'corner';
   /** For a ramp: the id of the frontage road whose upper deck it climbs to. */
-  face?: number }
+  face?: number;
+  /** v0.28: a generated deck ramp is three one-way ways in a row: the `taper` where the road widens, the speed-change
+   *  `lane` that runs beside it, and the `curve` and `climb` that leave it and rise to the deck. The curve carries the
+   *  ramp's shape (`rg`). */
+  part?: 'taper' | 'lane' | 'curve' | 'climb'; rg?: RampGeo }
+/** v0.28: one deck ramp's geometry, all on its approach road's frame. `u` runs along the approach road away from the
+ *  frontage and `n` across it towards the side the ramp is on; `h` is the road's half width. T (on the road's
+ *  centreline) is where the taper starts, P where the full lane begins, N the nose of the gore, where the ramp parts
+ *  from the road; the curve runs from N through M to D (on the frontage road) as two quadratic pieces with control
+ *  points C and C2 (v0.28: so it leaves the road soon after the nose instead of hugging it). `up`: traffic climbs it. */
+export interface RampGeo { T: Pt; P: Pt; N: Pt; C: Pt; M: Pt; C2: Pt; D: Pt; u: Pt; n: Pt; h: number; up: boolean }
 export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[] }
 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [] });
@@ -780,7 +790,7 @@ export function derive(source: World): Derived {
   const rounds = world.rounds ?? [];
   const pieces = roadPieces(roads, rounds, curbCuts(FR.curbs, roads));
   for (const p of pieces) if (dist(p.a, p.b) > 1) roadSegs.push({ a: p.a, b: p.b, kind: 'road', cls: 0, ref: p.ref, lanes: p.lanes, ow: p.ow });
-  for (const w of roads) for (const e of [w.a, w.b]) {
+  for (const w of roads) if (w.fore !== 'ramp') for (const e of [w.a, w.b]) {   // (v0.28: a ramp's pieces join their road, never the highway)
     const dy = Math.abs(e.y - HY);
     if (dy > 4 && dy <= 20) roadSegs.push({ a: e, b: { x: e.x, y: HY }, kind: 'road', cls: 0, ref: w.id, lanes: w.lanes });
   }
