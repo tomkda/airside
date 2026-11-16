@@ -168,7 +168,7 @@ export class Sim {
   private openArr = new Map<number, Party>();
   private bagCounter: Record<number, number> = {};
   shopLoad = new Map<Shop, number>();
-  shopDay = new Map<number, { visits: number; rev: number }>();
+  shopDay = new Map<number, { visits: number; rev: number; own?: number }>();   // (own: visits to the building's own lots, not its food-court counters)
   /** Per lot (Shop.id): today's visits, revenue and, for duty free, passers; and yesterday's, for the heatmap. */
   lotDay = new Map<string, { visits: number; rev: number; passed: number }>();
   lotPrev = new Map<string, { visits: number; rev: number; passed: number }>();
@@ -855,7 +855,12 @@ export class Sim {
   termOf(f: Flight): Terminal | undefined { return this.d.termOf.get(f.gate.zone.id); }
   inTerm(z: Zone, T?: Terminal) { return !T || this.d.termOf.get(z.id) === T; }
   // (v0.31: a counter round a food court or hall is let with the court, outside the building's own count of let lots)
-  leased(sh: Shop) { return (sh.court || sh.rank < (this.d.lease.get(sh.zone.id)?.count ?? 0)) && sh.bid >= COMMERCE.minBid; }
+  leased(sh: Shop) {
+    const L = this.d.lease.get(sh.zone.id); if (!L) return false;
+    // the counters (ranked after the building's own lots) are let in the same proportion as its own lots
+    const ok = sh.court ? sh.rank - L.max < Math.ceil(((L.courts ?? 0) * L.count) / Math.max(1, L.max)) : sh.rank < L.count;
+    return ok && sh.bid >= COMMERCE.minBid;
+  }
 
   /** The walk-through duty free a departing passenger crosses after security: one in their terminal they can reach. */
   dutyFreeFor(p: Pax): Shop | undefined {
@@ -903,7 +908,7 @@ export class Sim {
         const take = COMMERCE.dfTake * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15) * (p.flight.airline.intl ? GROWTH.intlSpend : 1);
         this.stats.rev.dutyfree += take;
         const L = this.lotLedger(sh); L.visits++; L.rev += take;
-        const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; day.rev += take; this.shopDay.set(sh.zone.id, day);
+        const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; if (!sh.court) day.own = (day.own ?? 0) + 1; day.rev += take; this.shopDay.set(sh.zone.id, day);
       }
       p.shop = undefined; p.browse = undefined;
       if (p.stage !== 'done') { p.steps.shift(); p.stage = 'walk'; this.advance(p); }
@@ -914,7 +919,7 @@ export class Sim {
     const take = S.take * frac * (sh.zone.tier ? 1.35 : 1) * clamp(p.sat / 80, 0.5, 1.15) * (p.flight.airline.intl ? GROWTH.intlSpend : 1);
     const key: Record<ShopType, 'shops' | 'food' | 'lounges'> = { shop: 'shops', food: 'food', lounge: 'lounges' };
     this.stats.rev[key[sh.type]] += take;
-    const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; day.rev += take; this.shopDay.set(sh.zone.id, day);
+    const day = this.shopDay.get(sh.zone.id) ?? { visits: 0, rev: 0 }; day.visits++; if (!sh.court) day.own = (day.own ?? 0) + 1; day.rev += take; this.shopDay.set(sh.zone.id, day);
     const L = this.lotLedger(sh); L.visits++; L.rev += take;
     if (sh.type !== 'shop') p.sat += 3;
     this.shopLoad.set(sh, Math.max(0, (this.shopLoad.get(sh) ?? 1) - 1));
@@ -1331,9 +1336,10 @@ export class Sim {
     }
     // Tenants: busy concourses lease more units, quiet ones lose a tenant.
     for (const z of this.world.zones) if (z.type === 'concourse') {
-      const n = this.d.shops.get(z.id)?.length ?? 0; if (!n) continue;
+      // (v0.31: the building's own lots and their visits; the counters round a food court are let in step with them)
+      const n = this.d.shops.get(z.id)?.filter(sh => !sh.court).length ?? 0; if (!n) continue;
       const cur = Math.max(1, this.d.lease.get(z.id)?.count ?? 1);
-      const per = (this.shopDay.get(z.id)?.visits ?? 0) / cur;
+      const day = this.shopDay.get(z.id); const per = (day ? day.own ?? 0 : 0) / cur;
       let next = cur;
       if (per > 30) next = Math.min(n, cur + Math.max(1, Math.round(0.2 * (n - cur))));
       else if (per < 8) next = Math.max(1, cur - 1);

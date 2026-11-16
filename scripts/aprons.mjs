@@ -72,6 +72,10 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   const cen = q => ({ x: (q[0].x + q[2].x) / 2, y: (q[0].y + q[2].y) / 2 });
   check('the junction space has food counters round its edge (' + cts.length + ')', cts.length >= 2 && cts.every(sh => sh.type === 'food' && js.some(j => (j.kind === 'hall' || j.kind === 'food') && ins(cen(sh.pts), j))));
   check('no counter stands on a lot of the building\u2019s own plan', !cts.some(c => own.some(o => ins(cen(c.pts), { rings: [o.pts] }) || ins(cen(o.pts), { rings: [c.pts] }))));
+  check('no counter stands by a gate door', !cts.some(c => r.d.gates.some(g => Math.hypot(g.door.x - cen(c.pts).x, g.door.y - cen(c.pts).y) < 14)));
+  { const w2 = sampleWorld(); pier(w2, 3568, 2718, 400, 50, 20); conc(w2, 5000, 2600, 400, 50); conc(w2, 5175, 2450, 50, 400); const d2 = derive(w2);
+    const keys = d => [...d.shops.values()].flat().filter(sh => sh.court && sh.zone.id === cts[0]?.zone.id).map(sh => sh.key).sort().join(' ');
+    check('a counter keeps its name when an unrelated building is put up', cts.length > 0 && keys(r.d) === keys(d2)); }
   check('every gate of the merged building has its own name', new Set(sl.map(q => q.zone.id + ':' + q.key)).size === sl.length && new Set(r.d.gates.map(g => g.id)).size === r.d.gates.length); }
 { const w = sampleWorld(); const z = pier(w, 3568, 2718, 400, 40, 20); const r = rep('a 40 m pier (too narrow for a stand on its end)', w);
   const mine = r.d.gates.filter(g => g.zone.id === z.id);

@@ -39,8 +39,8 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 ## What's in the alpha (v0.31)
 
-- **Food courts and halls that trade (v0.31):** the spaces a building keeps where its pieces meet now have counters round their edge, about 7 m wide and 6 m deep, facing in to the shared tables. The way in from each spine is left open, and no counter stands on a lot of the building's own plan.
-  - **Food only.** The counters are let to food tenants (grab-and-go formats at this size) and are let with the space, whatever the building's own count of let lots.
+- **Food courts and halls that trade (v0.31):** the spaces a building keeps where its pieces meet now have counters round their edge, about 7 m wide and 6 m deep, facing in to the shared tables. The way in from each spine is left open, and no counter stands on a lot of the building's own plan or beside a gate door.
+  - **Food only.** The counters are let to food tenants (grab-and-go formats at this size), in step with the building's own lots: a busy building lets all of them, a quiet one fewer. The concourse panel counts them separately.
   - **Passengers use them.** On the way to their gate, a passenger who wants a meal may stop at one, like any lot; customers sit at the shared tables, so each counter serves about twelve at once.
   - **Paid like any lot.** They pay rent and earn sales like any lot, and show in the commercial heat map and the day's report.
   - Gardens and courtyards stay planted, with no counters.

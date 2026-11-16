@@ -75,7 +75,7 @@ export const JUNCTION = { grow: 6, min: 30, corner: 600, food: 400, hall: 1500, 
   // v0.31: counters round a food court or hall. A food-court counter is usually 6–9 m of frontage and 5–7 m deep with
   // its kitchen behind (from memory of airport concession practice, not a cited standard); `gap` keeps a spine's
   // way in clear.
-  counter: { front: 7, depth: 6, gap: 9 } };
+  counter: { front: 7, depth: 6, gap: 9, door: 14 } };
 
 type Ex = { outer: IPath; holes: IPath[] };
 function clip(type: number, subj: IPath[], clipP: IPath[], subjFill = ClipperLib.PolyFillType.pftNonZero, clipFill = ClipperLib.PolyFillType.pftNonZero): Ex[] {
@@ -203,7 +203,7 @@ export function outsideRuns(pts: Pt[], js: Junction[], step = 1.5): Pt[][] {
 /** v0.31: the counters round a food court or hall: along each straight stretch of its edge, `counter.front` wide and
  *  `counter.depth` deep, facing in; none where a spine comes in (`ends`, within `counter.gap`), and none that would
  *  not stand wholly inside the space. */
-export function counters(j: Junction, ends: Pt[]): { pts: Pt[]; door: Pt; front: number; depth: number }[] {
+export function counters(j: Junction, ends: Pt[], doors: Pt[] = []): { pts: Pt[]; door: Pt; front: number; depth: number }[] {
   if (j.kind !== 'food' && j.kind !== 'hall') return [];
   const { front: F, depth: D, gap } = JUNCTION.counter; const r = j.outer; const out: { pts: Pt[]; door: Pt; front: number; depth: number }[] = [];
   for (let i = 0; i < r.length; i++) {
@@ -216,6 +216,7 @@ export function counters(j: Junction, ends: Pt[]): { pts: Pt[]; door: Pt; front:
       const p2 = { x: p1.x + nIn.x * D, y: p1.y + nIn.y * D }, p3 = { x: p0.x + nIn.x * D, y: p0.y + nIn.y * D };
       const m = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
       if (ends.some(e => Math.hypot(e.x - m.x, e.y - m.y) < gap + F / 2)) continue;
+      if (doors.some(e => Math.hypot(e.x - m.x, e.y - m.y) < JUNCTION.counter.door + F / 2)) continue;   // (v0.31: not by a gate door)
       const c = { x: (p0.x + p2.x) / 2, y: (p0.y + p2.y) / 2 };
       if (![p2, p3, c].every(p => inJunction(p, j) && edgeGap(p, j.rings) >= (p === c ? D / 2 - 0.5 : 0))) continue;
       if (out.some(o => Math.hypot(o.door.x - (p2.x + p3.x) / 2 - nIn.x, o.door.y - (p2.y + p3.y) / 2 - nIn.y) < F * 0.9)) continue;

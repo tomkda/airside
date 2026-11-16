@@ -162,7 +162,7 @@ export interface Gate {
 export interface Core { x: number; y: number; frontage: boolean }
 export interface Issue { level: 'error' | 'warn' | 'info'; text: string; zoneId?: number; runwayId?: number }
 export interface MissingLink { a: Pt; b: Pt; text: string }
-export interface Units { max: number; count: number }
+export interface Units { max: number; count: number; /** v0.31: food-court counters of a concourse, let in step with its own lots */ courts?: number }
 /** Orientation of a zone's fit-out: the entry edge faces the upstream module. */
 export interface Frame { a: Pt; b: Pt; along: Pt; inward: Pt; edgeLen: number; depth: number; slots: Pt[]; items: LItem[] }
 export interface PNode { p: Pt; level: Level; zones: number[] }
@@ -576,7 +576,7 @@ export function derive(source: World): Derived {
   // v0.31: a food court or hall trades. Counters round its edge (shell.ts `counters`) become lots of the piece of the
   // building they stand in, so tenants bid for them and passengers stop at them like any other lot; the way in from
   // each spine stays open. They are scored as lots fronting the space, with the footfall of the stretch they stand on.
-  junctions.forEach((j, ji) => {
+  junctions.forEach(j => {
     if (j.kind !== 'food' && j.kind !== 'hall') return;
     const owner = world.zones.find(q => q.id === j.ids[0] && q.type === 'concourse'); if (!owner) return;
     const B = budgets.get(owner.id); const list = shops.get(owner.id); if (!B || !list) return;
@@ -585,9 +585,13 @@ export function derive(source: World): Derived {
     const F = frameOf(owner); const priors = list.map(sh => sh.prior).sort((a, b) => a - b); const prior = priors.length ? priors[Math.floor(priors.length / 2)] : 0;
     // (never over a lot of the building's own plan that reaches the space's edge)
     const others = j.ids.flatMap(id => shops.get(id) ?? []).filter(sh => !sh.court);
-    const clash = (q: Pt[]) => others.some(sh => q.some(p => pointInPoly(p, sh.pts)) || sh.pts.some(p => pointInPoly(p, q)) || pointInPoly(polyCentre(q), sh.pts));
-    counters(j, ends).filter(c => !clash([...c.pts, { x: (c.pts[0].x + c.pts[2].x) / 2, y: (c.pts[0].y + c.pts[2].y) / 2 }].slice(0, 4))).forEach((c, k) => {
-      const at = toLocal(owner, polyCentre(c.pts)); const u = B.horiz ? at.x - F.x : at.y - F.y; const key = `J${ji}.${k}`;
+    const clash = (q: Pt[]) => others.some(sh => q.some(p => pointInPoly(p, sh.pts)) || sh.pts.some(p => pointInPoly(p, q)) || pointInPoly(polyCentre(q), sh.pts) || q.some((p, i) => sh.pts.some((r, k) => segsIntersect(p, q[(i + 1) % q.length], r, sh.pts[(k + 1) % sh.pts.length]))));
+    // (and not against a wall with stands: a gate door wants its holdroom, not a kitchen)
+    const doors = gates.filter(g => j.ids.includes(g.zone.id)).map(g => g.door);
+    counters(j, ends, doors).filter(c => !clash(c.pts)).forEach(c => {
+      // (named by the pieces it is between and where it stands in its owner's frame, so the name holds while the
+      //  building is unchanged, whatever else is built: a sitting tenant and the day's takings stay with it)
+      const at = toLocal(owner, polyCentre(c.pts)); const u = B.horiz ? at.x - F.x : at.y - F.y; const key = `J${[...j.ids].sort((a, b) => a - b).join('-')}@${Math.round(at.x)},${Math.round(at.y)}`;
       list.push({
         zone: owner, i: list.length, pts: c.pts, door: c.door, type: 'food', kind: '', area: c.front * c.depth, cap: 4, window: false, rank: 0,
         key, id: `${owner.id}:${key}`, court: true, side: 'E', u0: u - c.front / 2, u1: u + c.front / 2, depth: c.depth, frontage: c.front, tenant: 'grab', plaza: j.kind as 'food' | 'hall',
@@ -600,7 +604,7 @@ export function derive(source: World): Derived {
   letLots(source, shops, budgets);
   for (const [id, list] of shops) {
     const z = world.zones.find(q => q.id === id)!; const n = list.filter(sh => !sh.court).length;
-    lease.set(id, { max: n, count: n ? clamp(z.leased ?? Math.ceil(n * 0.4), 1, n) : 0 });
+    const nc = list.length - n; lease.set(id, { max: n, count: n ? clamp(z.leased ?? Math.ceil(n * 0.4), 1, n) : 0, ...(nc ? { courts: nc } : {}) });
   }
 
   // ---- Airfield network: runways, player taxiways and gate stubs (stands join the taxiway they face).

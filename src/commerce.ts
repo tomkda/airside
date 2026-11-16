@@ -109,7 +109,7 @@ export function letLots(world: World, shops: Map<number, Shop[]>, budgets: Map<n
     // everyone else: strongest lots first, so they set the mix their neighbours react to
     const best = (sh: Shop) => Math.max(0, ...ORDER.filter(t => t !== 'lounge').map(t => sh.bids[t] ?? 0));
     for (const sh of lots.filter(q => !taken.has(q)).sort((p, q) => best(q) - best(p) || p.i - q.i)) {
-      const nb = lots.filter(o => taken.has(o) && o.side === sh.side && (Math.abs(o.u1 - sh.u0) < 1 || Math.abs(o.u0 - sh.u1) < 1)).map(o => o.tenant);
+      const nb = sh.court ? [] : lots.filter(o => taken.has(o) && !o.court && o.side === sh.side && (Math.abs(o.u1 - sh.u0) < 1 || Math.abs(o.u0 - sh.u1) < 1)).map(o => o.tenant);
       let pick: TenantId = 'retail', top = -Infinity;
       for (const t of ORDER) {
         if (t === 'lounge' || sh.bids[t] === undefined) continue;
