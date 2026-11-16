@@ -46,6 +46,9 @@ run('road stops short, off to one side', w => {
   for (const q of w.ways) if (q.kind === 'road') { if (q.a.x === 2780) q.a.x = q.b.x = 2640; else if (q.a.x === 3320) q.a.x = q.b.x = 3460; }
 });
 
+// v0.29: the sample's hall turned 12 degrees: its forecourt, curbs and deck follow its face
+run('hall turned 12°', w => { for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.rot = 12 * Math.PI / 180; });
+
 // a second terminal out east with nothing but one road running east from the roundabout, 340 m south of it
 run('second terminal beside a passing road', w => {
   const site = w.nextId++; w.sites.push({ id: site, x: 3680, y: 2600, w: 640, h: 300 });

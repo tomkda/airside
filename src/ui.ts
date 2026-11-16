@@ -15,7 +15,7 @@ import { rectsOverlap, rectSegDist } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
 import { canPlacePier } from './world';
 import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths } from './shapes';
-import { canTurn, derive, Derived } from './world';
+import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
@@ -712,10 +712,10 @@ export class UI {
       if (!dr.moved) { dr.moved = true; dr.z0 = geomOf(z); const tw = this.twin(z); this.beginLive(tw ? [z, tw] : [z]); }
       if (shaped(z)) {   // a pier or hub slides freely and keeps its angle
         const r = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5), w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper };
-        const chk = canPlacePier(this.world, { ...r, level: z.level }, z.id);
+        const chk = TURNABLE.has(z.type) ? this.placeGeom(z, { ...geomOf(z), x: r.x, y: r.y }) : canPlacePier(this.world, { ...r, level: z.level }, z.id);
         dr.liveOk = chk.ok; dr.reason = chk.reason;
         if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
-        this.hint(chk.ok ? `Move the ${z.sides ? 'hub' : 'pier'} · release to place (free), Esc to put it back` : chk.reason!, !chk.ok);
+        this.hint(chk.ok ? `Move the ${z.sides ? 'hub' : TURNABLE.has(z.type) ? ZONES[z.type].short.toLowerCase() : 'pier'} · release to place (free), Esc to put it back` : chk.reason!, !chk.ok);
         return;
       }
       const r = this.magnetMove({ x: p.x - dr.off!.x, y: p.y - dr.off!.y, w: z.w, h: z.h }, z.level, z.id);
@@ -740,7 +740,7 @@ export class UI {
   /** Give a zone (and the baggage claim under a hall) a new shape for now. */
   liveSet(z: Zone, g: Geom) {
     if (!this.live) return;
-    const tw = this.twin(z); if (tw) { tw.x = g.x; tw.y = g.y; tw.w = g.w; tw.h = g.h; }
+    const tw = this.twin(z); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot });   // (v0.29: angle and all)
     setGeom(z, g); this.live.dirty = true;
   }
   /** Aprons for placement checks: those from before a drag began, so a shape being drawn or dragged is never refused
@@ -789,7 +789,7 @@ export class UI {
   gripAt(z: Zone, sx: number, sy: number): Grip | null {
     if (z.auto || this.ren.mode3d) return null;
     const top = this.ren.tilt > 0.02 ? LEVELS[z.level].z1 : 0;
-    for (const g of gripsOf(z, canTurn(z))) { const [x, y] = this.ren.P(g.p.x, g.p.y, top); if (Math.hypot(x - sx, y - sy) < 12) return g.grip; }
+    for (const g of gripsFor(z)) { const [x, y] = this.ren.P(g.p.x, g.p.y, top); if (Math.hypot(x - sx, y - sy) < 12) return g.grip; }
     return null;
   }
   gripHint(z: Zone, grip: Grip) {
@@ -801,6 +801,12 @@ export class UI {
   }
   /** Can a built zone take this shape? */
   placeGeom(z: Zone, g: Geom) {
+    // v0.29: a turned hall, security or passport control (and the claim under a hall)
+    if (g.rot && TURNABLE.has(z.type)) {
+      const tw = this.twin(z); const ids = [z.id, ...(tw ? [tw.id] : [])];
+      const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: z.level }, z.type, ids);
+      return chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: tw.level }, tw.type, ids) : chk;
+    }
     if (g.sides || g.rot || g.bend || g.taper) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, bend: g.bend, taper: g.taper, level: z.level }, z.id);
     const r = { x: g.x, y: g.y, w: g.w, h: g.h };
     const chk = this.placeModule(r, z.type, z.level, z.id); const tw = this.twin(z);

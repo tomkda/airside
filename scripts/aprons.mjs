@@ -174,6 +174,16 @@ const road = (w, a, b) => w.ways.push({ id: w.nextId++, kind: 'road', a, b, cls:
 { const w = newWorld(); hallAt(w, 2850, 5392, 300, 80);
   const d = derive(w); const ramps = d.road.edges.filter(e => d.rampRefs.has(e.ref));
   check('beside the highway: every piece of a ramp is one-way, and none is a stub to the highway', ramps.length > 0 && ramps.every(e => e.ow)); }
+// v0.29: a turned hall (check-in over claim): its forecourt, curbs, deck and fit-out follow its face
+for (const deg of [12, -20]) {
+  const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.rot = deg * Math.PI / 180;
+  const d = derive(w); const hall = d.zones.find(z => z.type === 'checkin'); const curbs = d.zones.filter(z => z.auto);
+  const fr = d.frames.get(hall.id); const ang = a => ((a % Math.PI) + Math.PI) % Math.PI; const along = Math.atan2(fr.along.y, fr.along.x);
+  check('hall turned ' + deg + '°: Terminal 1 opens, with a forecourt link, a corner curve and a ramp at each end', d.terminals[0].active && d.autoRoads.filter(q => q.fore === 'link').length === 2 && d.autoRoads.filter(q => q.fore === 'corner').length === 2 && d.autoRoads.filter(q => q.rg).length === 2);
+  check('hall turned ' + deg + '°: its curbs and its check-in counters are turned with it', curbs.length === 2 && curbs.every(c => Math.abs(Math.sin(c.rot - hall.rot)) < 1e-6) && Math.abs(Math.sin(along - hall.rot)) < 1e-6);
+  const doors = d.ped.filter(n => n.zones.length === 2 && n.zones.some(id => curbs.some(c => c.id === id))).length;
+  check('hall turned ' + deg + '°: people walk between the hall and its curbs (' + doors + ' doors, ' + d.cores.filter(k => k.frontage).length + ' frontage stairs)', doors >= 4 && d.cores.filter(k => k.frontage).length >= 2);
+}
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

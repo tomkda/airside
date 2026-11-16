@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
+import { gripsOf, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
@@ -425,7 +425,32 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
 }
 
 /** v0.19: can this shape be swung round by its ends? A pier or satellite can: a concourse that belongs to no site. */
-export const canTurn = (z: Zone) => z.type === 'concourse' && !z.sides && (z.site === undefined || !!z.rot || !!z.bend || !!z.taper);
+export const canTurn = (z: Zone) => (z.type === 'concourse' && !z.sides && (z.site === undefined || !!z.rot || !!z.bend || !!z.taper)) || TURNABLE.has(z.type);
+/** v0.29: the landside modules that turn: a hall (check-in over claim), security and passport control. They turn and
+ *  stretch on their grips like a pier, but do not bend or taper. */
+export const TURNABLE = new Set<ZoneType>(['checkin', 'claim', 'security', 'passport']);
+/** The grips a zone shows (a turned hall has no bend grip). */
+export const gripsFor = (z: Zone) => gripsOf(z, canTurn(z)).filter(g => z.type === 'concourse' || (g.grip !== 'm' && g.grip !== 'ta' && g.grip !== 'tb'));
+/** v0.29: can a turned hall, security or passport module take this shape? Like a pier, it may overlap the other
+ *  terminal modules on its level (it joins them where they overlap), but not a road, a curb, a lot or another hall. */
+export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; level: Level }, type: ZoneType, ignore: number[] = []): PlaceCheck {
+  const def = ZONES[type];
+  if (z.w < def.minW && z.h < def.minW) return { ok: false, reason: `Too small: at least ${def.minW} m on one side` };
+  if (Math.min(z.w, z.h) < def.minH) return { ok: false, reason: `Too narrow: at least ${def.minH} m deep` };
+  const pts = zonePts(z); const edges = pts.map((p, i) => [p, pts[(i + 1) % pts.length]] as const);
+  for (const p of pts) if (!inRect(p, SITE.buildable) || pointInPoly(p, SITE.lake)) return { ok: false, reason: 'Outside the site boundary or in the lake' };
+  for (const rw of world.runways) for (const [a, b] of edges)
+    if (segsIntersect(a, b, rw.a, rw.b) || segDist(a, rw.a, rw.b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip' };
+  for (const o of world.zones) {
+    if (ignore.includes(o.id) || !zonesOverlap(z, o, 2)) continue;
+    if (o.level === z.level && !TERMINAL_TYPES.has(o.type)) return { ok: false, reason: `Overlaps ${ZONES[o.type].short}` };
+    if (o.level === z.level && (o.type === 'checkin' || o.type === 'claim') && (type === 'checkin' || type === 'claim')) return { ok: false, reason: 'Overlaps another hall' };
+    if (o.level !== z.level && o.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
+  }
+  if (z.level === 0) for (const w of world.ways) if (w.kind !== 'walk' && waySegs(w).some(([a, b]) => segInZone(z as Zone, a, b))) return { ok: false, reason: `Crosses a ${w.kind === 'taxi' ? 'taxiway' : 'road'}` };
+  for (const rd of world.rounds ?? []) if (inZone(rd, z, roundOuter(rd))) return { ok: false, reason: 'Overlaps a roundabout' };
+  return { ok: true };
+}
 
 // ------------------------------------------------------------ wind
 export interface Wind { from: number; kt: number }
@@ -658,6 +683,19 @@ export function derive(source: World): Derived {
     if (shaped(A) || shaped(B)) {
       // v0.17: shapes merge. Two turned buildings on a level that overlap are one building, joined where they
       // overlap; a turned one over a hall on the other level gets a core there.
+      // v0.29: and a turned hall's curb (which overlaps its face by half a metre) has doors along it, and frontage
+      // stairs up to the hall above where it runs under the departures level
+      const curbPair = (A.type === 'curb' && TERMINAL_TYPES.has(B.type)) || (B.type === 'curb' && TERMINAL_TYPES.has(A.type));
+      if (curbPair) {
+        const ov = overlapOf(A, B, 4); if (!ov) continue;
+        const bx = polyBox(ov); const long = bx.w >= bx.h; const lo = long ? bx.x : bx.y, hi = long ? bx.x + bx.w : bx.y + bx.h;
+        const ends = ov.reduce((m, p) => { const k = long ? p.x : p.y; return [k <= lo + 0.5 && (!m[0] || (long ? p.y : p.x) < (long ? m[0].y : m[0].x)) ? p : m[0], k >= hi - 0.5 && (!m[1] || (long ? p.y : p.x) < (long ? m[1].y : m[1].x)) ? p : m[1]]; }, [null, null] as (Pt | null)[]);
+        const sh: [Pt, Pt] = [ends[0] ?? ov[0], ends[1] ?? ov[1]];
+        const cb = A.type === 'curb' ? A : B, md = A.type === 'curb' ? B : A;
+        if (A.level === B.level) { for (const p of spread(sh, 4)) ped.push({ p, level: A.level, zones: [A.id, B.id] }); }
+        else if (cb.level === 0) for (const p of spread(sh, 2)) vertical(p, [...new Set([md.id, ...zonesAt(p, 1)])], [...new Set([cb.id, ...zonesAt(p, 0)])], true);
+        continue;
+      }
       if (!TERMINAL_TYPES.has(A.type) || !TERMINAL_TYPES.has(B.type)) continue;
       const ov = overlapOf(A, B, A.level === B.level ? 24 : 256); if (!ov) continue;
       const c = polyCentre(ov);
@@ -800,7 +838,7 @@ export function derive(source: World): Derived {
   for (const z of zs) if (z.type === 'curb' || ROAD_SERVED.has(z.type)) {
     // generated curbs attach to the road nodes along their outer edge; drawn ones to roads that end at them
     const reach = z.auto ? z.auto.gap + 12 : 3;
-    const ns: number[] = []; road.nodes.forEach((p, i) => { if (inRect(p, z, reach) && (!z.auto || road.adj[i].some(e => road.edges[e].ref === z.auto!.road))) ns.push(i); });
+    const ns: number[] = []; road.nodes.forEach((p, i) => { if ((z.rot ? inZone(p, z, reach) : inRect(p, z, reach)) && (!z.auto || road.adj[i].some(e => road.edges[e].ref === z.auto!.road))) ns.push(i); });
     attach.set(z.id, ns);
   }
   // a place is road-served when cars can drive in from the highway and back out again (one-way roads count)

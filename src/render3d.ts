@@ -343,10 +343,16 @@ export class Renderer3D {
       // canopy: 7 m deep over the sidewalk, on a row of slender columns
       const a = f.a, b = f.b, inw = f.inward;
       // sidewalk slab by the building and a planted island between the pull-in lanes and the through lanes
-      const D = f.depth; const strip = (v0: number, v1: number, h: number, c: string) => misc.push({ ...bbox([add(a, mul(inw, D * v0)), add(b, mul(inw, D * v1))]), z0: zz, z1: zz + h, c });
+      const D = f.depth;
+      // (v0.29: off a turned face, the strips and canopy are turned boxes in the curb's own frame)
+      const ang = Math.atan2(b.y - a.y, b.x - a.x); const turned = Math.abs(Math.sin(2 * ang)) > 1e-6;
+      const fbox = (v0: number, v1: number): Rect & { rot?: number } => {
+        if (!turned) return bbox([add(a, mul(inw, v0)), add(b, mul(inw, v1))]);
+        const Lf = dist(a, b); const c = add({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, mul(inw, (v0 + v1) / 2)); return { x: c.x - Lf / 2, y: c.y - Math.abs(v1 - v0) / 2, w: Lf, h: Math.abs(v1 - v0), rot: ang };
+      };
+      const strip = (v0: number, v1: number, h: number, c: string) => misc.push({ ...fbox(D * v0, D * v1), z0: zz, z1: zz + h, c });
       strip(0, 0.26, 0.22, '#EFE8DA'); strip(0.6, 0.7, 0.25, '#A9B28A');
-      const corners = [a, b, add(b, mul(inw, 7)), add(a, mul(inw, 7))];
-      misc.push({ ...bbox(corners), z0: zz + 5.2, z1: zz + 5.7, c: ROOF });
+      misc.push({ ...fbox(0, 7), z0: zz + 5.2, z1: zz + 5.7, c: ROOF });
       const L = dist(a, b); const al = norm(sub(b, a));
       for (let s = 6; s < L - 3; s += 12) { const p = add(add(a, mul(al, s)), mul(inw, 6.4)); misc.push({ x: p.x - 0.2, y: p.y - 0.2, w: 0.4, h: 0.4, z0: zz, z1: zz + 5.2, c: '#7C725F' }); }
     }
@@ -709,6 +715,11 @@ function mergeTwo(a: THREE.BufferGeometry, b: THREE.BufferGeometry) {
  */
 function massing(z: Zone, z0: number, z1: number, sel: boolean, solid: Box[], glazing: Box[], roofs: Box[], piece = false) {
   const top = z1 - 0.4;
+  // v0.29: a turned hall or security block: every part of it turns about the zone's centre
+  if (z.rot && z.type !== 'concourse') {
+    const tw = { rot: z.rot, px: z.x + z.w / 2, py: z.y + z.h / 2 }; const T = (arr: Box[]) => ({ push: (...bs: Box[]) => arr.push(...bs.map(q => ({ ...q, ...tw }))) }) as unknown as Box[];
+    return massing({ ...z, rot: undefined }, z0, z1, sel, T(solid), T(glazing), T(roofs), piece);
+  }
   solid.push({ ...z, z0, z1: z0 + 0.7, c: PLINTH });
   glazing.push({ x: z.x + 0.6, y: z.y + 0.6, w: z.w - 1.2, h: z.h - 1.2, z0: z0 + 0.7, z1: top - 1.1, c: sel ? '#8FB0C6' : GLASS[z.type] });
   roofs.push({ x: z.x - 0.8, y: z.y - 0.8, w: z.w + 1.6, h: z.h + 1.6, z0: top - 1.1, z1: top, c: sel ? '#CFE0EA' : ROOF });
