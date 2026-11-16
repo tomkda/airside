@@ -39,10 +39,10 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 ## What's in the alpha (v0.29)
 
-- **Halls that turn, and a forecourt that follows (v0.29):** the check-in and claim hall, security and passport control can now be turned to any angle, like a pier. Select one and drag the round grip at either end: it swings about the far end (in 5° steps) and stretches; the side grips set its depth. The claim hall under a check-in hall turns with it.
+- **Halls that turn, and a forecourt that follows (v0.29):** the check-in and claim hall, security and passport control can now be turned to any angle. Select one and drag the turn handle off its end: it turns about its centre in 5° steps, and turned back square it is an ordinary upright module again. Its four edge grips still move each edge, in its own turned frame. The claim hall under a check-in hall turns with it.
   - **Everything off the face follows.** The counters, queues, belts and kerb bays are laid out along the turned face. The curbs, the frontage road, the two-level deck, its ramps, gores and corner curves all run along it.
   - **Links at an angle.** When "straight out" from a turned face misses the roads, the forecourt link runs to the nearest road instead (within 45° of straight out), and it still gets a ramp with its speed-change lane and a curved corner.
-  - **Joining by overlap.** A turned hall joins the security block or concourse it overlaps, as piers do. A turned hall may overlap other terminal modules on its level, but not another hall, a road, a lot or a roundabout.
+  - **Joining by overlap.** A turned hall joins the security block or concourse it overlaps, as piers do. It may overlap other terminal modules on its level, but not another hall, a lot, a taxiway, an apron, or (at ground level) a road or roundabout, and it keeps to its terminal's site like any module.
   - **3D.** In 3D the turned building, its curb canopy and deck are drawn at the same angle.
 
 

@@ -15,7 +15,7 @@ import { rectsOverlap, rectSegDist } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
 import { canPlacePier } from './world';
 import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths } from './shapes';
-import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE } from './world';
+import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
@@ -566,7 +566,7 @@ export class UI {
     }
     if (dr.mode === 'grip' && dr.zone && dr.z0 && dr.grip) {
       // v0.19: reshape what is built. The shape itself changes as you drag, and its gates, aprons, lots and roads with it.
-      const z = dr.zone; const z0 = dr.z0; const swing = dr.grip === 'a' || dr.grip === 'b' || dr.grip === 'r' || dr.grip === 'm' || dr.grip === 'ta' || dr.grip === 'tb' || !!z0.bend || !!z0.taper;
+      const z = dr.zone; const z0 = dr.z0; const swing = dr.grip === 'a' || dr.grip === 'b' || dr.grip === 'r' || dr.grip === 'm' || dr.grip === 'ta' || dr.grip === 'tb' || dr.grip === 't' || !!z0.bend || !!z0.taper;
       const q = swing || z0.rot ? p : this.magnet(p, z.level, z.id);
       const g = regrip(z0, dr.grip, q, canTurn(z), GRIP);
       const chk = this.placeGeom(z, g); const cost = this.geomCost(z, g) - this.geomCost(z, z0);
@@ -793,6 +793,7 @@ export class UI {
     return null;
   }
   gripHint(z: Zone, grip: Grip) {
+    if (grip === 't') return `Drag to turn the ${ZONES[z.type].short.toLowerCase()} about its centre, in 5° steps · square to the grid it is upright again`;
     if (grip === 'r') return z.sides! >= 24 ? 'Drag to make the hub wider or narrower' : 'Drag a corner to resize and turn the hub';
     if (grip === 'a' || grip === 'b') return 'Drag this end to stretch and swing the pier · the other end stays where it is';
     if (grip === 'ta' || grip === 'tb') return 'Drag to make this end of the pier wider or narrower · the other end keeps its width, so the pier tapers';
@@ -804,8 +805,9 @@ export class UI {
     // v0.29: a turned hall, security or passport control (and the claim under a hall)
     if (g.rot && TURNABLE.has(z.type)) {
       const tw = this.twin(z); const ids = [z.id, ...(tw ? [tw.id] : [])];
-      const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: z.level }, z.type, ids);
-      return chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: tw.level }, tw.type, ids) : chk;
+      const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: z.level }, z.type, ids, this.aprons);
+      const chk2 = chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: tw.level }, tw.type, ids, this.aprons) : chk;
+      return chk2.ok ? this.siteRules(zoneBox({ ...g, rot: g.rot }), z.id) : chk2;   // and the same site rules as an upright one
     }
     if (g.sides || g.rot || g.bend || g.taper) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, bend: g.bend, taper: g.taper, level: z.level }, z.id);
     const r = { x: g.x, y: g.y, w: g.w, h: g.h };
@@ -914,7 +916,7 @@ export class UI {
       this.endLive(moved); this.ren.canvas.style.cursor = 'default';
       if (moved) {
         if (cost > 0) this.sim.spend(cost); else if (cost < 0 && this.sim.moneyOn) this.sim.money += -cost * 0.4;
-        const st = siteOf(this.world, z); if (st && isTerminalModule(z) && !shaped(z)) { z.site = st.id; fitSite(this.world, st); }
+        const st = siteOf(this.world, z); if (st && isTerminalModule(z) && (!shaped(z) || TURNABLE.has(z.type))) { z.site = st.id; fitSite(this.world, st); }
         this.changed(); this.ren.selected = { kind: 'zone', id: z.id }; this.refresh(true);
         if (cost) this.ren.float(cost > 0 ? `− ${money(cost)}` : `+ ${money(-cost * 0.4)}`, heart(z), cost > 0 ? PAL_BAD : '#3F7A4E', LEVELS[z.level].z1);
       }
@@ -926,7 +928,7 @@ export class UI {
       const z = dr.zone; const moved = z.x !== dr.z0.x || z.y !== dr.z0.y;
       this.endLive(moved);
       if (moved) {
-        const st = siteOf(this.world, z); if (st && isTerminalModule(z) && !shaped(z)) { z.site = st.id; fitSite(this.world, st); }
+        const st = siteOf(this.world, z); if (st && isTerminalModule(z) && (!shaped(z) || TURNABLE.has(z.type))) { z.site = st.id; fitSite(this.world, st); }
         this.changed();
       }
       if (!dr.liveOk && dr.reason) this.toast(`Cannot move there: ${dr.reason}${moved ? ' · it stays at the last place that fits' : ''}`, 'warn');
@@ -1076,6 +1078,11 @@ export class UI {
   placeModule(r: Rect, t: ZoneType, level: Level, ignore: number) {
     const chk = canPlaceZone(this.world, r, t, level, ignore, this.aprons);
     if (!chk.ok || !TERMINAL_TOOLS.has(t)) return chk;
+    return this.siteRules(r, ignore);
+  }
+  /** A terminal module stays within reach of its own site and off another terminal's. */
+  siteRules(r: Rect, ignore: number): PlaceCheck {
+    const chk: PlaceCheck = { ok: true };
     const mine = ignore >= 0 ? this.world.zones.find(z => z.id === ignore) : undefined;
     if (mine && mine.site === undefined && !siteOf(this.world, mine) && !(this.world.sites ?? []).some(o => rectsOverlap(r, o))) return chk;   // a satellite moves freely
     const st = mine ? siteOf(this.world, mine) : this.world.sites?.find(s => s.id === this.ren.focus);

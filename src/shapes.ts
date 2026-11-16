@@ -222,7 +222,7 @@ export const zonesOverlap = (a: Shaped, b: Shaped, min = 1) => !!overlapOf(a, b,
 //   v0.20: a pier or satellite also has one in its middle (`m`): pull it sideways and the pier bends into an arc
 //   while both ends stay where they are.
 //   v0.21: and one on a corner of each end (`ta`, `tb`): it sets the width of that end alone, so the pier tapers.
-export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm' | 'ta' | 'tb';
+export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm' | 'ta' | 'tb' | 't';
 export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; off?: string[] }
 export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, off: z.off ? [...z.off] : undefined });
 export function setGeom(z: Geom, g: Geom) {
@@ -277,6 +277,17 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     // the grip of a polygon is its first corner, which sits half a facet anticlockwise of straight up
     if (z0.sides < 24) g.rot = Math.round((Math.atan2(p.y - c0.y, p.x - c0.x) + Math.PI / 2 + Math.PI / facetsOf(z0)) / step) * step || 1e-4;
     return g;
+  }
+  if (grip === 't') {
+    // v0.29: turn about the centre, in snapped steps; square to the grid again, it is an upright rectangle again
+    // (so it keeps the shared walls an upright module joins its neighbours by)
+    const base = alongX(z0) ? 0 : Math.PI / 2;   // the turn handle sits off the end of the long axis
+    const th = Math.round((Math.atan2(p.y - c0.y, p.x - c0.x) - base) / step) * step + (z0.rot ?? 0) * 0;
+    const L = alongX(z0) ? z0.w : z0.h, W = alongX(z0) ? z0.h : z0.w;
+    let rot = Math.atan2(Math.sin(th), Math.cos(th)); if (rot > Math.PI / 2 + 1e-6) rot -= Math.PI; else if (rot <= -Math.PI / 2 + 1e-6) rot += Math.PI;
+    if (Math.abs(rot) < 1e-6) return { ...geomOf(z0), x: c0.x - L / 2, y: c0.y - W / 2, w: L, h: W, rot: undefined };
+    if (Math.abs(Math.abs(rot) - Math.PI / 2) < 1e-6) return { ...geomOf(z0), x: c0.x - W / 2, y: c0.y - L / 2, w: W, h: L, rot: undefined };
+    return { ...geomOf(z0), x: c0.x - L / 2, y: c0.y - W / 2, w: L, h: W, rot };
   }
   if (grip === 'm') {
     // bend: both ends stay put and the middle follows the cursor, square to the line between them

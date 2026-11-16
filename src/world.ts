@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { gripsOf, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
+import { gripsOf, Grip, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
@@ -142,7 +142,7 @@ export function siteOf(world: World, z: Rect & { site?: number }): Site | undefi
 export function fitSite(world: World, st: Site) {
   const mine = world.zones.filter(z => z.site === st.id);
   if (!mine.length) return;
-  const r = padRect(bboxOf([st, ...mine.map(z => padRect(z, SITES.pad))]), 0);
+  const r = padRect(bboxOf([st, ...mine.map(z => padRect(shaped(z) ? zoneBox(z) : z, SITES.pad))]), 0);
   st.x = r.x; st.y = r.y; st.w = r.w; st.h = r.h;
 }
 
@@ -425,30 +425,37 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
 }
 
 /** v0.19: can this shape be swung round by its ends? A pier or satellite can: a concourse that belongs to no site. */
-export const canTurn = (z: Zone) => (z.type === 'concourse' && !z.sides && (z.site === undefined || !!z.rot || !!z.bend || !!z.taper)) || TURNABLE.has(z.type);
-/** v0.29: the landside modules that turn: a hall (check-in over claim), security and passport control. They turn and
- *  stretch on their grips like a pier, but do not bend or taper. */
+export const canTurn = (z: Zone) => z.type === 'concourse' && !z.sides && (z.site === undefined || !!z.rot || !!z.bend || !!z.taper);
+/** v0.29: the landside modules that turn: a hall (check-in over claim), security and passport control. They keep their
+ *  four edge grips (in their own frame when turned) and have a turn handle off one end, which turns them about their
+ *  centre; turned back square they are upright rectangles again. */
 export const TURNABLE = new Set<ZoneType>(['checkin', 'claim', 'security', 'passport']);
 /** The grips a zone shows (a turned hall has no bend grip). */
-export const gripsFor = (z: Zone) => gripsOf(z, canTurn(z)).filter(g => z.type === 'concourse' || (g.grip !== 'm' && g.grip !== 'ta' && g.grip !== 'tb'));
+export const gripsFor = (z: Zone): { grip: Grip; p: Pt }[] => {
+  if (!TURNABLE.has(z.type)) return gripsOf(z, canTurn(z));
+  const c = centreOf(z); const ax = z.w >= z.h; const off = 16;
+  return [...gripsOf(z, false), { grip: 't', p: toWorld(z, ax ? { x: z.x + z.w + off, y: c.y } : { x: c.x, y: z.y + z.h + off }) }];
+};
 /** v0.29: can a turned hall, security or passport module take this shape? Like a pier, it may overlap the other
  *  terminal modules on its level (it joins them where they overlap), but not a road, a curb, a lot or another hall. */
-export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; level: Level }, type: ZoneType, ignore: number[] = []): PlaceCheck {
+export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; level: Level }, type: ZoneType, ignore: number[] = [], aprons: Apron[] = []): PlaceCheck {
   const def = ZONES[type];
   if (z.w < def.minW && z.h < def.minW) return { ok: false, reason: `Too small: at least ${def.minW} m on one side` };
   if (Math.min(z.w, z.h) < def.minH) return { ok: false, reason: `Too narrow: at least ${def.minH} m deep` };
   const pts = zonePts(z); const edges = pts.map((p, i) => [p, pts[(i + 1) % pts.length]] as const);
   for (const p of pts) if (!inRect(p, SITE.buildable) || pointInPoly(p, SITE.lake)) return { ok: false, reason: 'Outside the site boundary or in the lake' };
   for (const rw of world.runways) for (const [a, b] of edges)
-    if (segsIntersect(a, b, rw.a, rw.b) || segDist(a, rw.a, rw.b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip' };
+    if (segsIntersect(a, b, rw.a, rw.b) || segDist(a, rw.a, rw.b) < TUNE.runwayClear || segDist(rw.a, a, b) < TUNE.runwayClear || segDist(rw.b, a, b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip' };
   for (const o of world.zones) {
     if (ignore.includes(o.id) || !zonesOverlap(z, o, 2)) continue;
     if (o.level === z.level && !TERMINAL_TYPES.has(o.type)) return { ok: false, reason: `Overlaps ${ZONES[o.type].short}` };
     if (o.level === z.level && (o.type === 'checkin' || o.type === 'claim') && (type === 'checkin' || type === 'claim')) return { ok: false, reason: 'Overlaps another hall' };
     if (o.level !== z.level && o.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
   }
-  if (z.level === 0) for (const w of world.ways) if (w.kind !== 'walk' && waySegs(w).some(([a, b]) => segInZone(z as Zone, a, b))) return { ok: false, reason: `Crosses a ${w.kind === 'taxi' ? 'taxiway' : 'road'}` };
-  for (const rd of world.rounds ?? []) if (inZone(rd, z, roundOuter(rd))) return { ok: false, reason: 'Overlaps a roundabout' };
+  // taxiways on any level, roads and roundabouts under a ground-level one
+  for (const w of world.ways) if ((w.kind === 'taxi' || (w.kind === 'road' && z.level === 0)) && waySegs(w).some(([a, b]) => segInZone(z as Zone, a, b))) return { ok: false, reason: `Crosses a ${w.kind === 'taxi' ? 'taxiway' : 'road'}` };
+  if (z.level === 0) for (const rd of world.rounds ?? []) if (inZone(rd, z, roundOuter(rd))) return { ok: false, reason: 'Overlaps a roundabout' };
+  for (const ap of aprons) if (!ap.self && (ap.pts.some(p => inZone(p, z)) || pts.some(p => pointInPoly(p, ap.pts)) || edges.some(([a, b]) => ap.pts.some((p, i) => segsIntersect(a, b, p, ap.pts[(i + 1) % ap.pts.length]))))) return { ok: false, reason: 'Overlaps an apron' };
   return { ok: true };
 }
 

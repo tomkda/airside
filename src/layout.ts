@@ -33,10 +33,11 @@ function edgesOf(z: Zone): { a: Pt; b: Pt; inward: Pt; depth: number }[] {
 }
 
 /** Length of an axis-aligned edge that touches another rectangle's boundary. */
-function touchLen(e: { a: Pt; b: Pt; inward?: Pt }, o: Zone) {
+function touchLen(e: { a: Pt; b: Pt; inward?: Pt }, o: Zone, level?: number) {
   // v0.29: a turned edge, or a turned neighbour: how much of the edge has the neighbour just outside it
   const tilted = Math.abs(e.a.y - e.b.y) >= 0.5 && Math.abs(e.a.x - e.b.x) >= 0.5;
   if ((tilted || shaped(o)) && e.inward) {
+    if (level !== undefined && o.level !== level) return 0;   // (a neighbour on the other level is not at this edge)
     const L = dist(e.a, e.b); const n = Math.max(2, Math.ceil(L / 2)); let k = 0;
     for (let i = 0; i < n; i++) { const p = lerpPt(e.a, e.b, (i + 0.5) / n); if (inZone({ x: p.x - e.inward.x * 0.8, y: p.y - e.inward.y * 0.8 }, o)) k++; }
     return (L * k) / n;
@@ -54,7 +55,7 @@ export function orient(z: Zone, world: World) {
   const edges = edgesOf(z);
   const ups = world.zones.filter(o => o.id !== z.id && UPSTREAM[z.type].includes(o.type));
   let best = edges[1], bs = 0;
-  for (const e of edges) { const s = ups.reduce((n, o) => n + touchLen(e, o), 0); if (s > bs) { bs = s; best = e; } }
+  for (const e of edges) { const s = ups.reduce((n, o) => n + touchLen(e, o, z.level), 0); if (s > bs) { bs = s; best = e; } }
   if (bs === 0 && ups.length) {
     const c = center(z);
     const U = center(ups.reduce((m, o) => (dist(center(o), c) < dist(center(m), c) ? o : m)));

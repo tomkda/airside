@@ -388,7 +388,9 @@ const rectGap = (a: Rect, b: Rect) => Math.hypot(Math.max(0, a.x - (b.x + b.w), 
 function blocker(world: World, zones: Zone[], aprons: Rect[]) {
   return (a: Pt, b: Pt, ends: Rect[]) => {
     const segHits = (r: Rect) => { for (let i = 1; i < 24; i++) { const t = i / 24; const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; if (p.x > r.x + 1 && p.x < r.x + r.w - 1 && p.y > r.y + 1 && p.y < r.y + r.h - 1) return true; } return false; };
-    if (zones.some(z => z.level === 0 && !ends.includes(z) && segHits(z))) return true;
+    // (v0.29: a turned one by its true outline)
+    const segIn = (z: Zone) => { for (let i = 1; i < 24; i++) { const t = i / 24; if (inZone({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, z, -1)) return true; } return false; };
+    if (zones.some(z => z.level === 0 && !ends.includes(z) && (z.rot ? segIn(z) : segHits(z)))) return true;
     if (aprons.some(segHits)) return true;
     if (world.ways.some(w => w.kind === 'taxi' && segsCross(a, b, w.a, w.b))) return true;
     return world.runways.some(r => segsCross(a, b, r.a, r.b));
