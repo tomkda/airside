@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
 import { derive, newWorld, canPlaceWay, canPlaceTurned, gripsFor, canPlacePier, migrateWorld } from './src/world';
+import { shellsOf } from './src/shell';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
 import { regrip, gripsOf, toWorld } from './src/shapes';
@@ -226,6 +227,27 @@ for (const deg of [12, -20]) {
   check('a saved world keeps good outlines and drops broken ones', m.cuts.length === 1 && m.zones.find(q => q.id === z.id).poly.length === 5 && !m.zones.find(q => q.id === 98).poly);
   let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 2) sim.step(0.25);
   check('it flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
+// v0.32 (cases found by review): cut-outs that cover a piece's middle, split a building, or cross it with no corner inside
+{ const P = a => a.map(([x, y]) => ({ x, y })); const A = r => { let t = 0; for (let i = 0; i < r.length; i++) { const p = r[i], q = r[(i + 1) % r.length]; t += p.x * q.y - q.x * p.y; } return Math.abs(t / 2); };
+  const w = sampleWorld(); const c = w.zones.find(q => q.type === 'concourse'); const full = A(shellsOf(w.zones)[0].outer);
+  const sh = cuts => shellsOf(w.zones, cuts.map((pts, i) => ({ id: 900 + i, level: 1, pts: P(pts) })));
+  const notch = sh([[[c.x + c.w / 2 - 20, c.y - 20], [c.x + c.w / 2 + 20, c.y - 20], [c.x + c.w / 2 + 20, c.y + c.h / 2 + 10], [c.x + c.w / 2 - 20, c.y + c.h / 2 + 10]]]);
+  check('a notch over the middle of the concourse keeps its building', notch.length === 1 && notch[0].ids.includes(c.id) && notch[0].cuts.length === 1);
+  const split = sh([[[c.x + 100, c.y - 20], [c.x + 140, c.y - 20], [c.x + 140, c.y + c.h + 20], [c.x + 100, c.y + c.h + 20]]]);
+  const kept = split.reduce((t, q) => t + A(q.outer), 0);
+  check('a cut-out across the concourse leaves two buildings, both with the concourse in them (' + Math.round(kept) + ' of ' + Math.round(full) + ' m²)', split.length === 2 && split.every(q => q.ids.includes(c.id)) && kept > full - 40 * c.h - 400);
+  const w2 = sampleWorld(); const c2 = w2.zones.find(q => q.type === 'concourse'); w2.cuts = [{ id: 950, level: 1, pts: P([[c2.x + 100, c2.y - 20], [c2.x + 140, c2.y - 20], [c2.x + 140, c2.y + c2.h + 20], [c2.x + 100, c2.y + c2.h + 20]]) }];
+  const d2 = derive(w2); check('... and the shell takes it, with no lot under it', d2.shells.some(q => q.cuts?.includes(950)) && ![...d2.shops.values()].flat().some(sh => { const m = sh.pts.reduce((a, p) => ({ x: a.x + p.x / sh.pts.length, y: a.y + p.y / sh.pts.length }), { x: 0, y: 0 }); return m.x > c2.x + 100 && m.x < c2.x + 140; }));
+  const w3 = sampleWorld(); w3.cuts = [{ id: 951, level: 1, pts: P([[100, 100], [200, 100], [200, 200]]) }]; const d3 = derive(w3), d0 = derive(sampleWorld());
+  check('a cut-out over nothing takes nothing', [...d3.shops.values()].flat().length === [...d0.shops.values()].flat().length);
+  check('a new world starts with an empty list of cut-outs (so undo can put it back)', Array.isArray(newWorld().cuts) && newWorld().cuts.length === 0);
+  // a thin L whose middle misses the grid: it still has a point inside and joins the concourse it overlaps
+  const L = P([[c.x + 200, c.y + 30], [c.x + 500, c.y + 30], [c.x + 500, c.y + 46], [c.x + 216, c.y + 46], [c.x + 216, c.y + 330], [c.x + 200, c.y + 330]]);
+  const lz = { id: 990, type: 'concourse', level: 1, x: c.x + 200, y: c.y + 30, w: 300, h: 300, tier: 0, cls: 2, poly: L };
+  const ls = shellsOf([...w.zones, lz]); check('a thin L-shaped free area joins the concourse it overlaps', ls.some(q => q.ids.includes(990) && q.ids.includes(c.id)));
+  const tri = { id: 991, type: 'concourse', level: 1, x: 3300, y: 3700, w: 200, h: 200, tier: 0, cls: 2, poly: P([[3300, 3700], [3500, 3700], [3300, 3900]]) };
+  const w4 = sampleWorld(); w4.zones.push(tri);
+  check('a taxiway may run through the empty half of the box round a triangular free area', canPlaceWay(w4, 'taxi', { x: 3420, y: 3880 }, { x: 3520, y: 3780 }, []).ok || console.log('   ', canPlaceWay(w4, 'taxi', { x: 3420, y: 3880 }, { x: 3520, y: 3780 }, []).reason)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

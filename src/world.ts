@@ -66,7 +66,7 @@ export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: 
   /** v0.32: cut-outs: polygons taken away from the buildings they are drawn over. */
   cuts?: Cut[] }
 
-export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [] });
+export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [], cuts: [] });
 
 /** Bring older saves up to date. */
 /** v0.32: the budget of a free-drawn area: nothing carved, its long axis its box's. */
@@ -402,7 +402,7 @@ export function canPlacePier(world: World, z: { x: number; y: number; w: number;
 }
 /** Does a segment pass through a turned zone (2 m inside its outline)? */
 function segInZone(z: Zone, a: Pt, b: Pt): boolean {
-  if (z.sides || z.bend || z.taper) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
+  if (z.sides || z.bend || z.taper || z.poly) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
   const la = toLocal(z, a), lb = toLocal(z, b);
   return rectSegDist(inset(z, 2), la, lb) === 0;
 }
@@ -514,7 +514,7 @@ export function derive(source: World): Derived {
   const keep: { a: Pt; b: Pt }[] = [];
   for (const w of [...source.ways.filter(q => q.kind !== 'taxi'), ...fore, ...laid, ...laidDrives]) for (const [a, b] of waySegs(w)) keep.push({ a, b });
   // v0.23: one outline per building; its pieces share a gate letter and one run of gate numbers
-  const shells = shellsOf(source.zones, world.cuts ?? []); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
+  const shells = shellsOf(source.zones, world.cuts ?? []); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) if (!shellOf.has(id)) shellOf.set(id, sh);   // (a piece a cut-out splits is in each part; it is named by the largest)
   const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
   const junctions = junctionsOf(shells, source.zones);
   // (v0.32: and a building a cut-out takes from, or one with a free-drawn piece: its outline is not its pieces')
@@ -593,7 +593,8 @@ export function derive(source: World): Derived {
   }
   // v0.32: nothing stands where a cut-out has taken the floor away: lots and fit-out under it go, and the spine and
   // moving walkways stop at its edge (as at a junction space)
-  const cutJ = (world.cuts ?? []).map(k => ({ level: k.level, rings: [k.pts] } as unknown as Junction));
+  const took = new Set(shells.flatMap(sh => sh.cuts ?? []));   // (only the cut-outs that took floor from a building)
+  const cutJ = (world.cuts ?? []).filter(k => took.has(k.id)).map(k => ({ level: k.level, rings: [k.pts] } as unknown as Junction));
   if (cutJ.length) for (const [id, list] of shops) {
     const z = world.zones.find(q => q.id === id)!; const ks = cutJ.filter(k => k.level === z.level); if (!ks.length) continue;
     shops.set(id, list.filter(sh => !ks.some(k => inJunction(polyCentre(sh.pts), k))));

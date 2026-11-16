@@ -60,6 +60,8 @@ export function poleOf(poly: Pt[]): Pt {
     const p = { x: b.x + (b.w * i) / 16, y: b.y + (b.h * j) / 16 }; if (!inPoly(p, poly)) continue;
     const d = edgeDist(p, poly); if (d > bd) { bd = d; best = p; }
   }
+  // (a thin shape the grid misses: the middle of its largest triangle, which is always inside)
+  if (bd < 0) { const t = triangulate(poly).reduce((m, q) => (Math.abs(signedArea(q)) > Math.abs(signedArea(m)) ? q : m)); best = { x: (t[0].x + t[1].x + t[2].x) / 3, y: (t[0].y + t[1].y + t[2].y) / 3 }; }
   poles.set(poly, best); return best;
 }
 /** Is a polygon simple (no edge crossing another)? */

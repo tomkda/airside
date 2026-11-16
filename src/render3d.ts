@@ -464,6 +464,7 @@ export class Renderer3D {
     }
 
     // v0.23: a building of several pieces gets one roof over all of them, to its rounded outline
+    const openSite = (z: Zone) => lod === 'terminal' && (focus === null || siteOf(sim.world, z)?.id === focus || d.termOf.get(z.id)?.site?.id === focus);
     // (v0.32: a building with a free area in it, or a cut-out taken from it, is modelled from its outline alone:
     // a plinth, glass walls round every ring, courtyards included, and the roof, with no boxes of its pieces)
     const freeIds = new Set<number>();
@@ -473,17 +474,18 @@ export class Renderer3D {
       const free = sh.cut || sh.ids.some(id => d.zones.find(z => z.id === id)?.poly);
       if (free) {
         sh.ids.forEach(id => freeIds.add(id));
-        add3(extrudeShape(sh.rings, L1.z0, L1.z0 + 0.7, PLINTH));
-        for (const r of sh.rings) add3(prism(r, L1.z0 + 0.7, L1.z1 - 1.1, GLASS.concourse, this.glassMat));
-        add3(extrudeShape(sh.rings, L1.z1 - 1.1, L1.z1 - 0.3, ROOF));
+        const open = sh.ids.some(id => { const q = d.zones.find(z => z.id === id); return !!q && openSite(q); });
+        // (opened up: the floor to the outline, no roof, so the fit-out shows)
+        add3(extrudeShape(sh.rings, L1.z0, L1.z0 + (open ? 0.5 : 0.7), open ? MOD_COL.concourse : PLINTH));
+        for (const r of sh.rings) add3(prism(r, L1.z0 + 0.7, L1.z1 - 1.1, GLASS.concourse, this.glassMat, false));   // (walls only: a fan cap is wrong on a concave outline)
+        if (!open) add3(extrudeShape(sh.rings, L1.z1 - 1.1, L1.z1 - 0.3, ROOF));
       } else if (sh.ids.length > 1) add3(extrudeShape(sh.rings, L1.z1 - 0.5, L1.z1 + 0.25, ROOF));
     }
     // ---- buildings: a glazed box under a white roof, or opened up (glass walls, floor and fit-out)
-    const openSite = (z: Zone) => lod === 'terminal' && (focus === null || siteOf(sim.world, z)?.id === focus || d.termOf.get(z.id)?.site?.id === focus);
     const solid: Box[] = []; const glazing: Box[] = []; const see: Box[] = []; const fit: Box[] = []; const roofs: Box[] = [];
     for (const z of d.zones) {
       if (!ZONES[z.type].terminal || rising.has(z.id)) continue;
-      if (freeIds.has(z.id)) continue;
+      if (freeIds.has(z.id) && !openSite(z)) continue;   // (its envelope is the outline's; opened up, its floor and fit-out are its own)
       const L = LEVELS[z.level];
       const sel = this.ren.selected?.kind === 'zone' && this.ren.selected.id === z.id;
       if (z.sides) {
@@ -512,10 +514,11 @@ export class Renderer3D {
         continue;
       }
       const c = sel ? '#8FB0C6' : MOD_COL[z.type];
-      if (z.level > this.ren.level) { see.push({ ...z, z0: L.z0, z1: L.z1 - 0.4, c }); continue; }
-      solid.push({ ...z, z0: L.z0, z1: L.z0 + 0.5, c });
+      const own = !freeIds.has(z.id);   // (a piece of a free-drawn or cut building has no box of its own: the outline is drawn)
+      if (z.level > this.ren.level) { if (own) see.push({ ...z, z0: L.z0, z1: L.z1 - 0.4, c }); continue; }
+      if (own) solid.push({ ...z, z0: L.z0, z1: L.z0 + 0.5, c });
       if (z.level < this.ren.level) continue;
-      see.push({ ...z, z0: L.z0 + 0.5, z1: L.z1 - 0.4, c });
+      if (own) see.push({ ...z, z0: L.z0 + 0.5, z1: L.z1 - 0.4, c });
       const f = d.frames.get(z.id);
       for (const it of f?.items ?? []) {
         const h = ITEM_H[it.k]; if (!h || !it.closed) continue;
@@ -860,15 +863,17 @@ function slab(a: Pt, b: Pt, w: number, z0: number, z1: number, c: string, ramp: 
   return m;
 }
 /** An upright prism on a convex outline: walls and a flat top. */
-function prism(pts: Pt[], z0: number, z1: number, c: string, material?: THREE.Material) {
+function prism(pts: Pt[], z0: number, z1: number, c: string, material?: THREE.Material, cap = true) {
   const pos: number[] = []; const idx: number[] = []; const n = pts.length;
   for (let i = 0; i < n; i++) {
     const a = pts[i], b = pts[(i + 1) % n]; const k = pos.length / 3;
     pos.push(a.x, z0, a.y, b.x, z0, b.y, b.x, z1, b.y, a.x, z1, a.y); idx.push(k, k + 2, k + 1, k, k + 3, k + 2);
   }
-  const t0 = pos.length / 3; let cx = 0, cy = 0; for (const p of pts) { cx += p.x / n; cy += p.y / n; }
-  pos.push(cx, z1, cy); for (const p of pts) pos.push(p.x, z1, p.y);
-  for (let i = 0; i < n; i++) idx.push(t0, t0 + 1 + ((i + 1) % n), t0 + 1 + i);
+  if (cap) {
+    const t0 = pos.length / 3; let cx = 0, cy = 0; for (const p of pts) { cx += p.x / n; cy += p.y / n; }
+    pos.push(cx, z1, cy); for (const p of pts) pos.push(p.x, z1, p.y);
+    for (let i = 0; i < n; i++) idx.push(t0, t0 + 1 + ((i + 1) % n), t0 + 1 + i);
+  }
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
   const m = new THREE.Mesh(g, material ?? new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide })); m.castShadow = true; m.receiveShadow = true;
   return m;

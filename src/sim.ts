@@ -5,7 +5,7 @@ import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
 import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { wayLen, isRingRef } from './ways';
-import { toLocal, clampInto, frameOf } from './shapes';
+import { toLocal, clampInto, frameOf, polyArea } from './shapes';
 import { flowBins, newFlow, tenantsOf } from './commerce';
 import { Goal, checkGoals } from './goals';
 import { DJ, dijkstra, trace, nearestNode } from './net';
@@ -1304,7 +1304,7 @@ export class Sim {
     const s = this.stats;
     const staffN = this.staff.agents + this.staff.screeners + this.staff.handlers + (this.staff.officers ?? 0);
     s.cost.staff = staffN * TUNE.wagePerDay;
-    s.cost.upkeep = this.world.zones.reduce((u, z) => u + z.w * z.h * ZONES[z.type].upkeepPerM2 * (z.type === 'parking' ? 1 + 0.6 * ((z.floors ?? 1) - 1) : z.type === 'hotel' ? 0 : 1), 0)
+    s.cost.upkeep = this.world.zones.reduce((u, z) => u + (z.poly ? polyArea(z.poly) : z.w * z.h) * ZONES[z.type].upkeepPerM2 * (z.type === 'parking' ? 1 + 0.6 * ((z.floors ?? 1) - 1) : z.type === 'hotel' ? 0 : 1), 0)
       + this.d.runways.reduce((u, r) => u + r.length * 4, 0)
       + this.d.trainLinks.reduce((u, l) => u + (l.apm ? dist(l.a, l.b) * MOVER.upkeepPerM : 0), 0)
       + this.world.ways.reduce((u, w) => u + wayLen(w) * (w.kind === 'taxi' ? 1.2 : w.kind === 'road' ? 0.8 : 0.2), 0);

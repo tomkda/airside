@@ -15,8 +15,8 @@ import { Shaped, zonePts, heart } from './shapes';
 
 /** `rings`: the outline, outer boundaries and holes together (fill with the even-odd rule). `ids`: the zones it is made of. */
 export interface Shell { level: number; ids: number[]; rings: Pt[][]; outer: Pt[];
-  /** v0.32: a cut-out takes something away from it (so its outline is no longer just its pieces'). */
-  cut?: boolean }
+  /** v0.32: a cut-out takes something away from it (so its outline is no longer just its pieces'), and which. */
+  cut?: boolean; cuts?: number[] }
 /** v0.32: a cut-out: a polygon taken away from whatever building it is drawn over, on one level. Saved with the world. */
 export interface Cut { id: number; level: number; pts: Pt[] }
 export const SHELL = { fillet: 16, ease: 5, scale: 100 };   // inside-corner radius, outside-corner radius (m); Clipper works in whole numbers
@@ -59,29 +59,35 @@ export function shellsOf(zones: (Shaped & { id: number; type: string; level: num
       paths = offset(offset(paths, -SHELL.ease), SHELL.ease);
       if (!paths.length) continue;
       const raw = fromPath(ex.outer);
-      const owned = zs.filter(z => !taken.has(z.id) && inPoly(heart(z), raw));
-      // v0.32: then take away every cut-out on this level that reaches it, after the rounding (so a narrow cut-out is
-      // not filled back in by the fillet), and ease the corners the cut-out made
-      const hit = mine.filter(k => owned.some(z => k.pts.some(p => inPoly(p, zonePts(z))) || zonePts(z).some(p => inPoly(p, k.pts))));
-      const parts = hit.length ? exec(paths, hit.map(k => toPath(k.pts)), ClipperLib.ClipType.ctDifference) : [{ outer: null as unknown as IPath, holes: [] }];
-      for (const part of parts) {
-        let ps: IPath[] = paths;
-        if (hit.length) {
-          ps = [part.outer, ...part.holes];
-          ps = offset(offset(ps, SHELL.ease), -SHELL.ease);
-          ps = offset(offset(ps, -SHELL.ease), SHELL.ease);
-          if (!ps.length) continue;
-        }
+      const owned = zs.filter(z => !taken.has(z.id) && inPoly(heart(z), raw)); owned.forEach(z => taken.add(z.id));
+      // v0.32: then take away every cut-out on this level whose floor overlaps it, after the rounding (so a narrow
+      // cut-out is not filled back in by the fillet), and ease the corners the cut-out made
+      const hit = mine.filter(k => owned.some(z => overlapArea([toPath(zonePts(z))], [toPath(k.pts)]) > 1));
+      if (!hit.length) { const rings = paths.map(fromPath); if (owned.length) out.push({ level, ids: owned.map(z => z.id), rings, outer: rings.reduce((m, r) => (Math.abs(area(r)) > Math.abs(area(m)) ? r : m)) }); continue; }
+      // a cut-out may split the building: each part with floor is a building of its own, made of every piece with
+      // floor in it (a piece cut in two is in both), the part holding most of a piece first
+      const parts: { ids: number[]; rings: Pt[][]; outer: Pt[]; a: number }[] = [];
+      for (const part of exec(paths, hit.map(k => toPath(k.pts)), ClipperLib.ClipType.ctDifference)) {
+        let ps: IPath[] = [part.outer, ...part.holes];
+        ps = offset(offset(ps, SHELL.ease), -SHELL.ease);
+        ps = offset(offset(ps, -SHELL.ease), SHELL.ease);
+        if (!ps.length) continue;
         const rings = ps.map(fromPath);
         const outer = rings.reduce((m, r) => (Math.abs(area(r)) > Math.abs(area(m)) ? r : m));
-        // (a piece belongs to the part its heart is in, or else the first part it reaches)
-        const ids = owned.filter(z => !taken.has(z.id) && (inPoly(heart(z), outer) || zonePts(z).some(p => inPoly(p, outer)))).map(z => z.id);
-        ids.forEach(i => taken.add(i));
-        if (ids.length) out.push({ level, ids, rings, outer, ...(hit.length ? { cut: true } : {}) });
+        const ids = owned.filter(z => overlapArea([toPath(zonePts(z))], ps) > 1).map(z => z.id);
+        if (ids.length) parts.push({ ids, rings, outer, a: Math.abs(area(outer)) });
       }
+      parts.sort((p, q) => q.a - p.a);
+      for (const p of parts) out.push({ level, ids: p.ids, rings: p.rings, outer: p.outer, cut: true, cuts: hit.map(k => k.id) });
     }
   }
   return out;
+}
+/** The area (m²) two sets of paths have in common. */
+function overlapArea(a: IPath[], b: IPath[]) {
+  const c = new ClipperLib.Clipper(); c.AddPaths(a, ClipperLib.PolyType.ptSubject, true); c.AddPaths(b, ClipperLib.PolyType.ptClip, true);
+  const sol = new ClipperLib.Paths(); c.Execute(ClipperLib.ClipType.ctIntersection, sol, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  return (sol as IPath[]).reduce((t, p) => t + ClipperLib.Clipper.Area(p), 0) / (SHELL.scale * SHELL.scale);
 }
 function area(r: Pt[]) { let a = 0; for (let i = 0; i < r.length; i++) { const p = r[i], q = r[(i + 1) % r.length]; a += p.x * q.y - q.x * p.y; } return a / 2; }
 

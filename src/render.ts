@@ -669,6 +669,11 @@ export class Renderer {
     }
     // v0.25: the spaces a building keeps for itself where its pieces meet: a hall, a food court or a garden, and
     // courtyards open to the sky. Drawn over the floor, under the labels.
+    // (v0.32: a cut-out that takes no floor, left where a building was moved away, is drawn dashed so it can be found)
+    if (!tilted && this.lod !== 'airfield' && sim.world.cuts?.length) {
+      const took = new Set(sim.d.shells.flatMap(sh => sh.cuts ?? []));
+      for (const k of sim.world.cuts) if (!took.has(k.id)) { g.setLineDash([6, 4]); g.strokeStyle = 'rgba(176,71,43,0.6)'; g.lineWidth = 1.2; this.path(k.pts, 0); g.stroke(); g.setLineDash([]); }
+    }
     if (!tilted && this.lod !== 'airfield') for (const j of sim.d.junctions) {
       if (j.level !== active) continue;
       const court = j.kind === 'court', green = court || j.kind === 'garden'; const zz = this.cam.zoom;
@@ -819,6 +824,7 @@ export class Renderer {
 
   /** Commercial heatmap: today's footfall along the spine, bin by bin, as a band on the concourse centreline. */
   flowBand(sim: Sim, zn: Zone, top: number) {
+    if (zn.poly) return;   // (a free area has no spine to count along)
     const B = sim.d.budgets.get(zn.id); const f = sim.flowDay.get(zn.id) ?? zn.flow; if (!B || !f) return;
     const max = Math.max(1, ...f.w);
     const bin = COMMERCE.binM;
@@ -1013,7 +1019,7 @@ export class Renderer {
 
   /** A roof plan for a module seen as massing: parapet line, a clerestory down a concourse, plant enclosures. */
   roofPlan(zn: Zone, top: number) {
-    const z = this.cam.zoom; if (z < 0.2) return;
+    const z = this.cam.zoom; if (z < 0.2 || zn.poly) return;
     const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
     g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
     if (!this.shellIds.has(zn.id) || this.tilt > 0.02) { const F = frameOf(zn); this.path(zn.sides ? this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, sides: zn.sides }) : this.part(zn, { x: F.x + k, y: F.y + k, w: F.w - 2 * k, h: F.h - 2 * k }), top); g.stroke(); }
