@@ -27,7 +27,7 @@ export function heatRamp(v: number, alpha = 1) {
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Ghost {
-  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect & { rot?: number; sides?: number }; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
+  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect & { rot?: number; sides?: number; poly?: Pt[] }; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
   way?: { kind: WayKind; cls: number; lanes: number }; snapA?: boolean; snapB?: boolean;
   extras?: { a: Pt; b: Pt; cls: number }[];
   /** v0.15: the modules a new terminal would be laid out with. */
@@ -117,7 +117,8 @@ export class Renderer {
     if (close) g.closePath();
   }
   /** The corners of a rectangle. A turned zone (v0.17) gives its turned corners; `pivot` turns a part of one about the zone's centre. */
-  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number; bend?: number; taper?: number }): Pt[] {
+  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number; bend?: number; taper?: number; poly?: Pt[] }): Pt[] {
+    if (r.poly) return r.poly;   // a free-drawn area (v0.32)
     if (r.sides) return hallPts(r);   // a round or polygonal hall (v0.18)
     if (r.bend || r.taper) return zonePts(r);    // a bent pier (v0.20) or a tapered one (v0.21)
     const c = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
@@ -668,6 +669,11 @@ export class Renderer {
     }
     // v0.25: the spaces a building keeps for itself where its pieces meet: a hall, a food court or a garden, and
     // courtyards open to the sky. Drawn over the floor, under the labels.
+    // (v0.32: a cut-out that takes no floor, left where a building was moved away, is drawn dashed so it can be found)
+    if (!tilted && this.lod !== 'airfield' && sim.world.cuts?.length) {
+      const took = new Set(sim.d.shells.flatMap(sh => sh.cuts ?? []));
+      for (const k of sim.world.cuts) if (!took.has(k.id)) { g.setLineDash([6, 4]); g.strokeStyle = 'rgba(176,71,43,0.6)'; g.lineWidth = 1.2; this.path(k.pts, 0); g.stroke(); g.setLineDash([]); }
+    }
     if (!tilted && this.lod !== 'airfield') for (const j of sim.d.junctions) {
       if (j.level !== active) continue;
       const court = j.kind === 'court', green = court || j.kind === 'garden'; const zz = this.cam.zoom;
@@ -818,6 +824,7 @@ export class Renderer {
 
   /** Commercial heatmap: today's footfall along the spine, bin by bin, as a band on the concourse centreline. */
   flowBand(sim: Sim, zn: Zone, top: number) {
+    if (zn.poly) return;   // (a free area has no spine to count along)
     const B = sim.d.budgets.get(zn.id); const f = sim.flowDay.get(zn.id) ?? zn.flow; if (!B || !f) return;
     const max = Math.max(1, ...f.w);
     const bin = COMMERCE.binM;
@@ -1012,7 +1019,7 @@ export class Renderer {
 
   /** A roof plan for a module seen as massing: parapet line, a clerestory down a concourse, plant enclosures. */
   roofPlan(zn: Zone, top: number) {
-    const z = this.cam.zoom; if (z < 0.2) return;
+    const z = this.cam.zoom; if (z < 0.2 || zn.poly) return;
     const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
     g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
     if (!this.shellIds.has(zn.id) || this.tilt > 0.02) { const F = frameOf(zn); this.path(zn.sides ? this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, sides: zn.sides }) : this.part(zn, { x: F.x + k, y: F.y + k, w: F.w - 2 * k, h: F.h - 2 * k }), top); g.stroke(); }

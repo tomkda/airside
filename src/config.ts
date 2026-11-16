@@ -308,6 +308,9 @@ export const FRONTAGE = {
 export const PIER = { minLen: 60, widths: [40, 50, 60], snapDeg: 5 };
 // v0.18: round and polygonal halls. Real rotundas and hub halls run from about 60 m (a satellite's central hall) to
 // 250 m or more across (the hub of an X-shaped terminal).
+/** v0.32: free-drawn areas and cut-outs. A free area must be at least a small hall (`min` m²); a cut-out a small
+ *  lightwell (`minCut`), and it costs `cutCost` of the floor it takes away (demolition and the new facade). */
+export const AREA = { min: 1500, minCut: 150, cutCost: 0.3 };
 export const HALL = { minDia: 60, maxDia: 400, shapes: [{ sides: 32, name: 'Round' }, { sides: 6, name: 'Hexagon' }, { sides: 8, name: 'Octagon' }] };
 // v0.16: the airside people mover that links a remote concourse to its terminal. ACRP Report 37 (Guidebook for
 // Planning and Implementing Automated People Mover Systems at Airports) gives airside shuttles cruising at

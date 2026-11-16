@@ -266,7 +266,12 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     const others = outlines.filter(o => !inShell.has(o.z.id));
     // a straight wall that a processing module stands against is landside along its whole length, as before
     const landWalls: { a: Pt; b: Pt }[] = [];
-    for (const q of zs) if (!q.sides) for (const sd of sidesOf(q)) {
+    // (a free area's walls are its own edges, each facing out, not its bounding box's)
+    const wallsOf = (q: Zone): { a: Pt; b: Pt; out: Pt; curve?: number }[] => !q.poly ? sidesOf(q) : q.poly.map((a, i) => {
+      const b = q.poly![(i + 1) % q.poly!.length]; const d = norm(sub(b, a)); let out = { x: d.y, y: -d.x };
+      if (pointInPoly(add(lerpPt(a, b, 0.5), out), q.poly!)) out = mul(out, -1); return { a, b, out };
+    });
+    for (const q of zs) if (!q.sides) for (const sd of wallsOf(q)) {
       if (sd.curve !== undefined) continue;
       const al0 = norm(sub(sd.b, sd.a)); const thin = [add(sd.a, add(al0, mul(sd.out, 0.5))), add(sd.b, add(mul(al0, -1), mul(sd.out, 0.5))), add(sd.b, add(mul(al0, -1), mul(sd.out, 6))), add(sd.a, add(al0, mul(sd.out, 6)))];
       if (others.some(o => LANDSIDE.has(o.z.type) && polyArea(polyClip(o.pts, thin)) > 2)) landWalls.push({ a: sd.a, b: sd.b });

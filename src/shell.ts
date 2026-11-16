@@ -14,7 +14,11 @@ import { Pt } from './geom';
 import { Shaped, zonePts, heart } from './shapes';
 
 /** `rings`: the outline, outer boundaries and holes together (fill with the even-odd rule). `ids`: the zones it is made of. */
-export interface Shell { level: number; ids: number[]; rings: Pt[][]; outer: Pt[] }
+export interface Shell { level: number; ids: number[]; rings: Pt[][]; outer: Pt[];
+  /** v0.32: a cut-out takes something away from it (so its outline is no longer just its pieces'), and which. */
+  cut?: boolean; cuts?: number[] }
+/** v0.32: a cut-out: a polygon taken away from whatever building it is drawn over, on one level. Saved with the world. */
+export interface Cut { id: number; level: number; pts: Pt[] }
 export const SHELL = { fillet: 16, ease: 5, scale: 100 };   // inside-corner radius, outside-corner radius (m); Clipper works in whole numbers
 
 type IPath = { X: number; Y: number }[];
@@ -32,29 +36,58 @@ function inPoly(p: Pt, poly: Pt[]) {
 }
 
 /** One shell for each group of concourse pieces on a level that touch or overlap. */
-export function shellsOf(zones: (Shaped & { id: number; type: string; level: number })[]): Shell[] {
+export function shellsOf(zones: (Shaped & { id: number; type: string; level: number })[], cuts: Cut[] = []): Shell[] {
   const out: Shell[] = [];
+  const exec = (subj: IPath[], clip: IPath[], type: number) => {
+    const c = new ClipperLib.Clipper();
+    c.AddPaths(subj, ClipperLib.PolyType.ptSubject, true);
+    if (clip.length) c.AddPaths(clip, ClipperLib.PolyType.ptClip, true);
+    const tree = new ClipperLib.PolyTree();
+    c.Execute(type, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+    return ClipperLib.JS.PolyTreeToExPolygons(tree) as { outer: IPath; holes: IPath[] }[];
+  };
   for (const level of [0, 1]) {
     const zs = zones.filter(z => z.type === 'concourse' && z.level === level); if (!zs.length) continue;
-    const c = new ClipperLib.Clipper();
     // (each piece is grown a hair, so pieces that only share a wall still merge)
-    for (const z of zs) c.AddPaths(offset([toPath(zonePts(z))], 0.3), ClipperLib.PolyType.ptSubject, true);
-    const tree = new ClipperLib.PolyTree();
-    c.Execute(ClipperLib.ClipType.ctUnion, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
-    for (const ex of ClipperLib.JS.PolyTreeToExPolygons(tree) as { outer: IPath; holes: IPath[] }[]) {
+    const subj = zs.flatMap(z => offset([toPath(zonePts(z))], 0.3));
+    const mine = cuts.filter(k => k.level === level && k.pts.length >= 3);
+    const taken = new Set<number>();
+    for (const ex of exec(subj, [], ClipperLib.ClipType.ctUnion)) {
       // fill the inside corners, then ease the outside ones; a building is rounded on its own, never bridged to its neighbour
       let paths: IPath[] = [ex.outer, ...ex.holes];
       paths = offset(offset(paths, SHELL.fillet), -SHELL.fillet);
       paths = offset(offset(paths, -SHELL.ease), SHELL.ease);
       if (!paths.length) continue;
-      const rings = paths.map(fromPath);
-      const outer = rings.reduce((m, r) => (Math.abs(area(r)) > Math.abs(area(m)) ? r : m));
       const raw = fromPath(ex.outer);
-      const ids = zs.filter(z => inPoly(heart(z), raw)).map(z => z.id);
-      if (ids.length) out.push({ level, ids, rings, outer });
+      const owned = zs.filter(z => !taken.has(z.id) && inPoly(heart(z), raw)); owned.forEach(z => taken.add(z.id));
+      // v0.32: then take away every cut-out on this level whose floor overlaps it, after the rounding (so a narrow
+      // cut-out is not filled back in by the fillet), and ease the corners the cut-out made
+      const hit = mine.filter(k => owned.some(z => overlapArea([toPath(zonePts(z))], [toPath(k.pts)]) > 1));
+      if (!hit.length) { const rings = paths.map(fromPath); if (owned.length) out.push({ level, ids: owned.map(z => z.id), rings, outer: rings.reduce((m, r) => (Math.abs(area(r)) > Math.abs(area(m)) ? r : m)) }); continue; }
+      // a cut-out may split the building: each part with floor is a building of its own, made of every piece with
+      // floor in it (a piece cut in two is in both), the part holding most of a piece first
+      const parts: { ids: number[]; rings: Pt[][]; outer: Pt[]; a: number }[] = [];
+      for (const part of exec(paths, hit.map(k => toPath(k.pts)), ClipperLib.ClipType.ctDifference)) {
+        let ps: IPath[] = [part.outer, ...part.holes];
+        ps = offset(offset(ps, SHELL.ease), -SHELL.ease);
+        ps = offset(offset(ps, -SHELL.ease), SHELL.ease);
+        if (!ps.length) continue;
+        const rings = ps.map(fromPath);
+        const outer = rings.reduce((m, r) => (Math.abs(area(r)) > Math.abs(area(m)) ? r : m));
+        const ids = owned.filter(z => overlapArea([toPath(zonePts(z))], ps) > 1).map(z => z.id);
+        if (ids.length) parts.push({ ids, rings, outer, a: Math.abs(area(outer)) });
+      }
+      parts.sort((p, q) => q.a - p.a);
+      for (const p of parts) out.push({ level, ids: p.ids, rings: p.rings, outer: p.outer, cut: true, cuts: hit.map(k => k.id) });
     }
   }
   return out;
+}
+/** The area (m²) two sets of paths have in common. */
+function overlapArea(a: IPath[], b: IPath[]) {
+  const c = new ClipperLib.Clipper(); c.AddPaths(a, ClipperLib.PolyType.ptSubject, true); c.AddPaths(b, ClipperLib.PolyType.ptClip, true);
+  const sol = new ClipperLib.Paths(); c.Execute(ClipperLib.ClipType.ctIntersection, sol, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  return (sol as IPath[]).reduce((t, p) => t + ClipperLib.Clipper.Area(p), 0) / (SHELL.scale * SHELL.scale);
 }
 function area(r: Pt[]) { let a = 0; for (let i = 0; i < r.length; i++) { const p = r[i], q = r[(i + 1) % r.length]; a += p.x * q.y - q.x * p.y; } return a / 2; }
 
@@ -75,7 +108,7 @@ export const JUNCTION = { grow: 6, min: 30, corner: 600, food: 400, hall: 1500, 
   // v0.31: counters round a food court or hall. A food-court counter is usually 6–9 m of frontage and 5–7 m deep with
   // its kitchen behind (from memory of airport concession practice, not a cited standard); `gap` keeps a spine's
   // way in clear.
-  counter: { front: 7, depth: 6, gap: 9, door: 14 } };
+  counter: { front: 7, depth: 6, gap: 9, door: 14, per: 900 } };   // per: a space over 10,000 m² gets at most one counter for every `per` m²
 
 type Ex = { outer: IPath; holes: IPath[] };
 function clip(type: number, subj: IPath[], clipP: IPath[], subjFill = ClipperLib.PolyFillType.pftNonZero, clipFill = ClipperLib.PolyFillType.pftNonZero): Ex[] {
@@ -113,8 +146,10 @@ function seedsIn(rings: Pt[][], outer: Pt[], step: number, margin: number, jitte
 export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type: string; level: number })[]): Junction[] {
   const out: Junction[] = [];
   for (const sh of shells) {
-    if (sh.ids.length < 2) continue;
-    const zs = zones.filter(z => sh.ids.includes(z.id)); const P = zs.map(z => toPath(zonePts(z)));
+    const zs = zones.filter(z => sh.ids.includes(z.id));
+    // (v0.32: a building of one piece has spaces of its own only if it is free-drawn, or a cut-out has made a courtyard)
+    if (sh.ids.length < 2 && !sh.cut && !zs.some(z => z.poly)) continue;
+    const P = zs.map(z => toPath(zonePts(z)));
     const shell = sh.rings.map(toPath); const EO = ClipperLib.PolyFillType.pftEvenOdd;
     // where two pieces overlap (a hall already has its own open middle, so a pier running into one is left to the hall)
     const cores: { ring: Pt[]; ids: number[] }[] = [];
@@ -135,6 +170,8 @@ export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type
       if (hubs.length) over = clip(ClipperLib.ClipType.ctDifference, flat(over), hubs);
       for (const e of over) if (Math.abs(area(fromPath(e.outer))) >= JUNCTION.min) cores.push({ ring: fromPath(e.outer), ids: [zs[i].id, zs[j].id] });
     }
+    // v0.32: a free-drawn area is open floor: all of it is the building's own space (a hall, a food court or a garden)
+    zs.forEach(z => { if (z.poly) for (const e of clip(ClipperLib.ClipType.ctIntersection, [toPath(z.poly)], sh.rings.map(toPath), ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftEvenOdd)) cores.push({ ring: fromPath(e.outer), ids: [z.id] }); });
     // floor the shell added in its inside corners
     // (a large stretch of it, like the gap closed between two piers standing close side by side, is a garden of its
     //  own; only a corner's worth joins the junction beside it)
@@ -178,9 +215,15 @@ function plant0(kind: JunctionKind, rings: Pt[][], outer: Pt[]): Junction['seeds
   if (kind === 'court') return trees(3);
   if (kind === 'food') return tables(JUNCTION.counter.depth + 2.5);   // (v0.31: clear of the counters round the edge)
   // a hall: planting in the middle (well clear of the edge), seating round it
-  const c = centroid(outer); const deep = trees(2.5).filter(p => edgeGap(p, rings) >= 11);
+  const c = centroid(outer); const all = trees(2.5).filter(p => edgeGap(p, rings) >= 11);
+  // (a grove in the middle, never more than about a sixth of the floor, so a large hall, like a free area, stays a hall)
+  const cap = Math.max(4, Math.round(Math.abs(area(outer)) / 6 / (step * step)));
+  const deep = all.length <= cap ? all : [...all].sort((p, q) => Math.hypot(p.x - c.x, p.y - c.y) - Math.hypot(q.x - c.x, q.y - c.y)).slice(0, cap);
   const far = deep.reduce((m, p) => Math.max(m, Math.hypot(p.x - c.x, p.y - c.y)), 0);
-  return [...deep, ...tables(JUNCTION.counter.depth + 2.5).filter(p => !deep.some(t => Math.hypot(t.x - p.x, t.y - p.y) < 5.5) && (!deep.length || Math.hypot(p.x - c.x, p.y - c.y) > far * 0.4))];
+  const seats = tables(JUNCTION.counter.depth + 2.5).filter(p => !deep.some(t => Math.hypot(t.x - p.x, t.y - p.y) < 5.5) && (!deep.length || Math.hypot(p.x - c.x, p.y - c.y) > far * 0.4));
+  // (and seating round it, at most about a fifth of the floor, nearest the grove first; the rest is open floor)
+  const room = Math.max(8, Math.round(Math.abs(area(outer)) / 5 / (JUNCTION.table * JUNCTION.table)));
+  return [...deep, ...(seats.length <= room ? seats : [...seats].sort((p, q) => Math.hypot(p.x - c.x, p.y - c.y) - Math.hypot(q.x - c.x, q.y - c.y)).slice(0, room))];
 }
 /** How far a point is from a junction space's edge (0 if it is inside). */
 export function junctionGap(p: Pt, j: Junction) { return inJunction(p, j) ? 0 : edgeGap(p, j.rings); }
@@ -223,7 +266,9 @@ export function counters(j: Junction, ends: Pt[], doors: Pt[] = []): { pts: Pt[]
       out.push({ pts: [p0, p1, p2, p3], door: { x: (p2.x + p3.x) / 2 + nIn.x, y: (p2.y + p3.y) / 2 + nIn.y }, front: F, depth: D });
     }
   }
-  return out;
+  // (v0.32: a very large space, like a free-drawn hall, gets counters in proportion to its floor, spread round it)
+  const max = Math.max(6, Math.floor(j.area / JUNCTION.counter.per));
+  return out.length <= max || j.area < 10000 ? out : Array.from({ length: max }, (_, i) => out[Math.floor((i * out.length) / max)]);
 }
 /** Is a point in a junction space (its holes are not part of it)? */
 export function inJunction(p: Pt, j: Junction) { return j.rings.reduce((n, r) => n + (inPoly(p, r) ? 1 : 0), 0) % 2 === 1; }

@@ -15,9 +15,62 @@ import { Pt, Rect, snap } from './geom';
 export interface Shaped extends Rect { rot?: number; sides?: number; bend?: number;
   /** v0.21: the bar tapers. `h` is its width half way along; its east end is `taper` metres wider than its west end
    *  (narrower if negative). Both walls move, so the centreline stays where it is. */
-  taper?: number }
+  taper?: number;
+  /** v0.32: a free-drawn area: its outline, any simple polygon. x, y, w, h are its bounding box. */
+  poly?: Pt[] }
 /** Anything that is not an upright rectangle. */
-export const shaped = (z: Shaped) => !!(z.rot || z.sides || z.bend || z.taper);
+export const shaped = (z: Shaped) => !!(z.rot || z.sides || z.bend || z.taper || z.poly);
+
+// ------------------------------------------------------------ free-drawn outlines (v0.32)
+/** How far a point is from a polygon's outline. */
+export function edgeDist(p: Pt, poly: Pt[]): number {
+  let m = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length]; const dx = b.x - a.x, dy = b.y - a.y; const L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / L)) : 0; m = Math.min(m, Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t));
+  }
+  return m;
+}
+const signedArea = (r: Pt[]) => { let a = 0; for (let i = 0; i < r.length; i++) { const p = r[i], q = r[(i + 1) % r.length]; a += p.x * q.y - q.x * p.y; } return a / 2; };
+/** A simple polygon cut into triangles (ear clipping), so anything that wants convex pieces can have them. */
+export function triangulate(poly: Pt[]): Pt[][] {
+  const pts = signedArea(poly) < 0 ? [...poly].reverse() : [...poly]; const idx = pts.map((_, i) => i); const out: Pt[][] = [];
+  const cross = (a: Pt, b: Pt, c: Pt) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const inTri = (p: Pt, a: Pt, b: Pt, c: Pt) => cross(a, b, p) >= -1e-9 && cross(b, c, p) >= -1e-9 && cross(c, a, p) >= -1e-9;
+  let guard = 0;
+  while (idx.length > 3 && guard++ < 5000) {
+    let cut = false;
+    for (let k = 0; k < idx.length; k++) {
+      const i0 = idx[(k + idx.length - 1) % idx.length], i1 = idx[k], i2 = idx[(k + 1) % idx.length]; const a = pts[i0], b = pts[i1], c = pts[i2];
+      if (cross(a, b, c) <= 1e-9) continue;   // a reflex corner is not an ear
+      if (idx.some(j => j !== i0 && j !== i1 && j !== i2 && inTri(pts[j], a, b, c))) continue;
+      out.push([a, b, c]); idx.splice(k, 1); cut = true; break;
+    }
+    if (!cut) break;   // (not simple: give up on the rest)
+  }
+  if (idx.length === 3) out.push(idx.map(i => pts[i]));
+  return out;
+}
+const tris = new WeakMap<Pt[], Pt[][]>(), poles = new WeakMap<Pt[], Pt>();
+/** A point well inside a polygon (the most inland of a grid of samples): for labels, and to walk towards. */
+export function poleOf(poly: Pt[]): Pt {
+  const hit = poles.get(poly); if (hit) return hit;
+  const b = polyBox(poly); let best = polyCentre(poly), bd = inPoly(best, poly) ? edgeDist(best, poly) : -1;
+  for (let i = 1; i < 16; i++) for (let j = 1; j < 16; j++) {
+    const p = { x: b.x + (b.w * i) / 16, y: b.y + (b.h * j) / 16 }; if (!inPoly(p, poly)) continue;
+    const d = edgeDist(p, poly); if (d > bd) { bd = d; best = p; }
+  }
+  // (a thin shape the grid misses: the middle of its largest triangle, which is always inside)
+  if (bd < 0) { const t = triangulate(poly).reduce((m, q) => (Math.abs(signedArea(q)) > Math.abs(signedArea(m)) ? q : m)); best = { x: (t[0].x + t[1].x + t[2].x) / 3, y: (t[0].y + t[1].y + t[2].y) / 3 }; }
+  poles.set(poly, best); return best;
+}
+/** Is a polygon simple (no edge crossing another)? */
+export function simplePoly(poly: Pt[]): boolean {
+  const n = poly.length; if (n < 3) return false;
+  const x = (a: Pt, b: Pt, c: Pt, d: Pt) => { const d1 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x), d2 = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x), d3 = (d.x - c.x) * (a.y - c.y) - (d.y - c.y) * (a.x - c.x), d4 = (d.x - c.x) * (b.y - c.y) - (d.y - c.y) * (b.x - c.x); return d1 * d2 < 0 && d3 * d4 < 0; };
+  for (let i = 0; i < n; i++) for (let j = i + 2; j < n; j++) { if (i === 0 && j === n - 1) continue; if (x(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) return false; }
+  return Math.abs(signedArea(poly)) > 1;
+}
 /** The width of a bar at each end, and how much wider or narrower than its middle it is a fraction `t` of the way along. */
 export const endWidths = (z: Shaped): [number, number] => [z.h - (z.taper ?? 0) / 2, z.h + (z.taper ?? 0) / 2];
 const widthK = (z: Shaped, t: number) => (z.taper && !z.sides ? 1 + (z.taper / z.h) * (t - 0.5) : 1);
@@ -97,7 +150,7 @@ export function toWorld(z: Shaped, p: Pt): Pt {
   return z.rot ? turn(q, centreOf(z), z.rot) : q;
 }
 /** The middle of the building itself. For a bent bar the centre of its box may lie outside it; this never does. */
-export const heart = (z: Shaped): Pt => (arcOf(z) ? toWorld(z, centreOf(frameOf(z))) : centreOf(z));
+export const heart = (z: Shaped): Pt => (z.poly ? poleOf(z.poly) : arcOf(z) ? toWorld(z, centreOf(frameOf(z))) : centreOf(z));
 /** The widest and narrowest an end of a tapered bar may be. */
 export const END_WIDTH = { min: 24, max: 160 };
 /** A line or outline given in the zone's straight frame, carried into the world. On a bent bar long edges are cut
@@ -129,6 +182,7 @@ export const dirWorld = (z: Shaped, d: Pt): Pt => (z.rot ? turn(d, { x: 0, y: 0 
 
 /** The zone's outline: its four corners in the order north-west, north-east, south-east, south-west of its own frame. */
 export function zonePts(z: Shaped): Pt[] {
+  if (z.poly) return z.poly.map(p => ({ x: p.x, y: p.y }));
   if (z.sides) return hallPts(z);
   const A = arcOf(z);
   if (A) {
@@ -143,12 +197,14 @@ export function zonePts(z: Shaped): Pt[] {
 }
 /** The zone's outline as convex pieces: itself, or for a bent bar (which is not convex) the wedges along its arc. */
 export function zoneParts(z: Shaped): Pt[][] {
+  if (z.poly) { let t = tris.get(z.poly); if (!t) { t = triangulate(z.poly); tris.set(z.poly, t); } return t; }   // (v0.32: a free area, as triangles)
   const A = arcOf(z); if (!A) return [zonePts(z)];
   const pts = zonePts(z); const n = pts.length / 2 - 1; const out: Pt[][] = [];
   for (let i = 0; i < n; i++) out.push([pts[i], pts[i + 1], pts[pts.length - 2 - i], pts[pts.length - 1 - i]]);
   return out;
 }
 export function inZone(p: Pt, z: Shaped, pad = 0): boolean {
+  if (z.poly) { const ins = inPoly(p, z.poly); if (!pad) return ins; const d = edgeDist(p, z.poly); return pad > 0 ? ins || d <= pad : ins && d >= -pad; }
   if (z.sides) return inPoly(p, hallPts(z, pad));
   const q = toLocal(z, p); const F = frameOf(z);
   return q.x >= F.x - pad && q.x <= F.x + F.w + pad && q.y >= F.y - pad && q.y <= F.y + F.h + pad;
@@ -160,6 +216,11 @@ export function zoneBox(z: Shaped): Rect {
 }
 /** The nearest point to p that is at least `margin` inside the zone. */
 export function clampInto(z: Shaped, p: Pt, margin = 3): Pt {
+  if (z.poly) {
+    const ok = (q: Pt) => inPoly(q, z.poly!) && edgeDist(q, z.poly!) >= margin; if (ok(p)) return p;
+    const h = poleOf(z.poly); for (let k = 1; k <= 24; k++) { const q = { x: p.x + ((h.x - p.x) * k) / 24, y: p.y + ((h.y - p.y) * k) / 24 }; if (ok(q)) return q; }
+    return h;
+  }
   if (z.sides) {
     if (inPoly(p, hallPts(z, -margin))) return p;
     const c = centreOf(z); const n = facetsOf(z); const apo = (Math.min(z.w, z.h) / 2) * Math.cos(Math.PI / n) - margin - 0.5;
@@ -222,11 +283,13 @@ export const zonesOverlap = (a: Shaped, b: Shaped, min = 1) => !!overlapOf(a, b,
 //   v0.20: a pier or satellite also has one in its middle (`m`): pull it sideways and the pier bends into an arc
 //   while both ends stay where they are.
 //   v0.21: and one on a corner of each end (`ta`, `tb`): it sets the width of that end alone, so the pier tapers.
-export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm' | 'ta' | 'tb' | 't';
-export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; off?: string[] }
-export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, off: z.off ? [...z.off] : undefined });
+export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm' | 'ta' | 'tb' | 't' | `v${number}`;
+export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; off?: string[]; poly?: Pt[] }
+export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, poly: z.poly ? z.poly.map(p => ({ ...p })) : undefined, off: z.off ? [...z.off] : undefined });
 export function setGeom(z: Geom, g: Geom) {
-  z.x = g.x; z.y = g.y; z.w = g.w; z.h = g.h;
+  // v0.32: a free area's outline goes where its box is put (so moving the box moves the outline)
+  if (g.poly) { const b = polyBox(g.poly); const dx = g.x - b.x, dy = g.y - b.y; z.poly = g.poly.map(p => ({ x: p.x + dx, y: p.y + dy })); z.x = g.x; z.y = g.y; z.w = b.w; z.h = b.h; }
+  else { delete z.poly; z.x = g.x; z.y = g.y; z.w = g.w; z.h = g.h; }
   if (g.rot) z.rot = g.rot; else delete z.rot;
   if (g.bend) z.bend = g.bend; else delete z.bend;
   if (g.taper) z.taper = g.taper; else delete z.taper;
@@ -250,6 +313,7 @@ function fitEnds(wa: number, wb: number, keep: 'a' | 'b', lim: GripLimits, was: 
 }
 const clampBend = (w: number, h: number, bend: number | undefined) => { const m = maxBend(w, h); const b = Math.max(-m, Math.min(m, bend ?? 0)); return Math.abs(b) < 4 ? undefined : b; };
 export function gripsOf(z: Geom, turns: boolean): { grip: Grip; p: Pt }[] {
+  if (z.poly) return z.poly.map((p, i) => ({ grip: `v${i}` as Grip, p }));   // (v0.32: a free area's corners)
   const c = centreOf(z);
   if (z.sides) return [{ grip: 'r', p: z.sides >= 24 ? { x: c.x + Math.min(z.w, z.h) / 2, y: c.y } : hallPts(z)[0] }];
   const n = toWorld(z, { x: c.x, y: z.y }), e = toWorld(z, { x: z.x + z.w, y: c.y }), s = toWorld(z, { x: c.x, y: z.y + z.h }), w = toWorld(z, { x: z.x, y: c.y });
@@ -271,6 +335,11 @@ export interface GripLimits { minLen: number; minWide: number; maxWide: number; 
 /** The shape `z0` becomes when `grip` is dragged to `p`. `z0` is the shape as it was when the drag began. */
 export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLimits): Geom {
   const c0 = centreOf(z0); const step = (lim.snapDeg * Math.PI) / 180;
+  if (z0.poly && grip[0] === 'v') {
+    // v0.32: a corner of a free area moves to the cursor (to the metre); the rest stays where it is
+    const i = Number(grip.slice(1)); const poly = z0.poly.map((q, k) => (k === i ? { x: snap(p.x, 1), y: snap(p.y, 1) } : { ...q })); const b = polyBox(poly);
+    return { ...geomOf(z0), x: b.x, y: b.y, w: b.w, h: b.h, poly };
+  }
   if (z0.sides) {
     const dia = Math.min(lim.maxDia, Math.max(lim.minDia, snap(2 * Math.hypot(p.x - c0.x, p.y - c0.y), 10)));
     const g: Geom = { ...geomOf(z0), x: c0.x - dia / 2, y: c0.y - dia / 2, w: dia, h: dia };
