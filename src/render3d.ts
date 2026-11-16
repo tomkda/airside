@@ -303,6 +303,46 @@ export class Renderer3D {
       else if (s.lanes >= 4) { solid(-0.25, 0.18, YELLOW); solid(0.25, 0.18, YELLOW); for (const k of [-1, 1]) dashedPath(offsetLine(mid, k * s.w / 4), 0.18, WHITE, 3, 6, 0.17); }
       else dashedPath(mid, 0.18, YELLOW, 3, 6, 0.17);
     }
+    // v0.30: the deck's own markings, at the deck's height as it climbs, and its ramp terminals on the ground: the broken
+    // line along each speed-change lane, the painted gore with its chevrons, and the arrows in the lane
+    for (const dk of d.decks) {
+      const n = dk.pts.length; const zAt = (i: number) => 0.2 + (LEVELS[1].z0 - 0.2) * dk.zs[i] + 0.04;
+      // a line `f` of the way out from the centreline to an edge (inset from it), between two points, at their heights
+      const edgePt = (i: number, k: number) => {
+        const p0 = dk.pts[Math.max(0, i - 1)], p1 = dk.pts[Math.min(n - 1, i + 1)]; const dv = norm(sub(p1, p0)); return { x: dk.pts[i].x - dv.y * k, y: dk.pts[i].y + dv.x * k };
+      };
+      const run = (k: (i: number) => number, keep: (i: number) => boolean, w: number, c: string, dash = 0) => {
+        let s = 0;
+        for (let i = 0; i + 1 < n; i++) {
+          const a = edgePt(i, k(i)), b = edgePt(i + 1, k(i + 1)); const L = dist(a, b); const on = keep(i) && keep(i + 1);
+          if (on && (!dash || Math.floor(s / dash) % 2 === 0)) mk.push({ a, b, w, z: Math.max(zAt(i), zAt(i + 1)), c });
+          s += L;
+        }
+      };
+      // edge lines, but not along the road the ramp runs beside (there it is the road's own edge)
+      for (const sd of [-1, 1]) run(i => sd * (dk.ws[i] / 2 - 0.7), i => dk.ws[i] >= 0.5 && dk.abut[i] !== sd, 0.18, WHITE);
+      // a two-lane ramp's lane line; a full-width deck's two lane lines and its double centre line
+      const full = (i: number) => dk.ws[i] >= dk.width - 0.5;
+      run(() => 0, i => !full(i) && dk.ws[i] >= 7.3, 0.18, WHITE, 4);
+      if (dk.width >= 12) { for (const sd of [-1, 1]) run(i => sd * dk.ws[i] / 4, full, 0.18, WHITE, 4); for (const sd of [-1, 1]) run(() => sd * 0.25, full, 0.14, WHITE); }
+      // the broken line between the road and the speed-change lane, over the road's solid edge line
+      for (const sm of dk.seams) { chords(sm, (a, b) => m(a, b, 0.5, '#8E8A83', 0.172), 0.05); dashedPath(sm, 0.2, WHITE, 3, 3, 0.18); }
+      // the gore: painted pavement between the ramp and the road where they part, chevrons across it
+      for (const gp of dk.gores) {
+        add3(flatShape(gp, 0.14, '#8E8A83'));
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const q of gp) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+        const span = x1 - x0 + y1 - y0;
+        for (let k = -span; k < span; k += 3.2) {
+          // clip each stripe to the gore, where it crosses its outline
+          const a = { x: x0 + k, y: y0 }, b = { x: x0 + k + span, y: y0 + span }; const ts: number[] = [];
+          gp.forEach((p, i) => { const q = gp[(i + 1) % gp.length]; const t = segT(a, b, p, q); if (t !== null) ts.push(t); });
+          ts.sort((u, v) => u - v);
+          for (let j = 0; j + 1 < ts.length; j += 2) m(lerpPt(a, b, ts[j]), lerpPt(a, b, ts[j + 1]), 0.45, WHITE, 0.19);
+        }
+      }
+      for (const ar of dk.arrows) { const dv = { x: Math.cos(ar.ang), y: Math.sin(ar.ang) }, nv = { x: -dv.y, y: dv.x }; const tip = add(ar.p, mul(dv, 2.4));
+        m(sub(ar.p, mul(dv, 2.4)), tip, 0.3, WHITE, 0.19); m(tip, add(sub(tip, mul(dv, 1.4)), mul(nv, 0.9)), 0.3, WHITE, 0.19); m(tip, sub(sub(tip, mul(dv, 1.4)), mul(nv, 0.9)), 0.3, WHITE, 0.19); }
+    }
     for (const ar of RP.arrows) { const dv = { x: Math.cos(ar.ang), y: Math.sin(ar.ang) }; m(sub(ar.p, mul(dv, 2.4)), add(ar.p, mul(dv, 0.6)), 0.3, WHITE, 0.18); m(add(ar.p, mul(dv, 0.6)), add(ar.p, mul(dv, 2.4)), 1.1, WHITE, 0.18); }
     for (const y of RP.yields) { const L = dist(y.a, y.b); const dv = norm(sub(y.b, y.a)); for (let u = 0; u < L - 0.4; u += 1.6) m(add(y.a, mul(dv, u)), add(y.a, mul(dv, Math.min(L, u + 0.8))), 0.5, WHITE, 0.19); }
     for (const il of RP.islands) { const base = lerpPt(il[2], il[3], 0.5); mk.push({ a: il[0], b: base, w: dist(il[2], il[3]) * 0.8, z: 0.32, c: '#C9BFAC' }); }
@@ -827,6 +867,12 @@ function extrudeShape(rings: Pt[][], z0: number, z1: number, c: string) {
   const m = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: z1 - z0, bevelEnabled: false }), new THREE.MeshLambertMaterial({ color: c }));
   m.rotation.x = -Math.PI / 2; m.position.y = z0; m.castShadow = true; m.receiveShadow = true;
   return m;
+}
+/** Where segment a–b crosses segment p–q, as a fraction along a–b (null if it does not). */
+function segT(a: Pt, b: Pt, p: Pt, q: Pt): number | null {
+  const r = sub(b, a), s = sub(q, p); const den = r.x * s.y - r.y * s.x; if (Math.abs(den) < 1e-9) return null;
+  const t = ((p.x - a.x) * s.y - (p.y - a.y) * s.x) / den, u = ((p.x - a.x) * r.y - (p.y - a.y) * r.x) / den;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? t : null;
 }
 function flatShape(pts: Pt[], z: number, c: string) {
   const sh = new THREE.Shape(pts.map(p => new THREE.Vector2(p.x, -p.y)));
