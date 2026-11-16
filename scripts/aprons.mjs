@@ -21,6 +21,7 @@ const rep = (name, w) => {
 };
 const conc = (w, x, y, ww, h, extra = {}) => { const z = { id: w.nextId++, type: 'concourse', level: 1, x, y, w: ww, h, tier: 0, cls: 2, ...extra }; w.zones.push(z); return z; };
 const inPoly = (p, poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const a = poly[i], b = poly[j]; if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) c = !c; } return c; };
+const cen4 = q => ({ x: (q[0].x + q[2].x) / 2, y: (q[0].y + q[2].y) / 2 });
 const pier = (w, cx, cy, len, wid, deg) => conc(w, cx - len / 2, cy - wid / 2, len, wid, { rot: deg * Math.PI / 180 });
 const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b: { x: 4500, y: 2300 } });
 
@@ -56,7 +57,7 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   check('no two stands of the merged building share ground (nearest pair ' + near.toFixed(0) + ' m apart)', near >= 30);
   // v0.25: where the pier runs into the concourse the building keeps a space for itself, and no lot stands in it
   const js = r.d.junctions, ins = (p, j) => j.rings.reduce((n, q) => n + (inPoly(p, q) ? 1 : 0), 0) % 2 === 1;
-  const lots = [...r.d.shops.values()].flat().map(sh => ({ x: sh.pts.reduce((n, q) => n + q.x, 0) / sh.pts.length, y: sh.pts.reduce((n, q) => n + q.y, 0) / sh.pts.length }));
+  const lots = [...r.d.shops.values()].flat().filter(sh => !sh.court).map(sh => ({ x: sh.pts.reduce((n, q) => n + q.x, 0) / sh.pts.length, y: sh.pts.reduce((n, q) => n + q.y, 0) / sh.pts.length }));
   check('the merged building keeps a junction space (' + js.map(j => j.kind + ' ' + Math.round(j.area) + ' m2').join(', ') + ')', js.length >= 1 && js.every(j => j.seeds.length > 0));
   check('no shop lot stands in a junction space', lots.length > 20 && !lots.some(c => js.some(j => ins(c, j))));
   // v0.26: the pieces' own fit-out stops at the space, and the lots round it front it
@@ -66,6 +67,15 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   check('the spine breaks off at the space and starts again beyond it', !its.filter(it => it.k === 'spine' || it.k === 'lane').some(it => it.pts.some((q, i) => i + 1 < it.pts.length && js.some(j => ins({ x: (q.x + it.pts[i + 1].x) / 2, y: (q.y + it.pts[i + 1].y) / 2 }, j)))));
   const fronting = [...r.d.shops.values()].flat().filter(sh => sh.plaza);
   check('lots round the space front it (' + fronting.length + ': ' + [...new Set(fronting.map(sh => sh.plaza))].join(', ') + ')', fronting.length >= 2 && fronting.length < lots.length / 3);
+  // v0.31: the space trades: counters round its edge, let as food, clear of the pieces' own lots and of the spine's way in
+  const cts = [...r.d.shops.values()].flat().filter(sh => sh.court); const own = [...r.d.shops.values()].flat().filter(sh => !sh.court);
+  const cen = q => ({ x: (q[0].x + q[2].x) / 2, y: (q[0].y + q[2].y) / 2 });
+  check('the junction space has food counters round its edge (' + cts.length + ')', cts.length >= 2 && cts.every(sh => sh.type === 'food' && js.some(j => (j.kind === 'hall' || j.kind === 'food') && ins(cen(sh.pts), j))));
+  check('no counter stands on a lot of the building\u2019s own plan', !cts.some(c => own.some(o => ins(cen(c.pts), { rings: [o.pts] }) || ins(cen(o.pts), { rings: [c.pts] }))));
+  check('no counter stands by a gate door', !cts.some(c => r.d.gates.some(g => Math.hypot(g.door.x - cen(c.pts).x, g.door.y - cen(c.pts).y) < 14)));
+  { const w2 = sampleWorld(); pier(w2, 3568, 2718, 400, 50, 20); conc(w2, 5000, 2600, 400, 50); conc(w2, 5175, 2450, 50, 400); const d2 = derive(w2);
+    const keys = d => [...d.shops.values()].flat().filter(sh => sh.court && sh.zone.id === cts[0]?.zone.id).map(sh => sh.key).sort().join(' ');
+    check('a counter keeps its name when an unrelated building is put up', cts.length > 0 && keys(r.d) === keys(d2)); }
   check('every gate of the merged building has its own name', new Set(sl.map(q => q.zone.id + ':' + q.key)).size === sl.length && new Set(r.d.gates.map(g => g.id)).size === r.d.gates.length); }
 { const w = sampleWorld(); const z = pier(w, 3568, 2718, 400, 40, 20); const r = rep('a 40 m pier (too narrow for a stand on its end)', w);
   const mine = r.d.gates.filter(g => g.zone.id === z.id);
@@ -143,6 +153,7 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
 { const w = newWorld(); runway(w);
   conc(w, 3000, 2700, 400, 50); conc(w, 3000, 3000, 400, 50); conc(w, 3000, 2700, 50, 350); conc(w, 3350, 2700, 50, 350);
   const r = rep('four concourses round a courtyard', w); const js = r.d.junctions;
+  check('courtyards and gardens have no counters', ![...r.d.shops.values()].flat().some(sh => sh.court && js.some(j => (j.kind === 'court' || j.kind === 'garden') && j.rings.some(q => inPoly(cen4(sh.pts), q)))));
   check('the enclosed square is one courtyard with trees', js.filter(j => j.kind === 'court').length === 1 && js.find(j => j.kind === 'court').seeds.every(t => t.t === 'tree') && js.find(j => j.kind === 'court').area > 50000);
   check('each corner where two concourses cross is a space of its own', js.filter(j => j.kind !== 'court' && j.ids.length === 2).length === 4);
   check('no stand is laid in the courtyard', !r.d.gateSlots.some(q => inPoly(q.stand, js.find(j => j.kind === 'court').outer))); }

@@ -335,6 +335,7 @@ export const COMMERCE = {
   plazaVis: 0.2,           // seen across an open space, not down a corridor
   plazaFood: 0.22,         // food formats on a food court; half of this on a hall
   plazaDining: 0.12,       // sit-down food beside a garden (a view, like an apron window)
+  courtCap: 12,            // v0.31: customers a food-court counter serves at once, seated at the shared tables
   // Footfall: departing passengers counted as they cross the spine, in bins along the concourse's long axis.
   binM: 4,                 // bin length, m
   spareRef: 45,            // spare minutes before boarding at which a passer counts as one full shopper

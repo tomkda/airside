@@ -4,7 +4,7 @@
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon } from './geom';
 import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER } from './config';
 import type { Sim, Flight } from './sim';
-import { Zone, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
+import { Zone, Shop, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
 import type { LItem } from './layout';
 import { Renderer3D } from './render3d';
 import { scenery } from './scenery';
@@ -12,7 +12,8 @@ import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
 import { DECK } from './frontage';
-import { turn, centreOf, hallPts, shaped, gripsOf, Grip, zonePts, frameOf, bendPath, toWorld as shapeToWorld, heart, Shaped } from './shapes';
+import { inJunction } from './shell';
+import { polyCentre, turn, centreOf, hallPts, shaped, gripsOf, Grip, zonePts, frameOf, bendPath, toWorld as shapeToWorld, heart, Shaped } from './shapes';
 import { gripsFor } from './world';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
@@ -688,6 +689,8 @@ export class Renderer {
           if (zz > 1.6) { g.fillStyle = 'rgba(60,54,46,0.7)'; for (const [dx, dy] of [[1.1, 0], [-1.1, 0], [0, 1.1], [0, -1.1]]) g.fillRect(x + dx * zz - 0.28 * zz, y + dy * zz - 0.28 * zz, 0.56 * zz, 0.56 * zz); }
         }
       }
+      // v0.31: its counters, over the floor just painted (they are lots of the piece they stand in)
+      if (open && zz > 0.6) for (const sh of sim.d.shops.get(j.ids[0]) ?? []) if (sh.court && inJunction(polyCentre(sh.pts), j)) this.paintLot(sim, sh, 0, sh.zone.id);
       if (open && zz > 0.9 && j.area > 150) {
         const name = court ? 'COURTYARD' : j.kind === 'garden' ? 'GARDEN' : j.kind === 'food' ? 'FOOD COURT' : 'HALL';
         this.label(name, j.c, 0, 9, 'rgba(40,36,30,0.75)', { weight: 600, spacing: 1.5, align: 'center', bg: 'rgba(240,232,214,0.8)' });
@@ -770,7 +773,14 @@ export class Renderer {
       const list = sim.d.shops.get(zn.id) ?? [];
       const fill: Record<string, string> = { shop: 'rgba(70,62,50,0.42)', food: 'rgba(168,112,48,0.5)', lounge: 'rgba(47,93,124,0.45)' };
       const g = this.ctx;
-      for (const sh of list) {
+      for (const sh of list) if (!sh.court) this.paintLot(sim, sh, top, zn.id);   // (v0.31: counters are painted with their space)
+    }
+  }
+
+  /** One commercial lot: let ones filled by type, vacant ones dashed ("for lease"); the commercial heat map fills every lot by footfall and labels it with its revenue. */
+  paintLot(sim: Sim, sh: Shop, top: number, zoneId: number) {
+      const z = this.cam.zoom; const g = this.ctx; const soft = 'rgba(40,36,30,0.22)';
+      const fill: Record<string, string> = { shop: 'rgba(70,62,50,0.42)', food: sh.court ? 'rgba(168,112,48,0.85)' : 'rgba(168,112,48,0.5)', lounge: 'rgba(47,93,124,0.45)' };
         const on = sim.leased(sh); const df = sh.tenant === 'dutyfree';
         const c = { x: (sh.pts[0].x + sh.pts[2].x) / 2, y: (sh.pts[0].y + sh.pts[2].y) / 2 };
         if (this.commerce) {
@@ -780,7 +790,7 @@ export class Renderer {
         else if (on) this.poly(sh.pts, fill[sh.type], top);
         else { g.setLineDash([3, 3]); g.strokeStyle = soft; g.lineWidth = 1; this.path(sh.pts, top); g.stroke(); g.setLineDash([]); }
         if (df && z > 0.6) this.serpentine(sh.pts, top);
-        const sel = this.selected?.kind === 'zone' && this.selected.id === zn.id && this.selected.key === sh.key;
+        const sel = this.selected?.kind === 'zone' && this.selected.id === zoneId && this.selected.key === sh.key;
         if (sel) { g.strokeStyle = PAL.select; g.lineWidth = 2.5; this.path(sh.pts, top); g.stroke(); }
         const wpx = Math.hypot(sh.pts[1].x - sh.pts[0].x, sh.pts[1].y - sh.pts[0].y) * z;
         if (this.commerce && z > 1.1 && on) {
@@ -792,8 +802,6 @@ export class Renderer {
           const big = wpx > sh.kind.length * 5.6 + 10;
           this.label(big ? sh.kind.toUpperCase() : df ? 'DF' : sh.type === 'shop' ? 'S' : sh.type === 'food' ? 'F' : 'L', c, top, big ? 7 : 8, '#F4EDDF', { weight: 800, spacing: big ? 0.6 : 0 });
         }
-      }
-    }
   }
 
   /** Walk-through duty free: the winding path everyone follows between the displays. */

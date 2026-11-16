@@ -395,8 +395,10 @@ export class UI {
     const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inZone(p, z) && inFocus(z));
     if (z1) {
       // inside a concourse, a click on a commercial lot picks that lot (its scores show in the inspector)
-      const lot = z1.type === 'concourse' ? (this.sim.d.shops.get(z1.id) ?? []).find(sh => pointInPoly(p, sh.pts)) : undefined;
-      return { kind: 'zone', zone: z1, lot: lot?.key };
+      // (v0.31: a food court's counters belong to one piece of the building, whichever piece is under the cursor)
+      const pieces = z1.type === 'concourse' ? this.sim.d.shellOf.get(z1.id)?.ids ?? [z1.id] : [];
+      const lot = pieces.flatMap(id => this.sim.d.shops.get(id) ?? []).sort((a, b) => Number(!!b.court) - Number(!!a.court)).find(sh => pointInPoly(p, sh.pts));
+      return { kind: 'zone', zone: lot ? lot.zone : z1, lot: lot?.key };
     }
     const sl = slotAt(this.sim.d.gateSlots, p);
     if (sl) return { kind: 'gate', slot: sl };
@@ -1609,7 +1611,8 @@ export class UI {
       const usable = CLASSES.filter(c => gates.some(g => s.d.gateUsable(g, c.cls))).map(c => c.example);
       const B = s.d.budgets.get(z.id);
       const list = s.d.shops.get(z.id) ?? [];
-      const open = list.filter(sh => s.leased(sh));
+      const own = list.filter(sh => !sh.court), courts = list.filter(sh => sh.court);
+      const open = own.filter(sh => s.leased(sh));
       const day = s.shopDay.get(z.id) ?? { visits: 0, rev: 0 };
       const inNow = list.reduce((n, sh) => n + (s.shopLoad.get(sh) ?? 0), 0);
       const kinds = Object.entries(B?.kinds ?? {}).sort((p, q) => q[1] - p[1]).map(([k, n]) => `${n} ${k.toLowerCase()}${n > 1 && !k.endsWith('go') ? (k.endsWith('é') ? 's' : k.endsWith('s') ? '' : 's') : ''}`).join(' · ');
@@ -1622,7 +1625,7 @@ export class UI {
         <dt>Serving now</dt><dd class="${usable.length || !gates.length ? '' : 'bad'}">${usable.length ? usable.join(', ') : gates.length ? 'Nothing: its terminal is closed or no runway connects' : 'No gates: shops and seating only'}</dd>
         ${B ? `<dt>Space</dt><dd>${bar}<span class="small"><i class="chip-s hold"></i>Holdrooms ${pct(B.hold)}<br><i class="chip-s spine"></i>Spine ${pct(B.spine)}${B.walkways ? ', with moving walkways' : ''}<br><i class="chip-s food"></i>Commercial ${pct(B.commerce)}</span></dd>
         <dt>Cross-section</dt><dd class="small">${n0(B.width)} m wide: ${Math.round(B.spineW * 10) / 10} m spine; ${Math.round(B.depthA)} m and ${Math.round(B.depthB)} m of commercial depth either side</dd>` : ''}
-        <dt>Lots</dt><dd>${open.length} of ${list.length} leased${B?.window ? ` · ${B.window} with apron views` : ''}${kinds ? `<br><span class="muted small">${kinds}</span>` : ''}</dd>
+        <dt>Lots</dt><dd>${open.length} of ${own.length} leased${courts.length ? ` · ${courts.filter(sh => s.leased(sh)).length} of ${courts.length} food-court counters` : ''}${B?.window ? ` · ${B.window} with apron views` : ''}${kinds ? `<br><span class="muted small">${kinds}</span>` : ''}</dd>
         <dt>Customers now</dt><dd>${inNow}</dd>
         <dt>Today so far</dt><dd>${n0(day.visits)} visits · ${money(day.rev)}</dd>
         ${this.dutyFreeHTML(z)}

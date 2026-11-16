@@ -57,6 +57,8 @@ export function bidsFor(sh: Shop): Partial<Record<TenantId, number>> {
   const out: Partial<Record<TenantId, number>> = {};
   ORDER.forEach((t, k) => {
     if (!TENANTS[t].kinds[di]) return;
+    // v0.31: the counters round a food court or hall sell food
+    if (sh.court && TENANTS[t].type !== 'food') return;
     if (t === 'lounge' && (sh.depth < SC.loungeMinDepth || sh.area < SC.loungeMinArea)) return;
     out[t] = Math.max(0, raw[t] + jit(k));
   });
@@ -68,6 +70,7 @@ function fit(sh: Shop, t: TenantId) {
   const type: ShopType = kind === 'Convenience' ? 'shop' : TENANTS[t].type;
   sh.tenant = t; sh.kind = kind; sh.type = type;
   sh.cap = Math.max(4, Math.round(sh.area / TUNE.shops[type].m2)) * (type === 'lounge' && sh.zone.mezz ? 2 : 1);
+  if (sh.court) sh.cap = Math.max(sh.cap, SC.courtCap);   // (v0.31: a counter's customers sit at the shared tables)
   sh.bid = t === 'dutyfree' ? clamp(0.6 + 0.4 * sh.footScore, 0, 1) : sh.bids[t] ?? 0;
   sh.rent = sh.area * SC.rentPerM2Day[t] * (SC.rentFloor + sh.bid);
 }
@@ -106,7 +109,7 @@ export function letLots(world: World, shops: Map<number, Shop[]>, budgets: Map<n
     // everyone else: strongest lots first, so they set the mix their neighbours react to
     const best = (sh: Shop) => Math.max(0, ...ORDER.filter(t => t !== 'lounge').map(t => sh.bids[t] ?? 0));
     for (const sh of lots.filter(q => !taken.has(q)).sort((p, q) => best(q) - best(p) || p.i - q.i)) {
-      const nb = lots.filter(o => taken.has(o) && o.side === sh.side && (Math.abs(o.u1 - sh.u0) < 1 || Math.abs(o.u0 - sh.u1) < 1)).map(o => o.tenant);
+      const nb = sh.court ? [] : lots.filter(o => taken.has(o) && !o.court && o.side === sh.side && (Math.abs(o.u1 - sh.u0) < 1 || Math.abs(o.u0 - sh.u1) < 1)).map(o => o.tenant);
       let pick: TenantId = 'retail', top = -Infinity;
       for (const t of ORDER) {
         if (t === 'lounge' || sh.bids[t] === undefined) continue;
@@ -117,7 +120,7 @@ export function letLots(world: World, shops: Map<number, Shop[]>, budgets: Map<n
     }
     for (const sh of list) if (sh.tenant === 'dutyfree') { sh.bids = {}; fit(sh, 'dutyfree'); sh.cap = Math.max(20, Math.round(sh.area / 10)); }
     // best scores lease first
-    [...list].sort((p, q) => Number(q.tenant === 'dutyfree') - Number(p.tenant === 'dutyfree') || q.bid - p.bid || p.i - q.i).forEach((sh, k) => (sh.rank = k));
+    [...list].sort((p, q) => Number(q.tenant === 'dutyfree') - Number(p.tenant === 'dutyfree') || Number(!!p.court) - Number(!!q.court) || q.bid - p.bid || p.i - q.i).forEach((sh, k) => (sh.rank = k));
     const kinds: Record<string, number> = {};
     for (const sh of list) kinds[sh.kind] = (kinds[sh.kind] ?? 0) + 1;
     B.kinds = kinds;
