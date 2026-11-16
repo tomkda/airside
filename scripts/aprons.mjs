@@ -3,7 +3,7 @@
 import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
-import { derive, newWorld, canPlaceWay } from './src/world';
+import { derive, newWorld, canPlaceWay, canPlaceTurned, gripsFor } from './src/world';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
 import { regrip, gripsOf, toWorld } from './src/shapes';
@@ -174,6 +174,27 @@ const road = (w, a, b) => w.ways.push({ id: w.nextId++, kind: 'road', a, b, cls:
 { const w = newWorld(); hallAt(w, 2850, 5392, 300, 80);
   const d = derive(w); const ramps = d.road.edges.filter(e => d.rampRefs.has(e.ref));
   check('beside the highway: every piece of a ramp is one-way, and none is a stub to the highway', ramps.length > 0 && ramps.every(e => e.ow)); }
+// v0.29: a turned hall (check-in over claim): its forecourt, curbs, deck and fit-out follow its face
+for (const deg of [12, -20]) {
+  const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.rot = deg * Math.PI / 180;
+  const d = derive(w); const hall = d.zones.find(z => z.type === 'checkin'); const curbs = d.zones.filter(z => z.auto);
+  const fr = d.frames.get(hall.id); const ang = a => ((a % Math.PI) + Math.PI) % Math.PI; const along = Math.atan2(fr.along.y, fr.along.x);
+  check('hall turned ' + deg + '°: Terminal 1 opens, with a forecourt link, a corner curve and a ramp at each end', d.terminals[0].active && d.autoRoads.filter(q => q.fore === 'link').length === 2 && d.autoRoads.filter(q => q.fore === 'corner').length === 2 && d.autoRoads.filter(q => q.rg).length === 2);
+  check('hall turned ' + deg + '°: its curbs and its check-in counters are turned with it', curbs.length === 2 && curbs.every(c => Math.abs(Math.sin(c.rot - hall.rot)) < 1e-6) && Math.abs(Math.sin(along - hall.rot)) < 1e-6);
+  const doors = d.ped.filter(n => n.zones.length === 2 && n.zones.some(id => curbs.some(c => c.id === id))).length;
+  check('hall turned ' + deg + '°: people walk between the hall and its curbs (' + doors + ' doors, ' + d.cores.filter(k => k.frontage).length + ' frontage stairs)', doors >= 4 && d.cores.filter(k => k.frontage).length >= 2);
+}
+// v0.29: the turn handle, and where a turned module may go (cases found by review)
+{ const w = sampleWorld(); const hall = w.zones.find(z => z.type === 'checkin'); const c = { x: hall.x + hall.w / 2, y: hall.y + hall.h / 2 };
+  const lim = { minLen: 60, minWide: 24, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 }; const at = deg => ({ x: c.x + 200 * Math.cos(deg * Math.PI / 180), y: c.y + 200 * Math.sin(deg * Math.PI / 180) });
+  const t12 = regrip(hall, 't', at(12), false, lim), t0 = regrip({ ...hall, ...t12 }, 't', at(1), false, lim), t90 = regrip(hall, 't', at(91), false, lim);
+  check('the turn handle turns a hall about its centre in 5° steps, and square again it is upright, not nearly so', Math.abs(t12.rot * 180 / Math.PI - 10) < 1e-6 && Math.abs(t12.x + t12.w / 2 - c.x) < 1e-6 && t0.rot === undefined && t0.w === hall.w && t90.rot === undefined && t90.w === hall.h && t90.h === hall.w);
+  check('a hall keeps its four edge grips and has a turn handle', gripsFor(hall).map(g => g.grip).sort().join('') === 'enstw');
+  const deep = regrip(hall, 's', { x: c.x, y: hall.y + 150 }, false, lim);
+  check('an upright hall keeps its own edge limits (150 m deep is allowed)', deep.h === 150);
+  const w2 = sampleWorld(); w2.ways.push({ id: w2.nextId++, kind: 'taxi', a: { x: 2900, y: 2500 }, b: { x: 2900, y: 3100 }, cls: 2, lanes: 0 });
+  const sec = w2.zones.find(z => z.type === 'security');
+  check('a turned security block may not cross a taxiway on the departures level', !canPlaceTurned(w2, { ...sec, x: 2860, rot: 0.2, level: 1 }, 'security', [sec.id]).ok); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

@@ -37,7 +37,14 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.28)
+## What's in the alpha (v0.29)
+
+- **Halls that turn, and a forecourt that follows (v0.29):** the check-in and claim hall, security and passport control can now be turned to any angle. Select one and drag the turn handle off its end: it turns about its centre in 5° steps, and turned back square it is an ordinary upright module again. Its four edge grips still move each edge, in its own turned frame. The claim hall under a check-in hall turns with it.
+  - **Everything off the face follows.** The counters, queues, belts and kerb bays are laid out along the turned face. The curbs, the frontage road, the two-level deck, its ramps, gores and corner curves all run along it.
+  - **Links at an angle.** When "straight out" from a turned face misses the roads, the forecourt link runs to the nearest road instead (within 45° of straight out), and it still gets a ramp with its speed-change lane and a curved corner.
+  - **Joining by overlap.** A turned hall joins the security block or concourse it overlaps, as piers do. It may overlap other terminal modules on its level, but not another hall, a lot, a taxiway, an apron, or (at ground level) a road or roundabout, and it keeps to its terminal's site like any module.
+  - **3D.** In 3D the turned building, its curb canopy and deck are drawn at the same angle.
+
 
 - **Deck ramps that leave and rejoin the road like built ones (v0.28):** each ramp to the upper deck now meets its approach road the way a real on- or off-ramp does (a parallel-type ramp terminal), beside the road and never on top of it.
   - **Taper and speed-change lane.** The road's edge flares out over about 55 m, and a full lane then runs alongside it for about 75 m, divided from the road by a broken line. On the way up it is a deceleration lane; on the way down, an acceleration lane, with the lane tapering back into the road.
@@ -347,6 +354,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 
 - Construction is instant; no build time or disruption yet.
 - Shapes so far are piers at any angle, straight or bent into one arc, of even width or tapering evenly from one end to the other, and regular hubs (round, six or eight sides). There are no S-curves, free-drawn outlines or ellipses yet, and a pier cannot bulge in the middle. Halls, security and concourses built inside a terminal site stay upright, straight and of even width (their edges move, but they do not turn, bend or taper). Where buildings overlap, both roofs are drawn.
+- Halls turn but do not yet bend into a curve; a curved forecourt needs curbs that follow a curved road, which they do not do yet. A hall that is turned keeps its upright neighbours upright: turn security too, or overlap them, to keep them joined.
 - Ramp terminals are drawn in the plan; in 3D the ramp leaves the road at the right place but the gore and lane markings are not shown. The figures for the lane and taper lengths are from memory of AASHTO's tables, not checked against the book.
 - A forecourt link that runs on in line with the frontage road, or turns a second corner on its way to a road, keeps its square corners. The forecourt is still straight (it does not follow a curved or angled hall), and the deck has no lane markings in 3D. In 3D a road's surface can vanish when the camera is very close to it (an older fault).
 - Junction spaces raise the value of the lots round them but have no trade of their own yet: a food court has no counters in it, and passengers do not sit or dwell there. A gate whose holdroom fell in a hall keeps its capacity but has no seats drawn. Halls, food courts and gardens under the roof are not shown in 3D or in the tilted plan view; courtyards are shown in 3D.

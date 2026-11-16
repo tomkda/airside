@@ -13,7 +13,7 @@ import { carPoses, CAR_COLS } from './traffic';
 import { isRingRef, wayPts, wayMid } from './ways';
 import { DECK } from './frontage';
 import { turn, centreOf, hallPts, shaped, gripsOf, Grip, zonePts, frameOf, bendPath, toWorld as shapeToWorld, heart, Shaped } from './shapes';
-import { canTurn } from './world';
+import { gripsFor } from './world';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -1428,12 +1428,19 @@ export class Renderer {
     if (this.selected?.kind !== 'zone' || this.mode3d) return;
     const zn = sim.world.zones.find(q => q.id === this.selected!.id); if (!zn || zn.auto) return;
     const g = this.ctx; const top = this.tilt > 0.02 ? LEVELS[zn.level].z1 : 0;
-    for (const gr of gripsOf(zn, canTurn(zn))) {
+    for (const gr of gripsFor(zn)) {
       const [x, y] = this.P(gr.p.x, gr.p.y, top); const hot = this.gripHot === gr.grip; const r = hot ? 7 : 5.5;
       // the bend grip is filled, like the one on a road
       g.fillStyle = hot || gr.grip === 'm' ? PAL.select : '#FBF8F1'; g.strokeStyle = gr.grip === 'm' ? '#FBF8F1' : PAL.select; g.lineWidth = 2;
+      // v0.29: the turn handle, off the end of a hall or security block on a short stalk, with a turning arrow round it
+      if (gr.grip === 't') {
+        const c = centreOf(zn); const [cx, cy] = this.P(c.x, c.y, top); const ux = (x - cx) / (Math.hypot(x - cx, y - cy) || 1), uy = (y - cy) / (Math.hypot(x - cx, y - cy) || 1);
+        g.strokeStyle = PAL.select; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x - ux * 16, y - uy * 16); g.lineTo(x - ux * r, y - uy * r); g.stroke();
+        g.beginPath(); g.arc(x, y, r + 4, -0.6, 1.9); g.stroke();
+      }
+      g.fillStyle = hot || gr.grip === 'm' ? PAL.select : '#FBF8F1'; g.strokeStyle = gr.grip === 'm' ? '#FBF8F1' : PAL.select; g.lineWidth = 2;
       g.beginPath();
-      if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r' || gr.grip === 'm') g.arc(x, y, r, 0, Math.PI * 2);
+      if (gr.grip === 'a' || gr.grip === 'b' || gr.grip === 'r' || gr.grip === 'm' || gr.grip === 't') g.arc(x, y, r, 0, Math.PI * 2);
       // a diamond on an end's corner: that end's width
       else if (gr.grip === 'ta' || gr.grip === 'tb') { g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y); g.closePath(); } else g.rect(x - r, y - r, 2 * r, 2 * r);
       g.fill(); g.stroke();

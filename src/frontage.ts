@@ -16,7 +16,7 @@ import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way, RampGeo } from './world';
 import { sidesOf } from './gates';
 import { waySegs, wayPts, roundDef } from './ways';
-import { zonesOverlap, shaped } from './shapes';
+import { zonesOverlap, shaped, zonePts, inZone, Shaped } from './shapes';
 
 export type Deck = 'dep' | 'arr' | 'both';
 export interface AutoTag { road: number; module: number; deck: Deck; gap: number }
@@ -48,8 +48,8 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
   for (const m of mods) for (const sd of sidesOf(m)) {
     const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a));
     // a face that touches another module on the same level is interior, not frontage
-    const probe: Rect = boxOf(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
-    const inner = world.zones.some(o => o.id !== m.id && o.level === m.level && TERMINAL_SET.has(o.type) && rectsOverlap(probe, o));
+    const probe = faceBox(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
+    const inner = world.zones.some(o => o.id !== m.id && o.level === m.level && TERMINAL_SET.has(o.type) && hits(probe, o));
     if (inner || L < FRONTAGE.minLen) continue;
     guides.push({ zone: m, a: sd.a, b: sd.b, out: sd.out });
     for (const r of roads) {
@@ -66,9 +66,11 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
   const pushCurb = (c: Cand, level: Level, deck: Deck, t0: number, t1: number) => {
     const al = norm(sub(c.b, c.a));
     const p0 = { x: c.a.x + al.x * t0, y: c.a.y + al.y * t0 }, p1 = { x: c.a.x + al.x * t1, y: c.a.y + al.y * t1 };
-    const r = boxOf(p0, p1, c.out, c.gap - 0.5, 0);
+    // (v0.29: off a turned face the curb is turned too, and reaches half a metre into the building, so that the two
+    //  overlap and are joined on foot as turned shapes are)
+    const r = tilted(c.out) ? quad(p0, p1, c.out, c.gap, -0.5) : boxOf(p0, p1, c.out, c.gap - 0.5, 0);
     // never on top of something the player built on that level
-    if (world.zones.some(o => o.level === level && o.id !== c.m.id && (shaped(o) ? zonesOverlap(shrink(r, 0.6), o) : rectsOverlap(shrink(r, 0.6), o)))) return;
+    if (world.zones.some(o => o.level === level && o.id !== c.m.id && hits(shrink(r, 0.6), o))) return;
     const id = -(c.road.id * 100000 + c.m.id * 2 + level);
     if (curbs.some(z => z.id === id)) return;
     curbs.push({ id, type: 'curb', level, ...r, tier: 0, auto: { road: c.road.id, module: c.m.id, deck, gap: c.gap } });
@@ -226,14 +228,14 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[] } | null = null;
     for (const { sd, L, al } of sidesOf(m).map(sd => ({ sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) }))) {
       if (L < FRONTAGE.minLen) continue;
-      const probe: Rect = boxOf(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
-      if (world.zones.some(o => !fam.includes(o) && TERMINAL_SET.has(o.type) && (shaped(o) ? zonesOverlap(probe, o) : rectsOverlap(probe, o)))) continue;   // an interior face
+      const probe = faceBox(lerpPt(sd.a, sd.b, 0.1), lerpPt(sd.a, sd.b, 0.9), sd.out, 1.5);
+      if (world.zones.some(o => !fam.includes(o) && TERMINAL_SET.has(o.type) && hits(probe, o))) continue;   // an interior face
       const at = (t: number, k: number): Pt => ({ x: sd.a.x + al.x * t + sd.out.x * k, y: sd.a.y + al.y * t + sd.out.y * k });
       const a = at(-ext, off), b = at(L + ext, off);
       if (blocked(a, b, fam) || blocked(at(-ext, off - half), at(L + ext, off - half), fam)) continue;
       // the curb's own ground must be clear too
-      const lot = boxOf(sd.a, sd.b, sd.out, off + half);
-      if (world.zones.some(o => o.level === 0 && !fam.includes(o) && rectsOverlap(shrink(lot, 1), o))) continue;
+      const lot = faceBox(sd.a, sd.b, sd.out, off + half);
+      if (world.zones.some(o => o.level === 0 && !fam.includes(o) && hits(shrink(lot, 1), o))) continue;
       const legs: { a: Pt; b: Pt }[] = []; let cost = 0; const rampsHere: RampGeo[] = [];
       for (const [E, away] of [[a, { x: -al.x, y: -al.y }], [b, al]] as const) {
         // straight out from the building first, else straight on along the frontage
@@ -243,6 +245,13 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
           const d = dist(E, q) + pen;
           if (d - pen < 6 || blocked(E, q, fam)) continue;
           if (!leg || d < leg.d) leg = { a: E, b: q, d };
+        }
+        // v0.29: or straight to the nearest point of a road, if that is not far off straight out (a turned hall's
+        // straight out can miss a road that a link at a slight angle reaches)
+        if (tilted(sd.out) && (!leg || leg.d > 40 + FRONTAGE.reach * 0.5)) for (const c of chords) {
+          const q = lerpPt(c.a, c.b, Math.max(0, Math.min(1, dot(sub(E, c.a), sub(c.b, c.a)) / (dot(sub(c.b, c.a), sub(c.b, c.a)) || 1))));
+          const dd = dist(E, q); if (dd < 6 || dd > FRONTAGE.reach * 1.25 || dot(norm(sub(q, E)), sd.out) < 0.7 || blocked(E, q, fam)) continue;
+          if (!leg || dd + 25 < leg.d) leg = { a: E, b: q, d: dd + 25 };
         }
         if (!leg) {
           // v0.14: nothing straight ahead. Come straight out, then turn once towards the nearest road: this is what
@@ -257,7 +266,8 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
         if (leg) { legs.push({ a: leg.a, b: leg.b }); if (leg.via) legs.push({ a: leg.b, b: leg.via }); cost += leg.d; } else cost += 700;
         // v0.13: where the link comes straight out to the frontage, the upper deck gets its own ramp: it leaves the
         // link before the corner and sweeps round inside it, so the road visibly divides and comes back together
-        const run = leg ? dist(leg.a, leg.b) : 0; const square = leg && Math.abs(dot(norm(sub(leg.b, leg.a)), sd.out)) > 0.99;
+        // (v0.29: a link that comes out at an angle gets one too, laid along the link itself)
+        const run = leg ? dist(leg.a, leg.b) : 0; const square = leg && dot(norm(sub(leg.b, leg.a)), sd.out) > 0.7;
         // v0.28: and it is laid out as a ramp is built (a parallel-type ramp terminal). Going away from the frontage
         // along the approach road: the ramp's curve comes down beside the road and runs on beside it as an extra lane
         // (the speed-change lane: deceleration for the way up, acceleration for the way down) up to the nose of the
@@ -265,21 +275,24 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
         // nearer the terminal; with traffic on the right that is the right of inbound traffic at one end (the way up)
         // and the right of outbound traffic at the other (the way down), so each ramp is one-way.
         if (leg && square) {
-          const u = sd.out, n = { x: -away.x, y: -away.y }; const h = roadWidth(4) / 2, o = h + DECK.lane / 2;
+          // u along the link; n across it, on the side towards the middle of the frontage (and the deck lands at D,
+          // along the frontage road itself, whatever angle the link meets it at)
+          const u = norm(sub(leg.b, leg.a)), inside = { x: -away.x, y: -away.y }; const side = u.x * inside.y - u.y * inside.x >= 0 ? 1 : -1;
+          const n = { x: -u.y * side, y: u.x * side }; const h = roadWidth(4) / 2, o = h + DECK.lane / 2;
           // the taper must merge well before whatever the link ends at: `RAMP.clear` short of its end, and short of the
           // outer kerb of a roundabout there (the network cuts the link back to the ring)
           const ring = (world.rounds ?? []).filter(r => dist({ x: r.x, y: r.y }, leg.b) < roundDef(r).icd / 2 + 2).reduce((m, r) => Math.max(m, roundDef(r).icd / 2), 0);
           let g: number = RAMP.nose, Lp: number = RAMP.lane, Lt: number = RAMP.taper; const avail = run - RAMP.clear - ring;
           if (g + Lp + Lt > avail) { const k = avail / (g + Lp + Lt); Lp = Math.max(RAMP.minLane, Lp * k); Lt = Math.max(RAMP.minTaper, Lt * k); g = Math.min(RAMP.nose, avail - Lp - Lt); }
           const at = (t: number, k: number): Pt => ({ x: E.x + u.x * t + n.x * k, y: E.y + u.y * t + n.y * k });
-          const T = at(g + Lp + Lt, 0), P = at(g + Lp, o), N = at(g, o), D = at(0, RAMP.along);
+          const T = at(g + Lp + Lt, 0), P = at(g + Lp, o), N = at(g, o), D = { x: E.x + inside.x * RAMP.along, y: E.y + inside.y * RAMP.along };
           // the curve from the nose to the frontage: a cubic that leaves along the road and arrives along the frontage,
           // with its handles short at the nose so the ramp gets clear of the road soon after it parts (about 3.5 m
           // clear 30 m on, 13 m by 60 m), carried as two quadratics that meet at its middle M
-          const P1 = at(g * (1 - RAMP.leave), o), P2 = at(0, RAMP.along - RAMP.arrive * (RAMP.along - o));
+          const P1 = at(g * (1 - RAMP.leave), o), P2 = { x: D.x - inside.x * RAMP.arrive * (RAMP.along - o), y: D.y - inside.y * RAMP.arrive * (RAMP.along - o) };
           const cub = (t: number): Pt => { const v = 1 - t; return { x: v * v * v * N.x + 3 * v * v * t * P1.x + 3 * v * t * t * P2.x + t * t * t * D.x, y: v * v * v * N.y + 3 * v * v * t * P1.y + 3 * v * t * t * P2.y + t * t * t * D.y }; };
           const M = cub(0.5), tm = norm(sub(cub(0.52), cub(0.48)));
-          const C = meet(N, { x: -u.x, y: -u.y }, M, tm) ?? lerpPt(N, M, 0.5), C2 = meet(M, tm, D, n) ?? lerpPt(M, D, 0.5);
+          const C = meet(N, { x: -u.x, y: -u.y }, M, tm) ?? lerpPt(N, M, 0.5), C2 = meet(M, tm, D, inside) ?? lerpPt(M, D, 0.5);
           const up = u.y * n.x - u.x * n.y > 0;   // the ramp is on the right of traffic coming in towards the terminal
           if (g >= RAMP.minNose && !blocked(N, D, fam) && !blocked(P, N, fam)) rampsHere.push({ T, P, N, C, M, C2, D, u, n, h, up });
         }
@@ -297,7 +310,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     for (const end of ['a', 'b'] as const) {
       const E = best[end]; const inward = end === 'a' ? fdir : { x: -fdir.x, y: -fdir.y };
       const l = legs.find(q => dist(q.a, E) < 0.5); if (!l) continue;
-      const ld = norm(sub(l.b, l.a)); const len = dist(l.a, l.b); if (Math.abs(dot(ld, fdir)) > 0.02) continue;
+      const ld = norm(sub(l.b, l.a)); const len = dist(l.a, l.b); if (Math.abs(dot(ld, fdir)) > 0.7) continue;   // (v0.29: at an angle too)
       const R = Math.min(CORNER.radius, len - 24, dist(best.a, best.b) / 2 - FRONTAGE.minLen); if (R < CORNER.min) continue;
       const p = { x: E.x + inward.x * R, y: E.y + inward.y * R }, q = { x: E.x + ld.x * R, y: E.y + ld.y * R };
       face[end] = p; l.a = q; corners.push({ a: p, b: q, c: E });
@@ -334,7 +347,19 @@ function boxOf(p0: Pt, p1: Pt, out: Pt, depth: number, from = 0): Rect {
   const x = Math.min(...xs), y = Math.min(...ys);
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
-const shrink = (r: Rect, k: number): Rect => ({ x: r.x + k, y: r.y + k, w: Math.max(0, r.w - 2 * k), h: Math.max(0, r.h - 2 * k) });
+const shrink = <T extends Rect>(r: T, k: number): T => ({ ...r, x: r.x + k, y: r.y + k, w: Math.max(0, r.w - 2 * k), h: Math.max(0, r.h - 2 * k) });
+/** v0.29: is a face turned (not along the axes)? Then the boxes off it are turned rectangles, not bounding boxes. */
+const tilted = (out: Pt) => Math.abs(out.x) > 1e-6 && Math.abs(out.y) > 1e-6;
+/** The turned rectangle off a face from p0 to p1, `from` to `from + depth` out along `out`. */
+function quad(p0: Pt, p1: Pt, out: Pt, depth: number, from = 0): Shaped & Rect {
+  const al = norm(sub(p1, p0)); const L = dist(p0, p1); const k = from + depth / 2;
+  const c = { x: (p0.x + p1.x) / 2 + out.x * k, y: (p0.y + p1.y) / 2 + out.y * k };
+  return { x: c.x - L / 2, y: c.y - depth / 2, w: L, h: depth, rot: Math.atan2(al.y, al.x) };
+}
+/** Does a box off a face overlap a zone? (turned faces and turned zones by their true outlines) */
+const hits = (box: Rect & Shaped, o: Zone) => (box.rot || shaped(o) ? zonesOverlap(box, o) : rectsOverlap(box, o));
+/** The box off a face, turned with it when the face is. */
+const faceBox = (p0: Pt, p1: Pt, out: Pt, depth: number, from = 0): Rect & Shaped => (tilted(out) ? quad(p0, p1, out, depth, from) : boxOf(p0, p1, out, depth, from));
 
 /** Points along each road where generated curbs begin and end, so the road network can be split there. */
 export function curbCuts(curbs: Zone[], roads: Way[]): Map<number, Pt[]> {
@@ -342,7 +367,7 @@ export function curbCuts(curbs: Zone[], roads: Way[]): Map<number, Pt[]> {
   for (const z of curbs) {
     const r = roads.find(w => w.id === z.auto?.road); if (!r) continue;
     const al = norm(sub(r.b, r.a)); const L = dist(r.a, r.b);
-    const corners = [{ x: z.x, y: z.y }, { x: z.x + z.w, y: z.y + z.h }];
+    const corners = z.rot ? (() => { const ts = zonePts(z).map(p => dot(sub(p, r.a), al)); const t0 = Math.min(...ts), t1 = Math.max(...ts); return [t0, t1].map(t => ({ x: r.a.x + al.x * t, y: r.a.y + al.y * t })); })() : [{ x: z.x, y: z.y }, { x: z.x + z.w, y: z.y + z.h }];
     for (const p of corners) {
       const t = dot(sub(p, r.a), al);
       if (t > 2 && t < L - 2) out.set(r.id, [...(out.get(r.id) ?? []), { x: r.a.x + al.x * t, y: r.a.y + al.y * t }]);
@@ -363,7 +388,9 @@ const rectGap = (a: Rect, b: Rect) => Math.hypot(Math.max(0, a.x - (b.x + b.w), 
 function blocker(world: World, zones: Zone[], aprons: Rect[]) {
   return (a: Pt, b: Pt, ends: Rect[]) => {
     const segHits = (r: Rect) => { for (let i = 1; i < 24; i++) { const t = i / 24; const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; if (p.x > r.x + 1 && p.x < r.x + r.w - 1 && p.y > r.y + 1 && p.y < r.y + r.h - 1) return true; } return false; };
-    if (zones.some(z => z.level === 0 && !ends.includes(z) && segHits(z))) return true;
+    // (v0.29: a turned one by its true outline)
+    const segIn = (z: Zone) => { for (let i = 1; i < 24; i++) { const t = i / 24; if (inZone({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, z, -1)) return true; } return false; };
+    if (zones.some(z => z.level === 0 && !ends.includes(z) && (z.rot ? segIn(z) : segHits(z)))) return true;
     if (aprons.some(segHits)) return true;
     if (world.ways.some(w => w.kind === 'taxi' && segsCross(a, b, w.a, w.b))) return true;
     return world.runways.some(r => segsCross(a, b, r.a, r.b));
