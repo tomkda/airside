@@ -11,9 +11,11 @@ import {
   designators, runwayCost, runwayWidth, wayWidth, wayCostPerM, wayName, autoConnectors, followRunwayEnd, WaySpec, Runway, rwyClassLabel,
   Site, siteOf, fitSite, isTerminalModule, inBuildable, padRect,
 } from './world';
-import { rectsOverlap, rectSegDist } from './geom';
+import { rectsOverlap, rectSegDist, segsIntersect } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
 import { canPlacePier } from './world';
+import { simplePoly, polyBox } from './shapes';
+import { AREA } from './config';
 import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths } from './shapes';
 import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
@@ -23,7 +25,7 @@ import { roadPlan } from './roads';
 import { Sound } from './sound';
 import { planTerminal, airsideOf, planCost, PlanPart, PLAN_MIN } from './terminalplan';
 
-export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round' | 'satellite' | 'pier' | 'hub';
+export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round' | 'satellite' | 'pier' | 'hub' | 'area' | 'cut';
 type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | { kind: 'round'; round: Round } | null;
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -49,6 +51,8 @@ const TOOLS: { id: Tool; label: string; key: string; icon: string; group?: strin
   { id: 'satellite', label: 'Satellite', key: '6', lod: 'landside', icon: '<rect x="1.5" y="3" width="6" height="4"/><rect x="8.5" y="9" width="6" height="4"/><path d="M5 7v2.5h6" stroke-dasharray="1.6 1.2"/>' },
   { id: 'pier', label: 'Pier', key: '9', lod: 'landside', icon: '<path d="M2.5 12.5l9-9 2 2-9 9z"/><path d="M5 10l-1.6-1.6M8 7L6.4 5.4M11 4L9.4 2.4"/>' },
   { id: 'hub', label: 'Hub', key: '0', lod: 'landside', icon: '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2"/><path d="M12.2 4l2-2M3.8 12l-2 2"/>' },
+  { id: 'area', label: 'Free area', key: 'F', lod: 'landside', icon: '<path d="M2.5 12.5L4 4l6-1.5 3.5 5-3 6z"/><circle cx="4" cy="4" r="1"/><circle cx="10" cy="2.5" r="1"/>' },
+  { id: 'cut', label: 'Cut-out', key: 'Q', lod: 'landside', icon: '<rect x="2" y="2" width="12" height="12"/><path d="M5.5 5.5h5v5h-5z" stroke-dasharray="1.6 1.2"/>' },
   { id: 'passport', label: 'Passport', key: 'I', lod: 'terminal', unlock: 'intl', icon: '<rect x="3" y="2" width="10" height="12" rx="1"/><circle cx="8" cy="7" r="2"/><path d="M5.5 11.5h5"/>' },
   { id: 'road', label: 'Road', key: 'R', group: 'Landside', lod: 'landside', icon: '<path d="M2 5h12M2 11h12" stroke-width="1.6"/><path d="M3 8h2M7 8h2M11 8h2"/>' },
   { id: 'round', label: 'Roundabout', key: 'G', lod: 'landside', icon: '<circle cx="8" cy="8" r="5.2"/><circle cx="8" cy="8" r="1.6"/><path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15"/>' },
@@ -325,6 +329,8 @@ export class UI {
     if (t === 'taxi') return `Drag to draw a taxiway · snaps to runways, aprons and other taxiways${this.opt.auto ? ' · drawn beside a runway, it links itself with end stubs and rapid exits' : ''}`;
     if (t === 'checkin') return `Drag the hall: check-in on Level 1 with baggage claim under it on Ground, as one building · put it against security · any road within ${FRONTAGE.reach} m of its open face and it lays its own two-level forecourt`;
     if (t === 'hub') return 'Drag a hub out from its centre: a round or polygonal hall with shops round an atrium · overlap a concourse or security and it joins that building · start piers inside it and they join too';
+    if (t === 'area') return 'Click each corner of a free area: open floor with stands round its walls · overlap a concourse or pier and it joins that building · click the first corner or press Enter to build · Backspace undoes a corner · Esc gives up';
+    if (t === 'cut') return 'Click each corner of a cut-out over a building: a courtyard or notch taken out of its floor · click the first corner or press Enter · click inside a cut-out to fill it back in';
     if (t === 'pier') return this.opt.pierPath ? 'Click the start, then each corner · click the last corner again or press Enter to build · Backspace undoes a corner · Esc gives up'
       : 'Drag a pier at any angle, from where it starts to where it ends · start inside a concourse and it becomes part of that building · every open side lays its own stands';
     if (t === 'satellite') return `Drag a satellite concourse anywhere on the airfield · within ${n0(MOVER.reach)} m of a terminal's concourse it links itself by people mover · every open side lays its own stands and taxilane, and links itself to the nearest taxiway`;
@@ -505,6 +511,12 @@ export class UI {
     }
     if (t === 'satellite') { this.drag = { mode: 'zone', ...base, start: this.magnet(p, 1) }; return; }
     if (t === 'pier' && this.opt.pierPath && !this.ren.mode3d) { this.pathClick(p, e.offsetX, e.offsetY); return; }
+    if ((t === 'area' || t === 'cut') && !this.ren.mode3d) {
+      // (v0.32: with nothing drawn yet, a click inside a cut-out with the cut-out tool fills it back in)
+      const k = t === 'cut' && !this.path ? (this.world.cuts ?? []).find(c => pointInPoly(p, c.pts)) : undefined;
+      if (k) { this.world.cuts = this.world.cuts!.filter(c => c !== k); this.changed(); this.toast('Cut-out filled back in'); return; }
+      this.pathClick(p, e.offsetX, e.offsetY); return;
+    }
     if (t === 'pier' || t === 'hub') { this.drag = { mode: 'pier', ...base, start: { x: snap(p.x, 5), y: snap(p.y, 5) } }; return; }
     if (t in ZONES) { this.drag = { mode: 'zone', ...base, start: this.magnet(p, ZONES[t as ZoneType].groundOnly ? 0 : this.ren.level) }; return; }
     if (t === 'site') { this.drag = { mode: 'site', ...base, start: { x: snap(p.x, 10), y: snap(p.y, 10) } }; return; }
@@ -713,7 +725,8 @@ export class UI {
       // v0.19: the building itself moves under the cursor, and everything that depends on it follows
       if (!dr.moved) { dr.moved = true; dr.z0 = geomOf(z); const tw = this.twin(z); this.beginLive(tw ? [z, tw] : [z]); }
       if (shaped(z)) {   // a pier or hub slides freely and keeps its angle
-        const r = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5), w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper };
+        const r0 = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5) };
+        const r = { ...r0, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, poly: z.poly?.map(q => ({ x: q.x + r0.x - z.x, y: q.y + r0.y - z.y })) };
         const chk = TURNABLE.has(z.type) ? this.placeGeom(z, { ...geomOf(z), x: r.x, y: r.y }) : canPlacePier(this.world, { ...r, level: z.level }, z.id);
         dr.liveOk = chk.ok; dr.reason = chk.reason;
         if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
@@ -811,6 +824,7 @@ export class UI {
       const chk2 = chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: tw.level }, tw.type, ids, this.aprons) : chk;
       return chk2.ok ? this.siteRules(zoneBox({ ...g, rot: g.rot }), z.id) : chk2;   // and the same site rules as an upright one
     }
+    if (g.poly) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, poly: g.poly, level: z.level }, z.id);   // (v0.32: a free area)
     if (g.sides || g.rot || g.bend || g.taper) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, bend: g.bend, taper: g.taper, level: z.level }, z.id);
     const r = { x: g.x, y: g.y, w: g.w, h: g.h };
     const chk = this.placeModule(r, z.type, z.level, z.id); const tw = this.twin(z);
@@ -852,6 +866,7 @@ export class UI {
     return this.sim.canAfford(cost) ? { ok: true as const } : { ok: false as const, reason: `Not enough money: ${money(cost)}` };
   }
   pathPreview(p: Pt) {
+    if (this.tool === 'area' || this.tool === 'cut') { this.polyPreview(p); return; }
     const pts = this.path!; this.liftDraft();
     const leg = this.pathLeg(pts[pts.length - 1], p);
     const all = leg ? [...pts, leg.end] : pts;
@@ -862,6 +877,7 @@ export class UI {
     this.hint(chk.ok ? `${legs} leg${legs > 1 ? 's' : ''} · ${n0(total)} m in all · ${money(cost)} · click to set this corner, click it again or press Enter to build` : chk.reason!, !chk.ok);
   }
   pathClick(p: Pt, sx: number, sy: number) {
+    if (this.tool === 'area' || this.tool === 'cut') { this.polyClick(p, sx, sy); return; }
     if (!this.path) { this.path = [{ x: snap(p.x, 5), y: snap(p.y, 5) }]; this.pathLast = { x: sx, y: sy }; this.hint('Now click the first corner, or the far end'); return; }
     const pts = this.path; const last = pts[pts.length - 1];
     // the same spot clicked again (where the pointer was, not where the corner snapped to): build
@@ -877,6 +893,7 @@ export class UI {
     pts.push(leg.end); this.pathPreview(p);
   }
   pathBuild() {
+    if (this.tool === 'area' || this.tool === 'cut') { this.polyBuild(); return; }
     const pts = this.path; if (!pts) return;
     this.path = null; this.pathLast = null; this.endLive(false); this.ren.ghost = null;
     if (pts.length < 2) { this.settle(); this.hint(this.toolHint()); return; }
@@ -888,6 +905,62 @@ export class UI {
     this.ren.float(`− ${money(cost)}`, centreOf(legs[0]), PAL_BAD, LEVELS[1].z1);
     this.select({ kind: 'zone', zone: legs[0] });
     this.toast(`Built ${legs.length} leg${legs.length > 1 ? 's' : ''} in one building · ${gates} gates · ${money(cost)}${T?.active ? ` · part of ${T.name}` : ''}`);
+    this.hint(this.toolHint());
+  }
+
+  // ---- v0.32: free-drawn areas and cut-outs, clicked corner by corner
+  //
+  //   A free area is a concourse with an outline of its own (`poly`): open floor that merges with whatever building it
+  //   overlaps, with stands round its walls and a hall, food court or garden inside. A cut-out is not a building: it is
+  //   a polygon taken away from whatever building it is drawn over (a courtyard, a lightwell, a notch).
+  polyZone(pts: Pt[]): Zone { return { id: this.world.nextId, type: 'concourse', level: 1, ...polyBox(pts), tier: 0, cls: this.opt.conc, poly: pts.map(q => ({ ...q })) }; }
+  polyCheck(pts: Pt[]): { ok: boolean; reason?: string; cost: number } {
+    const cut = this.tool === 'cut';
+    if (pts.length < 3) return { ok: false, reason: 'Click at least three corners', cost: 0 };
+    if (!simplePoly(pts)) return { ok: false, reason: 'Its edges cross: an outline cannot cross itself', cost: 0 };
+    const A = polyArea(pts); const min = cut ? AREA.minCut : AREA.min;
+    if (A < min) return { ok: false, reason: `Too small: ${cut ? 'a cut-out' : 'a free area'} needs ${n0(min)} m² at least`, cost: 0 };
+    const cost = A * ZONES.concourse.costPerM2 * (cut ? AREA.cutCost : 1);
+    if (cut) {
+      const box = { ...polyBox(pts), poly: pts };
+      if (!this.world.zones.some(z => z.type === 'concourse' && z.level === 1 && zonesOverlap(box, z))) return { ok: false, reason: 'Draw a cut-out over a concourse, pier or free area: it takes floor away from a building', cost };
+    } else { const c = canPlacePier(this.world, this.polyZone(pts)); if (!c.ok) return { ...c, cost }; }
+    return this.sim.canAfford(cost) ? { ok: true, cost } : { ok: false, reason: `Not enough money: ${money(cost)}`, cost };
+  }
+  polyPreview(p: Pt) {
+    const pts = [...this.path!, { x: snap(p.x, 5), y: snap(p.y, 5) }]; const cut = this.tool === 'cut';
+    const chk = this.polyCheck(pts);
+    if (!cut) { this.liftDraft(); this.liveDraft(chk.ok ? [this.polyZone(pts)] : []); }
+    this.ren.ghost = pts.length >= 2 ? { kind: 'zone', rect: { ...polyBox(pts), poly: pts }, ok: chk.ok || pts.length < 3 } : null;
+    this.hint(chk.ok ? `${cut ? 'Cut-out' : 'Free area'} · ${pts.length} corners · ${n0(polyArea(pts))} m² · ${money(chk.cost)} · click the first corner or press Enter to ${cut ? 'cut it out' : 'build'}` : pts.length < 3 ? 'Click the next corner' : chk.reason!, !chk.ok && pts.length >= 3);
+  }
+  polyClick(p: Pt, sx: number, sy: number) {
+    const q = { x: snap(p.x, 5), y: snap(p.y, 5) };
+    if (!this.path) { this.path = [q]; this.pathLast = { x: sx, y: sy }; this.hint('Now click the next corner'); return; }
+    const pts = this.path;
+    // the first corner (or the last one) clicked again: finish
+    const again = !!this.pathLast && Math.hypot(this.pathLast.x - sx, this.pathLast.y - sy) < 8;
+    const first = pts.length >= 3 && dist(q, pts[0]) * this.ren.cam.zoom < 12;
+    if (again || first) { this.polyBuild(); return; }
+    this.pathLast = { x: sx, y: sy };
+    if (pts.some(o => dist(o, q) < 1)) return;
+    const last = pts[pts.length - 1];
+    for (let i = 0; i + 2 < pts.length; i++) if (segsIntersect(pts[i], pts[i + 1], last, q)) { this.toast('That edge would cross the outline', 'warn'); return; }
+    pts.push(q); this.polyPreview(p);
+  }
+  polyBuild() {
+    const pts = this.path; if (!pts) return; const cut = this.tool === 'cut';
+    this.path = null; this.pathLast = null; this.endLive(false); this.ren.ghost = null;
+    const chk = this.polyCheck(pts);
+    if (!chk.ok) { this.settle(); if (pts.length >= 2) this.toast(chk.reason ?? 'Cannot build that', 'bad'); this.hint(this.toolHint()); return; }
+    this.sim.spend(chk.cost);
+    if (cut) { this.world.cuts = [...(this.world.cuts ?? []), { id: this.world.nextId++, level: 1, pts: pts.map(q => ({ ...q })) }]; this.changed(); this.toast(`Cut out ${n0(polyArea(pts))} m² · ${money(chk.cost)}`); }
+    else {
+      const z = this.polyZone(pts); this.world.nextId++; this.world.zones.push(z); this.changed();
+      const T = this.sim.d.termOf.get(z.id); const gates = this.sim.d.shellOf.get(z.id)?.ids.reduce((t, id) => t + (this.sim.d.units.get(id)?.count ?? 0), 0) ?? 0;
+      this.ren.float(`− ${money(chk.cost)}`, heart(z), PAL_BAD, LEVELS[1].z1); this.select({ kind: 'zone', zone: z });
+      this.toast(`Built a free area of ${n0(polyArea(pts))} m² · ${gates} gates in its building · ${money(chk.cost)}${T?.active ? ` · part of ${T.name}` : ''}`);
+    }
     this.hint(this.toolHint());
   }
 

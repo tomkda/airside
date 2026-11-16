@@ -5,20 +5,22 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, COMMERCE as SC } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { gripsOf, Grip, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
+import { gripsOf, Grip, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, Budget } from './bands';
 import { letLots } from './commerce';
-import { Shell, shellsOf, Junction, junctionsOf, inJunction, junctionGap, outsideRuns, counters } from './shell';
+import { Shell, Cut, shellsOf, Junction, junctionsOf, inJunction, junctionGap, outsideRuns, counters } from './shell';
 
 export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
+  /** v0.32: a free-drawn area (a concourse piece): its outline. x, y, w, h are its bounding box. */
+  poly?: Pt[];
   /** Concourses (v0.7): walk-through duty free at the security exit, who holds each lot, and the running footfall count. */
   dutyFree?: boolean; tenants?: Record<string, TenantId>; flow?: Flow;
   /** v0.10: parking decks (1 = surface lot), and a mezzanine floor over a concourse's spine. */
@@ -60,12 +62,22 @@ export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lan
  *  from the road; the curve runs from N through M to D (on the frontage road) as two quadratic pieces with control
  *  points C and C2 (v0.28: so it leaves the road soon after the nose instead of hugging it). `up`: traffic climbs it. */
 export interface RampGeo { T: Pt; P: Pt; N: Pt; C: Pt; M: Pt; C2: Pt; D: Pt; u: Pt; n: Pt; h: number; up: boolean }
-export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[] }
+export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[];
+  /** v0.32: cut-outs: polygons taken away from the buildings they are drawn over. */
+  cuts?: Cut[] }
 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [] });
 
 /** Bring older saves up to date. */
+/** v0.32: the budget of a free-drawn area: nothing carved, its long axis its box's. */
+function openBudget(z: Zone, gates: number): Budget {
+  const horiz = z.w >= z.h, long = Math.max(z.w, z.h);
+  return { hold: 0, spine: 0, commerce: 0, seats: 0, spineW: 0, walkways: false, long, width: Math.min(z.w, z.h), lots: 0, window: 0, kinds: {}, depthA: 0, depthB: 0, horiz, entryU: 0, entrySide: 'E', uA: 0, uZ: long, dutyFreeOK: false, gates };
+}
 export function migrateWorld(w: World): World {
+  // v0.32: free-drawn areas and cut-outs. An outline that is not a simple polygon is dropped (an area becomes its box).
+  w.cuts = (w.cuts ?? []).filter(k => Array.isArray(k.pts) && k.pts.length >= 3 && simplePoly(k.pts));
+  for (const z of w.zones) if (z.poly && !(z.type === 'concourse' && z.poly.length >= 3 && simplePoly(z.poly))) delete z.poly;
   // v0.6: separate gate areas and concourses become one concourse type.
   for (const z of w.zones) if ((z.type as string) === 'gates') { z.type = 'concourse'; z.leased = undefined; }
   // v0.7: concourses gain tenants, footfall and a duty-free toggle. Older saves start with none; tenants then bid
@@ -369,9 +381,12 @@ export function canPlaceWay(world: World, kind: WayKind, a: Pt, b: Pt, aprons: A
  * v0.17: can a pier (a concourse at any angle) go here? It may overlap other concourses: that is how it joins a
  * building. It may not overlap anything else on its level, cross a taxiway, or reach into a runway strip.
  */
-export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; level: Level }, ignoreId = -1): PlaceCheck {
+export function canPlacePier(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; poly?: Pt[]; level: Level }, ignoreId = -1): PlaceCheck {
   if (z.sides && Math.min(z.w, z.h) < HALL.minDia) return { ok: false, reason: `Too small: a hall needs ${HALL.minDia} m across at least` };
-  if (Math.max(z.w, z.h) < PIER.minLen) return { ok: false, reason: `Too short: a pier needs ${PIER.minLen} m at least` };
+  // (v0.32: a free area needs a true outline and some floor; it is not a bar, so it has no length rule)
+  if (z.poly && !simplePoly(z.poly)) return { ok: false, reason: 'Its edges cross: an outline cannot cross itself' };
+  if (z.poly && polyArea(z.poly) < AREA.min) return { ok: false, reason: `Too small: a free area needs ${AREA.min} m² at least` };
+  if (!z.poly && Math.max(z.w, z.h) < PIER.minLen) return { ok: false, reason: `Too short: a pier needs ${PIER.minLen} m at least` };
   const pts = zonePts(z); const edges = pts.map((p, i) => [p, pts[(i + 1) % pts.length]] as const);
   for (const p of pts) if (!inRect(p, SITE.buildable) || pointInPoly(p, SITE.lake)) return { ok: false, reason: 'Outside the site boundary or in the lake' };
   for (const rw of world.runways) for (const [a, b] of edges)
@@ -499,10 +514,11 @@ export function derive(source: World): Derived {
   const keep: { a: Pt; b: Pt }[] = [];
   for (const w of [...source.ways.filter(q => q.kind !== 'taxi'), ...fore, ...laid, ...laidDrives]) for (const [a, b] of waySegs(w)) keep.push({ a, b });
   // v0.23: one outline per building; its pieces share a gate letter and one run of gate numbers
-  const shells = shellsOf(source.zones); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
+  const shells = shellsOf(source.zones, world.cuts ?? []); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) shellOf.set(id, sh);
   const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
   const junctions = junctionsOf(shells, source.zones);
-  const shellWalks = shells.filter(sh => sh.ids.length > 1).map(sh => ({ ids: sh.ids, outer: sh.outer, rings: sh.rings }));
+  // (v0.32: and a building a cut-out takes from, or one with a free-drawn piece: its outline is not its pieces')
+  const shellWalks = shells.filter(sh => sh.ids.length > 1 || sh.cut || sh.ids.some(id => source.zones.find(q => q.id === id)?.poly)).map(sh => ({ ids: sh.ids, outer: sh.outer, rings: sh.rings }));
   const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group, walks: shellWalks });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
   for (const [id, u] of GA.units) units.set(id, u);
@@ -522,7 +538,9 @@ export function derive(source: World): Derived {
   const lease = new Map<number, Units>();
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     let C;
-    if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
+    // v0.32: a free-drawn area is open floor (the building's own space, planned in shell.ts): no bands, no lots of its own
+    if (z.poly) C = { shops: [] as Shop[], items: [] as LItem[], budget: openBudget(z, gates.filter(g => g.zone.id === z.id).length) };
+    else if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
     else if (z.rot || z.bend || z.taper) {
       // an angled pier is laid out in its own upright frame, then every piece is turned into place
       // (v0.19: its neighbours are brought into that frame too, as the box each one fills there, so the pier finds
@@ -571,6 +589,18 @@ export function derive(source: World): Derived {
     if (items) bandItems.set(id, items.flatMap(it => {
       if (it.closed || it.pts.length < 2 || (it.k !== 'spine' && it.k !== 'lane')) { const c = polyCentre(it.pts); return js.some(j => inJunction(c, j)) ? [] : [it]; }
       return outsideRuns(it.pts, js).map(pts => ({ ...it, pts }));
+    }));
+  }
+  // v0.32: nothing stands where a cut-out has taken the floor away: lots and fit-out under it go, and the spine and
+  // moving walkways stop at its edge (as at a junction space)
+  const cutJ = (world.cuts ?? []).map(k => ({ level: k.level, rings: [k.pts] } as unknown as Junction));
+  if (cutJ.length) for (const [id, list] of shops) {
+    const z = world.zones.find(q => q.id === id)!; const ks = cutJ.filter(k => k.level === z.level); if (!ks.length) continue;
+    shops.set(id, list.filter(sh => !ks.some(k => inJunction(polyCentre(sh.pts), k))));
+    const items = bandItems.get(id);
+    if (items) bandItems.set(id, items.flatMap(it => {
+      if (it.closed || it.pts.length < 2 || (it.k !== 'spine' && it.k !== 'lane')) { const c = polyCentre(it.pts); return ks.some(k => inJunction(c, k)) ? [] : [it]; }
+      return outsideRuns(it.pts, ks).map(pts => ({ ...it, pts }));
     }));
   }
   // v0.31: a food court or hall trades. Counters round its edge (shell.ts `counters`) become lots of the piece of the

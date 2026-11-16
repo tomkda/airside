@@ -464,12 +464,26 @@ export class Renderer3D {
     }
 
     // v0.23: a building of several pieces gets one roof over all of them, to its rounded outline
-    for (const sh of d.shells) if (sh.ids.length > 1 && !sh.ids.some(id => rising.has(id))) { const L1 = LEVELS[sh.level as 0 | 1]; add3(extrudeShape(sh.rings, L1.z1 - 0.5, L1.z1 + 0.25, ROOF)); }
+    // (v0.32: a building with a free area in it, or a cut-out taken from it, is modelled from its outline alone:
+    // a plinth, glass walls round every ring, courtyards included, and the roof, with no boxes of its pieces)
+    const freeIds = new Set<number>();
+    for (const sh of d.shells) {
+      if (sh.ids.some(id => rising.has(id))) continue;
+      const L1 = LEVELS[sh.level as 0 | 1];
+      const free = sh.cut || sh.ids.some(id => d.zones.find(z => z.id === id)?.poly);
+      if (free) {
+        sh.ids.forEach(id => freeIds.add(id));
+        add3(extrudeShape(sh.rings, L1.z0, L1.z0 + 0.7, PLINTH));
+        for (const r of sh.rings) add3(prism(r, L1.z0 + 0.7, L1.z1 - 1.1, GLASS.concourse, this.glassMat));
+        add3(extrudeShape(sh.rings, L1.z1 - 1.1, L1.z1 - 0.3, ROOF));
+      } else if (sh.ids.length > 1) add3(extrudeShape(sh.rings, L1.z1 - 0.5, L1.z1 + 0.25, ROOF));
+    }
     // ---- buildings: a glazed box under a white roof, or opened up (glass walls, floor and fit-out)
     const openSite = (z: Zone) => lod === 'terminal' && (focus === null || siteOf(sim.world, z)?.id === focus || d.termOf.get(z.id)?.site?.id === focus);
     const solid: Box[] = []; const glazing: Box[] = []; const see: Box[] = []; const fit: Box[] = []; const roofs: Box[] = [];
     for (const z of d.zones) {
       if (!ZONES[z.type].terminal || rising.has(z.id)) continue;
+      if (freeIds.has(z.id)) continue;
       const L = LEVELS[z.level];
       const sel = this.ren.selected?.kind === 'zone' && this.ren.selected.id === z.id;
       if (z.sides) {

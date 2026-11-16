@@ -27,7 +27,7 @@ export function heatRamp(v: number, alpha = 1) {
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Ghost {
-  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect & { rot?: number; sides?: number }; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
+  kind: 'zone' | 'runway' | 'way' | 'round'; rect?: Rect & { rot?: number; sides?: number; poly?: Pt[] }; a?: Pt; b?: Pt; c?: Pt; r?: number; ok: boolean;
   way?: { kind: WayKind; cls: number; lanes: number }; snapA?: boolean; snapB?: boolean;
   extras?: { a: Pt; b: Pt; cls: number }[];
   /** v0.15: the modules a new terminal would be laid out with. */
@@ -117,7 +117,8 @@ export class Renderer {
     if (close) g.closePath();
   }
   /** The corners of a rectangle. A turned zone (v0.17) gives its turned corners; `pivot` turns a part of one about the zone's centre. */
-  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number; bend?: number; taper?: number }): Pt[] {
+  rectPts(r: Rect & { rot?: number; pivot?: Pt; sides?: number; bend?: number; taper?: number; poly?: Pt[] }): Pt[] {
+    if (r.poly) return r.poly;   // a free-drawn area (v0.32)
     if (r.sides) return hallPts(r);   // a round or polygonal hall (v0.18)
     if (r.bend || r.taper) return zonePts(r);    // a bent pier (v0.20) or a tapered one (v0.21)
     const c = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];

@@ -3,7 +3,7 @@
 import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
-import { derive, newWorld, canPlaceWay, canPlaceTurned, gripsFor } from './src/world';
+import { derive, newWorld, canPlaceWay, canPlaceTurned, gripsFor, canPlacePier, migrateWorld } from './src/world';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
 import { regrip, gripsOf, toWorld } from './src/shapes';
@@ -206,6 +206,26 @@ for (const deg of [12, -20]) {
   const w2 = sampleWorld(); w2.ways.push({ id: w2.nextId++, kind: 'taxi', a: { x: 2900, y: 2500 }, b: { x: 2900, y: 3100 }, cls: 2, lanes: 0 });
   const sec = w2.zones.find(z => z.type === 'security');
   check('a turned security block may not cross a taxiway on the departures level', !canPlaceTurned(w2, { ...sec, x: 2860, rot: 0.2, level: 1 }, 'security', [sec.id]).ok); }
+// v0.32: a free-drawn area and a cut-out
+{ const w = sampleWorld(); const pts = [[3250, 2655], [3400, 2655], [3440, 2720], [3380, 2800], [3270, 2780]].map(([x, y]) => ({ x, y }));
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const z = { id: w.nextId++, type: 'concourse', level: 1, x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), tier: 0, cls: 2, poly: pts };
+  check('a free area overlapping the concourse may be placed', canPlacePier(w, z).ok);
+  check('a free area whose edges cross may not', !canPlacePier(w, { ...z, poly: [pts[0], pts[2], pts[1], pts[3]] }).ok);
+  w.zones.push(z);
+  const cut = { id: w.nextId++, level: 1, pts: [[2950, 2635], [3050, 2635], [3050, 2665], [2950, 2665]].map(([x, y]) => ({ x, y })) }; w.cuts = [cut];
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d; const conc0 = w.zones.find(q => q.type === 'concourse' && !q.poly);
+  const sh = d.shellOf.get(z.id); const free = d.gates.filter(g => g.zone.id === z.id).length;
+  check('the free area and the concourse are one building, with stands on the free area (' + free + ')', sh && sh === d.shellOf.get(conc0.id) && sh.cut && free >= 4 && d.terminals[0].active);
+  check('a 30 m cut-out makes a courtyard, and the free area a hall', d.junctions.some(j => j.kind === 'court' && Math.abs(j.area - 3000) < 300) && d.junctions.some(j => j.kind === 'hall' && j.ids.includes(z.id)));
+  const under = [...d.shops.values()].flat().filter(sh => { const c = sh.pts.reduce((a, p) => ({ x: a.x + p.x / sh.pts.length, y: a.y + p.y / sh.pts.length }), { x: 0, y: 0 }); return inPoly(c, cut.pts); });
+  check('no lot stands in the cut-out', under.length === 0);
+  const big = d.junctions.find(j => j.ids.includes(z.id)); const cs = [...d.shops.values()].flat().filter(s => s.court);
+  check('a large hall gets counters in proportion to its floor, and planting and seating on only part of it (' + cs.length + ' counters, ' + big.seeds.length + ' trees and tables)', cs.length <= Math.max(6, Math.floor(big.area / 900)) + 12 && big.seeds.length < big.area / 30);
+  const m = migrateWorld(JSON.parse(JSON.stringify({ ...w, cuts: [cut, { id: 99, level: 1, pts: [{ x: 0, y: 0 }, { x: 1, y: 0 }] }], zones: [...w.zones, { ...conc0, id: 98, poly: [pts[0], pts[2], pts[1], pts[3]] }] })));
+  check('a saved world keeps good outlines and drops broken ones', m.cuts.length === 1 && m.zones.find(q => q.id === z.id).poly.length === 5 && !m.zones.find(q => q.id === 98).poly);
+  let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 2) sim.step(0.25);
+  check('it flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
