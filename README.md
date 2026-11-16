@@ -37,7 +37,14 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.30)
+## What's in the alpha (v0.31)
+
+- **Food courts and halls that trade (v0.31):** the spaces a building keeps where its pieces meet now have counters round their edge, about 7 m wide and 6 m deep, facing in to the shared tables. The way in from each spine is left open, and no counter stands on a lot of the building's own plan.
+  - **Food only.** The counters are let to food tenants (grab-and-go formats at this size) and are let with the space, whatever the building's own count of let lots.
+  - **Passengers use them.** On the way to their gate, a passenger who wants a meal may stop at one, like any lot; customers sit at the shared tables, so each counter serves about twelve at once.
+  - **Paid like any lot.** They pay rent and earn sales like any lot, and show in the commercial heat map and the day's report.
+  - Gardens and courtyards stay planted, with no counters.
+
 
 - **Ramp markings in 3D (v0.30):** the 3D view now shows each ramp terminal as the plan does: the broken line between the road and the speed-change lane, the painted gore with its chevrons, and the arrows in the lane. The deck and its ramps carry their own edge lines, lane lines and the double centre line, at the height of the deck as it climbs.
 
@@ -360,7 +367,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 - Halls turn but do not yet bend into a curve; a curved forecourt needs curbs that follow a curved road, which they do not do yet. A hall that is turned keeps its upright neighbours upright: turn security too, or overlap them, to keep them joined.
 - The figures for the lane and taper lengths are from memory of AASHTO's tables, not checked against the book.
 - A forecourt link that runs on in line with the frontage road, or turns a second corner on its way to a road, keeps its square corners. The forecourt is still straight (it does not follow a curved or angled hall), and the deck has no lane markings in 3D. In 3D a road's surface can vanish when the camera is very close to it (an older fault).
-- Junction spaces raise the value of the lots round them but have no trade of their own yet: a food court has no counters in it, and passengers do not sit or dwell there. A gate whose holdroom fell in a hall keeps its capacity but has no seats drawn. Halls, food courts and gardens under the roof are not shown in 3D or in the tilted plan view; courtyards are shown in 3D.
+- A food court's counters are kiosk-sized grab-and-go lots; there are no sit-down restaurants in a food court yet, and its seating is drawn but not modelled seat by seat. A gate whose holdroom fell in a hall keeps its capacity but has no seats drawn. Halls, food courts and gardens under the roof are not shown in 3D or in the tilted plan view; courtyards are shown in 3D.
 - The merged outline carries the stands, but interiors, selection and the tilted plan view still work on the separate pieces, so a rounded corner can show a sliver of floor with nothing planned on it, a gate at a filled-in junction can have its door a few metres from its holdroom, roof glazing lines of two pieces cross at a junction, and the Operations panel still counts pieces as concourses. Halls and security keep their own square outlines.
 - On a building of several pieces a gate is named by where it is along its wall, so its name can change when that piece is reshaped, and gates switched off before v0.24 on such buildings may now refer to a different stand. The inspector's side-by-side gate list is empty for such pieces. A one-piece building keeps its gate names.
 - A path of piers is separate pieces that happen to touch: moving or reshaping one leg does not carry its neighbours along, so a leg pulled away from its corner hall stops being part of the building until it is put back. Each leg and corner hall is its own concourse with its own gate letter. A path may cross itself or another building's apron; nothing stops it but the usual placement rules for each piece.

@@ -688,6 +688,11 @@ export class Renderer {
           if (zz > 1.6) { g.fillStyle = 'rgba(60,54,46,0.7)'; for (const [dx, dy] of [[1.1, 0], [-1.1, 0], [0, 1.1], [0, -1.1]]) g.fillRect(x + dx * zz - 0.28 * zz, y + dy * zz - 0.28 * zz, 0.56 * zz, 0.56 * zz); }
         }
       }
+      // v0.31: its counters, over the floor just painted (they are lots of the piece they stand in)
+      if (open && zz > 0.6) for (const id of j.ids) for (const sh of sim.d.shops.get(id) ?? []) if (sh.court && sim.leased(sh)) {
+        this.poly(sh.pts, 'rgba(168,112,48,0.85)'); g.strokeStyle = 'rgba(60,40,20,0.6)'; g.lineWidth = 0.8; this.path(sh.pts); g.stroke();
+        if (zz > 1.6) { const c = { x: (sh.pts[0].x + sh.pts[2].x) / 2, y: (sh.pts[0].y + sh.pts[2].y) / 2 }; this.label('F', c, 0, 8, '#F4EDDF', { weight: 800, spacing: 0 }); }
+      }
       if (open && zz > 0.9 && j.area > 150) {
         const name = court ? 'COURTYARD' : j.kind === 'garden' ? 'GARDEN' : j.kind === 'food' ? 'FOOD COURT' : 'HALL';
         this.label(name, j.c, 0, 9, 'rgba(40,36,30,0.75)', { weight: 600, spacing: 1.5, align: 'center', bg: 'rgba(240,232,214,0.8)' });

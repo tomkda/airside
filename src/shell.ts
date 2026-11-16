@@ -71,7 +71,11 @@ export interface Junction { level: number; kind: JunctionKind; rings: Pt[][]; ou
 // A food court wants room for a ring of counters and seating between them: at 1.4–1.9 m2 a seat (the usual food-court
 // planning range; Neufert gives 1.4–1.6 m2 for self-service dining), 400 m2 seats about 150 once aisles are taken out.
 // Above 1,500 m2 the space is a hall: a planted middle with seating round it.
-export const JUNCTION = { grow: 6, min: 30, corner: 600, food: 400, hall: 1500, tree: 9, table: 4.2 };
+export const JUNCTION = { grow: 6, min: 30, corner: 600, food: 400, hall: 1500, tree: 9, table: 4.2,
+  // v0.31: counters round a food court or hall. A food-court counter is usually 6–9 m of frontage and 5–7 m deep with
+  // its kitchen behind (from memory of airport concession practice, not a cited standard); `gap` keeps a spine's
+  // way in clear.
+  counter: { front: 7, depth: 6, gap: 9 } };
 
 type Ex = { outer: IPath; holes: IPath[] };
 function clip(type: number, subj: IPath[], clipP: IPath[], subjFill = ClipperLib.PolyFillType.pftNonZero, clipFill = ClipperLib.PolyFillType.pftNonZero): Ex[] {
@@ -172,11 +176,11 @@ function plant0(kind: JunctionKind, rings: Pt[][], outer: Pt[]): Junction['seeds
   const tables = (m: number) => seedsIn(rings, outer, JUNCTION.table, m, 0.6).map(p => ({ ...p, t: 'table' as const, s: 1 }));
   if (kind === 'garden') return trees(2.2);
   if (kind === 'court') return trees(3);
-  if (kind === 'food') return tables(3);
+  if (kind === 'food') return tables(JUNCTION.counter.depth + 2.5);   // (v0.31: clear of the counters round the edge)
   // a hall: planting in the middle (well clear of the edge), seating round it
   const c = centroid(outer); const deep = trees(2.5).filter(p => edgeGap(p, rings) >= 11);
   const far = deep.reduce((m, p) => Math.max(m, Math.hypot(p.x - c.x, p.y - c.y)), 0);
-  return [...deep, ...tables(3.5).filter(p => !deep.some(t => Math.hypot(t.x - p.x, t.y - p.y) < 5.5) && (!deep.length || Math.hypot(p.x - c.x, p.y - c.y) > far * 0.4))];
+  return [...deep, ...tables(JUNCTION.counter.depth + 2.5).filter(p => !deep.some(t => Math.hypot(t.x - p.x, t.y - p.y) < 5.5) && (!deep.length || Math.hypot(p.x - c.x, p.y - c.y) > far * 0.4))];
 }
 /** How far a point is from a junction space's edge (0 if it is inside). */
 export function junctionGap(p: Pt, j: Junction) { return inJunction(p, j) ? 0 : edgeGap(p, j.rings); }
@@ -195,6 +199,30 @@ export function outsideRuns(pts: Pt[], js: Junction[], step = 1.5): Pt[][] {
   }
   if (cur.length > 1) runs.push(cur);
   return runs;
+}
+/** v0.31: the counters round a food court or hall: along each straight stretch of its edge, `counter.front` wide and
+ *  `counter.depth` deep, facing in; none where a spine comes in (`ends`, within `counter.gap`), and none that would
+ *  not stand wholly inside the space. */
+export function counters(j: Junction, ends: Pt[]): { pts: Pt[]; door: Pt; front: number; depth: number }[] {
+  if (j.kind !== 'food' && j.kind !== 'hall') return [];
+  const { front: F, depth: D, gap } = JUNCTION.counter; const r = j.outer; const out: { pts: Pt[]; door: Pt; front: number; depth: number }[] = [];
+  for (let i = 0; i < r.length; i++) {
+    const a = r[i], b = r[(i + 1) % r.length]; const L = Math.hypot(b.x - a.x, b.y - a.y); const k = Math.floor(L / F); if (k < 1) continue;
+    const d = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; let nIn = { x: -d.y, y: d.x };
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; if (!inJunction({ x: mid.x + nIn.x, y: mid.y + nIn.y }, j)) nIn = { x: d.y, y: -d.x };
+    const s0 = (L - k * F) / 2;
+    for (let q = 0; q < k; q++) {
+      const p0 = { x: a.x + d.x * (s0 + q * F), y: a.y + d.y * (s0 + q * F) }, p1 = { x: p0.x + d.x * F, y: p0.y + d.y * F };
+      const p2 = { x: p1.x + nIn.x * D, y: p1.y + nIn.y * D }, p3 = { x: p0.x + nIn.x * D, y: p0.y + nIn.y * D };
+      const m = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+      if (ends.some(e => Math.hypot(e.x - m.x, e.y - m.y) < gap + F / 2)) continue;
+      const c = { x: (p0.x + p2.x) / 2, y: (p0.y + p2.y) / 2 };
+      if (![p2, p3, c].every(p => inJunction(p, j) && edgeGap(p, j.rings) >= (p === c ? D / 2 - 0.5 : 0))) continue;
+      if (out.some(o => Math.hypot(o.door.x - (p2.x + p3.x) / 2 - nIn.x, o.door.y - (p2.y + p3.y) / 2 - nIn.y) < F * 0.9)) continue;
+      out.push({ pts: [p0, p1, p2, p3], door: { x: (p2.x + p3.x) / 2 + nIn.x, y: (p2.y + p3.y) / 2 + nIn.y }, front: F, depth: D });
+    }
+  }
+  return out;
 }
 /** Is a point in a junction space (its holes are not part of it)? */
 export function inJunction(p: Pt, j: Junction) { return j.rings.reduce((n, r) => n + (inPoly(p, r) ? 1 : 0), 0) % 2 === 1; }

@@ -854,7 +854,8 @@ export class Sim {
 
   termOf(f: Flight): Terminal | undefined { return this.d.termOf.get(f.gate.zone.id); }
   inTerm(z: Zone, T?: Terminal) { return !T || this.d.termOf.get(z.id) === T; }
-  leased(sh: Shop) { return sh.rank < (this.d.lease.get(sh.zone.id)?.count ?? 0) && sh.bid >= COMMERCE.minBid; }
+  // (v0.31: a counter round a food court or hall is let with the court, outside the building's own count of let lots)
+  leased(sh: Shop) { return (sh.court || sh.rank < (this.d.lease.get(sh.zone.id)?.count ?? 0)) && sh.bid >= COMMERCE.minBid; }
 
   /** The walk-through duty free a departing passenger crosses after security: one in their terminal they can reach. */
   dutyFreeFor(p: Pax): Shop | undefined {
