@@ -17,7 +17,7 @@ import { canPlacePier } from './world';
 import { simplePoly, polyBox } from './shapes';
 import { AREA } from './config';
 import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths } from './shapes';
-import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, PlaceCheck } from './world';
+import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
@@ -755,7 +755,7 @@ export class UI {
   /** Give a zone (and the baggage claim under a hall) a new shape for now. */
   liveSet(z: Zone, g: Geom) {
     if (!this.live) return;
-    const tw = this.twin(z); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot });   // (v0.29: angle and all)
+    const tw = this.twin(z); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend });   // (v0.29: angle and all; v0.34: and its bend)
     setGeom(z, g); this.live.dirty = true;
   }
   /** Aprons for placement checks: those from before a drag began, so a shape being drawn or dragged is never refused
@@ -813,17 +813,18 @@ export class UI {
     if (grip === 'r') return z.sides! >= 24 ? 'Drag to make the hub wider or narrower' : 'Drag a corner to resize and turn the hub';
     if (grip === 'a' || grip === 'b') return 'Drag this end to stretch and swing the pier · the other end stays where it is';
     if (grip === 'ta' || grip === 'tb') return 'Drag to make this end of the pier wider or narrower · the other end keeps its width, so the pier tapers';
-    if (grip === 'm') return z.bend ? 'Drag to bend the pier more or less · pull it back to the line between its ends to straighten it' : 'Drag sideways to bend the pier into a curve · both ends stay where they are';
+    if (grip === 'm') { const what = BENDS.has(z.type) ? 'hall' : 'pier'; return z.bend ? `Drag to bend the ${what} more or less · pull it back to the line between its ends to straighten it` : `Drag sideways to bend the ${what} into a curve · both ends stay where they are`; }
     return canTurn(z) ? 'Drag to make it wider or narrower' : `Drag this edge to resize the ${ZONES[z.type].short.toLowerCase()} · the opposite edge stays where it is`;
   }
   /** Can a built zone take this shape? */
   placeGeom(z: Zone, g: Geom) {
     // v0.29: a turned hall, security or passport control (and the claim under a hall)
-    if (g.rot && TURNABLE.has(z.type)) {
+    // (v0.34: or a bent hall)
+    if ((g.rot || g.bend) && TURNABLE.has(z.type)) {
       const tw = this.twin(z); const ids = [z.id, ...(tw ? [tw.id] : [])];
-      const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: z.level }, z.type, ids, this.aprons);
-      const chk2 = chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, level: tw.level }, tw.type, ids, this.aprons) : chk;
-      return chk2.ok ? this.siteRules(zoneBox({ ...g, rot: g.rot }), z.id) : chk2;   // and the same site rules as an upright one
+      const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, level: z.level }, z.type, ids, this.aprons);
+      const chk2 = chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, level: tw.level }, tw.type, ids, this.aprons) : chk;
+      return chk2.ok ? this.siteRules(zoneBox({ ...g, rot: g.rot, bend: g.bend }), z.id) : chk2;   // and the same site rules as an upright one
     }
     if (g.poly) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, poly: g.poly, level: z.level }, z.id);   // (v0.32: a free area)
     if (g.sides || g.rot || g.bend || g.taper) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, bend: g.bend, taper: g.taper, level: z.level }, z.id);

@@ -5,7 +5,7 @@
 import { Pt, add, mul, sub, dist, norm, center, clamp, lerpPt } from './geom';
 import type { ZoneType } from './config';
 import type { World, Zone, Frame } from './world';
-import { toWorld, dirWorld, shaped, inZone } from './shapes';
+import { toWorld, dirWorld, shaped, inZone, toLocal, frameOf, zonePts, polyBox } from './shapes';
 
 export type LKind =
   | 'counter' | 'belt' | 'kiosk' | 'stanchion' | 'door'
@@ -198,6 +198,15 @@ function passport(f: F) {
 
 // ---------------------------------------------------------------- entry point
 export function layoutZone(z: Zone, world: World, opts: { items?: LItem[]; claimNeed: number }): { frame: Frame; max: number; count?: number } {
+  // v0.34: a bent hall is laid out on its straight frame, with its neighbours brought into that frame (each as the box
+  // its outline fills there), and everything is then carried onto the arc
+  if (z.bend && z.type !== 'concourse') {
+    const zl: Zone = { ...z, ...frameOf(z), rot: undefined, bend: undefined };
+    const local: World = { ...world, zones: world.zones.map(o => (o.id === z.id ? zl : { ...o, ...polyBox(zonePts(o).map(p => toLocal(z, p))), rot: undefined, bend: undefined, sides: undefined, taper: undefined, poly: undefined })) };
+    const L = layoutZone(zl, local, opts); const f = L.frame; const W = (p: Pt) => toWorld(z, p);
+    const a = W(f.a), b = W(f.b); const mid = lerpPt(f.a, f.b, 0.5);
+    return { ...L, frame: { ...f, a, b, along: norm(sub(b, a)), inward: norm(sub(W(add(mid, f.inward)), W(mid))), edgeLen: dist(a, b), slots: f.slots.map(W), items: f.items.map(it => ({ ...it, pts: it.pts.map(W) })) } };
+  }
   const f = orient(z, world);
   let items: LItem[] = [], slots: Pt[] = [], max = 0, count: number | undefined;
   if (z.type === 'checkin') ({ items, slots, max } = checkin(f));

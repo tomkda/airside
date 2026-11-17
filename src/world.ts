@@ -92,7 +92,7 @@ export function migrateWorld(w: World): World {
     const m = Math.max(0, 2 * Math.min(z.h - END_WIDTH.min, END_WIDTH.max - z.h)); z.taper = Math.max(-m, Math.min(m, z.taper)); if (Math.abs(z.taper) < 2) delete z.taper;
   }
   for (const z of w.zones) if (z.bend !== undefined) {   // v0.20: or bend, and only as far as their width allows
-    if (z.type !== 'concourse' || z.sides || !isFinite(z.bend)) { delete z.bend; continue; }
+    if (!(z.type === 'concourse' || BENDS.has(z.type)) || z.sides || !isFinite(z.bend)) { delete z.bend; continue; }   // (v0.34: halls bend too)
     const m = maxBend(z.w, z.h + Math.abs(z.taper ?? 0) / 2); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
   }
 
@@ -446,11 +446,18 @@ export const TURNABLE = new Set<ZoneType>(['checkin', 'claim', 'security', 'pass
 export const gripsFor = (z: Zone): { grip: Grip; p: Pt }[] => {
   if (!TURNABLE.has(z.type)) return gripsOf(z, canTurn(z));
   const c = centreOf(z); const ax = z.w >= z.h; const off = 16;
-  return [...gripsOf(z, false), { grip: 't', p: toWorld(z, ax ? { x: z.x + z.w + off, y: c.y } : { x: c.x, y: z.y + z.h + off }) }];
+  const turn = { grip: 't' as Grip, p: toWorld(z, ax ? { x: z.x + z.w + off, y: c.y } : { x: c.x, y: z.y + z.h + off }) };
+  // v0.34: a hall (check-in over claim) also bends, by a grip in its middle, as a pier does; bent, it has a pier's
+  // grips (its ends, its two long walls and its middle) but never tapers
+  if (!BENDS.has(z.type)) return [...gripsOf(z, false), turn];
+  if (z.bend) return [...gripsOf(z, true).filter(g => g.grip !== 'ta' && g.grip !== 'tb'), turn];
+  return [...gripsOf(z, false), { grip: 'm', p: c }, turn];
 };
+/** v0.34: the landside modules that bend: a hall, check-in over claim. */
+export const BENDS = new Set<ZoneType>(['checkin', 'claim']);
 /** v0.29: can a turned hall, security or passport module take this shape? Like a pier, it may overlap the other
  *  terminal modules on its level (it joins them where they overlap), but not a road, a curb, a lot or another hall. */
-export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; level: Level }, type: ZoneType, ignore: number[] = [], aprons: Apron[] = []): PlaceCheck {
+export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; bend?: number; level: Level }, type: ZoneType, ignore: number[] = [], aprons: Apron[] = []): PlaceCheck {
   const def = ZONES[type];
   if (z.w < def.minW && z.h < def.minW) return { ok: false, reason: `Too small: at least ${def.minW} m on one side` };
   if (Math.min(z.w, z.h) < def.minH) return { ok: false, reason: `Too narrow: at least ${def.minH} m deep` };

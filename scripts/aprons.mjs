@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
 import { derive, newWorld, canPlaceWay, canPlaceTurned, gripsFor, canPlacePier, migrateWorld } from './src/world';
+import { zonePts } from './src/shapes';
 import { shellsOf } from './src/shell';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
@@ -201,7 +202,7 @@ for (const deg of [12, -20]) {
   const lim = { minLen: 60, minWide: 24, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 }; const at = deg => ({ x: c.x + 200 * Math.cos(deg * Math.PI / 180), y: c.y + 200 * Math.sin(deg * Math.PI / 180) });
   const t12 = regrip(hall, 't', at(12), false, lim), t0 = regrip({ ...hall, ...t12 }, 't', at(1), false, lim), t90 = regrip(hall, 't', at(91), false, lim);
   check('the turn handle turns a hall about its centre in 5° steps, and square again it is upright, not nearly so', Math.abs(t12.rot * 180 / Math.PI - 10) < 1e-6 && Math.abs(t12.x + t12.w / 2 - c.x) < 1e-6 && t0.rot === undefined && t0.w === hall.w && t90.rot === undefined && t90.w === hall.h && t90.h === hall.w);
-  check('a hall keeps its four edge grips and has a turn handle', gripsFor(hall).map(g => g.grip).sort().join('') === 'enstw');
+  check('a hall keeps its four edge grips and has a turn handle (and, since v0.34, a bend grip)', gripsFor(hall).map(g => g.grip).sort().join('') === 'emnstw');
   const deep = regrip(hall, 's', { x: c.x, y: hall.y + 150 }, false, lim);
   check('an upright hall keeps its own edge limits (150 m deep is allowed)', deep.h === 150);
   const w2 = sampleWorld(); w2.ways.push({ id: w2.nextId++, kind: 'taxi', a: { x: 2900, y: 2500 }, b: { x: 2900, y: 3100 }, cls: 2, lanes: 0 });
@@ -265,6 +266,27 @@ for (const deg of [12, -20]) {
   check('the hall is in the middle, with no lot or holdroom in it', hall && ![...lots.map(l => l.pts), ...holds.map(h => h.pts)].some(q => inPoly(box(q), hall.outer)));
   let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 2) sim.step(0.25);
   check('the planned free area flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
+// v0.34: a hall that bends, with its forecourt, curbs and deck following the curve
+{ const w = sampleWorld(); const hall = w.zones.find(z => z.type === 'checkin'); const c = { x: hall.x + hall.w / 2, y: hall.y + hall.h / 2 };
+  const lim = { minLen: 60, minWide: 30, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 };
+  check('an upright hall has a bend grip in its middle', gripsFor(hall).some(g => g.grip === 'm'));
+  const bent = regrip(hall, 'm', { x: c.x, y: c.y - 30 }, false, lim), back = regrip({ ...hall, ...bent }, 'm', { x: c.x, y: c.y + 1 }, false, lim);
+  check('the bend grip bends it, and pulled straight it is an upright rectangle again', bent.bend === -30 && back.bend === undefined && !back.rot && back.w === hall.w && back.h === hall.h && back.x === hall.x && back.y === hall.y);
+  check('a bent hall has its ends, long walls, middle and turn handle as grips, and never tapers', gripsFor({ ...hall, bend: -30 }).map(g => g.grip).sort().join('') === 'abmnst');
+  for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.bend = -30;
+  check('a bent hall may overlap security (it joins it there)', canPlaceTurned(w, { ...hall, bend: -30, level: 1 }, 'checkin', w.zones.filter(z => z.type === 'checkin' || z.type === 'claim').map(z => z.id)).ok);
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d;
+  const dep = d.zones.filter(z => z.auto?.deck === 'dep'), arr = d.zones.filter(z => z.auto?.deck === 'arr');
+  const outline = zonePts(d.zones.find(z => z.type === 'checkin'));
+  const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+  const wallGap = z => Math.min(...zonePts(z).map(p => Math.min(...outline.map((a, i) => segD(p, a, outline[(i + 1) % outline.length])))));
+  check('Terminal 1 opens with the hall bent 30 m (' + (d.terminals[0].problems.join('; ') || 'open') + ')', d.terminals[0].active);
+  check('its curbs follow the curved face, a piece at a time on both levels (' + dep.length + ' and ' + arr.length + '), each against the wall', dep.length >= 6 && arr.length === dep.length && [...dep, ...arr].every(z => wallGap(z) < 1.5) && new Set(dep.map(z => Math.round(z.rot * 100))).size >= 4);
+  check('the frontage road follows it as a chain of chords, with one deck the length of it and a ramp at each end', d.autoRoads.filter(r => r.fore === 'face').length >= 6 && d.decks.length === 1 && d.decks[0].pts.length > dep.length + 20 && d.autoRoads.filter(r => r.rg).length === 2);
+  const m = migrateWorld(JSON.parse(JSON.stringify(w)));
+  check('a saved world keeps the hall bent', m.zones.filter(z => z.type === 'checkin' || z.type === 'claim').every(z => z.bend === -30));
+  let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
+  check('the bent hall flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

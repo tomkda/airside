@@ -355,7 +355,8 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     const L = alongX(z0) ? z0.w : z0.h, W = alongX(z0) ? z0.h : z0.w;
     let rot = Math.atan2(Math.sin(th), Math.cos(th)); if (rot > Math.PI / 2 + 1e-6) rot -= Math.PI; else if (rot <= -Math.PI / 2 + 1e-6) rot += Math.PI;
     if (Math.abs(rot) < 1e-6) return { ...geomOf(z0), x: c0.x - L / 2, y: c0.y - W / 2, w: L, h: W, rot: undefined };
-    if (Math.abs(Math.abs(rot) - Math.PI / 2) < 1e-6) return { ...geomOf(z0), x: c0.x - W / 2, y: c0.y - L / 2, w: W, h: L, rot: undefined };
+    // (a bent one always keeps its length along its own x: that is the frame its bend is measured in)
+    if (Math.abs(Math.abs(rot) - Math.PI / 2) < 1e-6 && !z0.bend) return { ...geomOf(z0), x: c0.x - W / 2, y: c0.y - L / 2, w: W, h: L, rot: undefined };
     return { ...geomOf(z0), x: c0.x - L / 2, y: c0.y - W / 2, w: L, h: W, rot };
   }
   if (grip === 'm') {
@@ -363,7 +364,12 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     const P = asPier(z0); const c = centreOf(P);
     const q = P.rot ? turn(p, c, -P.rot) : p;
     const bend = clampBend(P.w, P.h + Math.abs(P.taper ?? 0) / 2, snap(q.y - c.y, 5));
-    if (!bend) return z0.bend || z0.taper ? { ...P, bend: undefined } : geomOf(z0);   // pulled straight again: as it was
+    if (!bend) {
+      if (!z0.bend && !z0.taper) return geomOf(z0);   // pulled straight again: as it was
+      // (v0.34: a hall pulled straight and square to the grid is an upright rectangle again, so it keeps shared walls)
+      if (!turns && (!P.rot || Math.abs(Math.abs(P.rot) - Math.PI / 2) < 1e-6)) { const v = !!P.rot; return { ...P, bend: undefined, rot: undefined, x: c.x - (v ? P.h : P.w) / 2, y: c.y - (v ? P.w : P.h) / 2, w: v ? P.h : P.w, h: v ? P.w : P.h }; }
+      return { ...P, bend: undefined };
+    }
     return { ...P, bend };
   }
   if (grip === 'ta' || grip === 'tb') {
