@@ -25,7 +25,11 @@ export interface Budget {
   /** Long axis (x when horiz), where passengers enter from security, the spine's extent, and whether duty free can go in. */
   horiz: boolean; entryU: number; entrySide: 'A' | 'B' | 'E'; uA: number; uZ: number; dutyFreeOK: boolean; gates: number;
 }
-export interface Carved { shops: Shop[]; items: LItem[]; budget: Budget }
+export interface Carved { shops: Shop[]; items: LItem[]; budget: Budget;
+  /** v0.42: across the building at a point along it (u from the frame's west end): where each holdroom band ends and
+   *  where the spine runs, from wall A (v). A tapered pier re-plans by it (world.ts): holdrooms and spine keep their
+   *  true depth and width, and the lots between take up the taper. */
+  lat?: (u: number) => { a: number; s0: number; s1: number; b: number; S: number } }
 
 /** Holdroom floor one gate of this class needs, m²: 80% of its seats boarding, 60% of them seated at 1.4 m² and 40%
  *  standing at 0.9 m², plus the podium (21 m²) and the boarding queue (17 m²), as in ACRP Report 25's holdroom rule. */
@@ -264,7 +268,7 @@ export function carveConcourse(z: Zone, world: World, gates: Gate[]): Carved {
 
   const dA = Math.max(0, vs0 - hA), dB = Math.max(0, S - hB - vs1);
   return {
-    shops, items,
+    shops, items, lat: horiz ? (u: number) => ({ a: holdAt(runsA, u), s0: vs0, s1: vs1, b: S - holdAt(runsB, u), S }) : undefined,
     budget: {
       hold, spine: sw * (uZ - uA), commerce, seats, spineW: sw, walkways, long: L, width: S, lots: shops.length, window: windowLots, kinds, depthA: dA, depthB: dB,
       horiz, entryU: eu, entrySide, uA, uZ, dutyFreeOK, gates: mine.length,

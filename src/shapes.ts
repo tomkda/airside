@@ -76,7 +76,7 @@ export function simplePoly(poly: Pt[]): boolean {
 }
 /** The width of a bar at each end, and how much wider or narrower than its middle it is a fraction `t` of the way along. */
 export const endWidths = (z: Shaped): [number, number] => [z.h - (z.taper ?? 0) / 2, z.h + (z.taper ?? 0) / 2];
-const widthK = (z: Shaped, t: number) => (z.taper && !z.sides ? 1 + (z.taper / z.h) * (t - 0.5) : 1);
+export const widthK = (z: Shaped, t: number) => (z.taper && !z.sides ? 1 + (z.taper / z.h) * (t - 0.5) : 1);
 /** How many straight facets a hall's outline has: a round one is drawn with 32. */
 export const facetsOf = (z: Shaped) => (!z.sides ? 4 : z.sides >= 24 ? 32 : Math.max(3, Math.round(z.sides)));
 /** A hall's outline, `grow` metres outside (or inside, if negative) the real one, with `n` facets. Clockwise on screen, first facet at the top. */
