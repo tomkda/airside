@@ -589,42 +589,83 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
   }
 
   // v0.37: a way round. When no straight link or link with one turn gets a run out, it looks for a path round the
-  // buildings and aprons in the way: the corners of every one nearby, set `DETOUR.off` out, are the turning points,
+  // buildings and aprons in the way: the corners of every one nearby, set out by its class's taxilane clearance, are the turning points,
   // and the goals are points along the taxiways, runways and connected taxilanes within `APRON.reach` of the run (the
   // same reach as a straight link, so a building too far from the airfield stays cut off). Every leg must be clear as a
   // straight link must (`clearLine`), and the whole way may be at most `DETOUR.long` times that reach. Dijkstra, with
   // the legs tried lazily; it runs only for a run nothing else could link.
-  const DETOUR = { off: 16, step: 40, long: 1.75 };
+  const DETOUR = { step: 40, long: 1.75, road: 8 };
+  // (a run whose search failed is not searched again until a lane has been laid near it since)
+  const failed = new Map<Run, number>();
   const detour = (r: Run, ok: boolean[]): Way2 | null => {
-    const starts = [r.pts[0], r.pts[r.pts.length - 1], r.pts[Math.floor(r.pts.length / 2)]];
-    const near = (p: Pt) => starts.some(s => dist(s, p) <= APRON.reach);
+    const was = failed.get(r);
+    if (was !== undefined && !lanes.slice(was).some(l => [r.pts[0], r.pts[r.pts.length - 1]].some(s => segDist(s, l.a, l.b) <= APRON.reach * DETOUR.long))) return null;
+    // clearance: an aircraft of this run's class keeps its taxilane `APRON.laneClear` off any building (as its own
+    // stands do), clear of roads by their half-width and that again, out of every runway strip but the one it joins,
+    // and off the lake and the site's edge
+    const pad = APRON.laneClear[r.cls] ?? APRON.laneClear[2];
+    const outB = (b: Rect, m: number) => ({ x: b.x - m, y: b.y - m, w: b.w + 2 * m, h: b.h + 2 * m });
+    const segBox = (a: Pt, b: Pt, m: number): Rect => ({ x: Math.min(a.x, b.x) - m, y: Math.min(a.y, b.y) - m, w: Math.abs(b.x - a.x) + 2 * m, h: Math.abs(b.y - a.y) + 2 * m });
+    const meets = (q: Rect, b: Rect) => q.x <= b.x + b.w && q.x + q.w >= b.x && q.y <= b.y + b.h && q.y + q.h >= b.y;
+    const segD = (a: Pt, b: Pt, c: Pt, d: Pt) => (segsIntersect(a, b, c, d) ? 0 : Math.min(segDist(a, c, d), segDist(b, c, d), segDist(c, a, b), segDist(d, a, b)));
+    const clear = (a: Pt, b: Pt, toRunway: boolean) => {
+      if (!clearLine(a, b)) return false;
+      const q = segBox(a, b, pad + 20);
+      if (keep.some(k => meets(q, segBox(k.a, k.b, 0)) && segD(a, b, k.a, k.b) < pad + DETOUR.road)) return false;
+      const os = outlines.filter(o => meets(q, o.box)); const L = dist(a, b); const u = norm(sub(b, a));
+      for (let t = 0; t <= L; t += 5) {
+        const p = add(a, mul(u, t));
+        if (os.some(o => nearBox(p, o.box, pad) && polyDist(p, o.pts) < pad)) return false;
+        // (the last leg to a runway may enter its strip: that is how a straight link meets a runway too)
+        if (!(toRunway && L - t < runwayWidth(4000) / 2 + 60) && nearRunway(p)) return false;
+      }
+      return true;
+    };
+    // the run's ends, each left no more sharply than a turn back across the lane (120 degrees off straight on)
+    const ends: { p: Pt; dir: Pt }[] = (r.joined[0] && r.joined[1] ? [] : ([0, 1] as const).filter(e => !r.joined[e]).map(e => ({ p: endPt(r, e), dir: endDir(r, e) })));
+    if (!ends.length) ends.push({ p: r.pts[0], dir: endDir(r, 0) }, { p: r.pts[r.pts.length - 1], dir: endDir(r, 1) });
+    const near = (p: Pt) => ends.some(s => dist(s.p, p) <= APRON.reach);
     const goals: { p: Pt; rwy: boolean }[] = [];
-    const sample = (a: Pt, b: Pt, rwy: boolean) => { const L = dist(a, b); const n = Math.max(1, Math.ceil(L / DETOUR.step)); for (let k = 0; k <= n; k++) { const p = lerpPt(a, b, k / n); if (near(p)) goals.push({ p, rwy }); } };
+    const sample = (a: Pt, b: Pt, rwy: boolean) => { const Lg = dist(a, b); const n = Math.max(1, Math.ceil(Lg / DETOUR.step)); for (let k = 0; k <= n; k++) { const p = lerpPt(a, b, k / n); if (near(p)) goals.push({ p, rwy }); } };
     for (const w of taxis) sample(w.a, w.b, false);
     for (const rw of runways) sample(rw.rw.a, rw.rw.b, true);
     lanes.forEach((l, k) => { if (ok[k] && l.run !== r) sample(l.a, l.b, false); });
-    if (!goals.length) return null;
-    const R = APRON.reach * 1.2; const inReach = (b: Rect) => starts.some(s => s.x >= b.x - R && s.x <= b.x + b.w + R && s.y >= b.y - R && s.y <= b.y + b.h + R);
-    const corners: Pt[] = [];
-    const around = (b: Rect) => { const m = DETOUR.off; for (const p of [{ x: b.x - m, y: b.y - m }, { x: b.x + b.w + m, y: b.y - m }, { x: b.x + b.w + m, y: b.y + b.h + m }, { x: b.x - m, y: b.y + b.h + m }]) if (onSite(p)) corners.push(p); };
+    if (!goals.length) { failed.set(r, lanes.length); return null; }
+    const R = APRON.reach * 1.2; const inReach = (b: Rect) => ends.some(s => s.p.x >= b.x - R && s.p.x <= b.x + b.w + R && s.p.y >= b.y - R && s.p.y <= b.y + b.h + R);
+    const corners: Pt[] = []; const off = Math.max(16, pad + 4);
+    const around = (b: Rect) => { const o = outB(b, off); for (const p of [{ x: o.x, y: o.y }, { x: o.x + o.w, y: o.y }, { x: o.x + o.w, y: o.y + o.h }, { x: o.x, y: o.y + o.h }]) if (onSite(p) && !nearRunway(p)) corners.push(p); };
     for (const o of outlines) if (inReach(o.box)) around(o.box);
     for (const a of aprons) if (a !== r.ap && inReach(a.rect)) around(a.rect);
-    const V: Pt[] = [...starts, ...corners, ...goals.map(g => g.p)]; const ns = starts.length, ng = goals.length, n0 = V.length - ng;
-    const dd = V.map((_, i) => (i < ns ? 0 : Infinity)), pv = V.map(() => -1), done = V.map(() => false);
+    // (and past each end of a road, clear of it either side, so a way round can go round the end of a road)
+    const ro = pad + DETOUR.road + 4;
+    for (const k of keep) if (inReach(segBox(k.a, k.b, 0))) for (const [e, f] of [[k.a, k.b], [k.b, k.a]] as const) {
+      const d = norm(sub(e, f)); const nn = { x: -d.y, y: d.x };
+      for (const sgn of [-1, 1]) { const p = add(add(e, mul(d, ro)), mul(nn, sgn * ro)); if (onSite(p) && !nearRunway(p)) corners.push(p); }
+    }
+    const V: Pt[] = [...ends.map(e => e.p), ...corners, ...goals.map(g => g.p)]; const ns = ends.length, ng = goals.length, n0 = V.length - ng;
+    // (a goal's cost is the whole way's length, two and a half times over for a runway, as a straight link is costed:
+    //  so the first goal taken off the queue is the cheapest)
+    const dd = V.map((_, i) => (i < ns ? 0 : Infinity)), len = V.map(() => 0), pv = V.map(() => -1), done = V.map(() => false);
+    const memo = new Map<number, boolean>(); const N = V.length;
     for (;;) {
-      let u = -1; for (let i = 0; i < V.length; i++) if (!done[i] && dd[i] < Infinity && (u < 0 || dd[i] < dd[u])) u = i;
-      if (u < 0) return null;
+      let u = -1; for (let i = 0; i < N; i++) if (!done[i] && dd[i] < Infinity && (u < 0 || dd[i] < dd[u])) u = i;
+      if (u < 0) { failed.set(r, lanes.length); return null; }
       if (u >= n0) {
         const pts: Pt[] = []; for (let i = u; i >= 0; i = pv[i]) pts.unshift(V[i]);
         if (pts.length < 2) return null;
-        return { pts, cost: dd[u] * (goals[u - n0].rwy ? APRON.runwayCost : 1) + 40 };
+        failed.delete(r); return { pts, cost: dd[u] + 40 };
       }
       done[u] = true;
-      for (let i = ns; i < V.length; i++) {
-        if (done[i]) continue; const c = dd[u] + dist(V[u], V[i]);
-        if (c >= dd[i] || c > APRON.reach * DETOUR.long || dist(V[u], V[i]) > APRON.reach) continue;
-        if (!clearLine(V[u], V[i])) continue;
-        dd[i] = c; pv[i] = u;
+      for (let i = ns; i < N; i++) {
+        if (done[i]) continue; const leg = dist(V[u], V[i]); const l2 = len[u] + leg;
+        if (leg > APRON.reach || l2 > APRON.reach * DETOUR.long) continue;
+        const goal = i >= n0; const c = goal ? l2 * (goals[i - n0].rwy ? APRON.runwayCost : 1) : l2;
+        if (c >= dd[i]) continue;
+        if (u < ns && dot(norm(sub(V[i], V[u])), ends[u].dir) < -0.5) continue;
+        const key = u * N + i; let okk = memo.get(key);
+        if (okk === undefined) { okk = clear(V[u], V[i], goal && goals[i - n0].rwy); memo.set(key, okk); }
+        if (!okk) continue;
+        dd[i] = c; len[i] = l2; pv[i] = u;
       }
     }
   };

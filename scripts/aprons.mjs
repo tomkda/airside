@@ -349,6 +349,22 @@ for (const deg of [12, -20]) {
   const d = derive(w); const g = d.gates.filter(q => q.zone.id === c.id);
   const crossesLot = d.airExtra.some(l => { for (let t = 0.05; t < 1; t += 0.05) { const p = { x: l.a.x + (l.b.x - l.a.x) * t, y: l.a.y + (l.b.y - l.a.y) * t }; if (p.x > 2650 && p.x < 3250 && p.y > 2480 && p.y < 2570) return true; } return false; });
   check('a car park wider than the concourse between it and the runway: its taxilanes go round it, and every gate reaches the runway (' + g.filter(q => q.rwys[0].size > 0).length + ' of ' + g.length + ')', g.length >= 12 && g.every(q => q.rwys[0].size > 0) && !crossesLot && !d.issues.some(i => /no clear way/.test(i.text))); }
+// v0.37 (cases found by review): clear of roads, at the class's own clearance, round a road's end
+{ const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+  const along = (l, f) => { let m = Infinity; for (let t = 0; t <= 1; t += 0.02) m = Math.min(m, f({ x: l.a.x + (l.b.x - l.a.x) * t, y: l.a.y + (l.b.y - l.a.y) * t })); return m; };
+  const w = newWorld(); runway(w); const c = conc(w, 2800, 2700, 300, 60);
+  w.zones.push({ id: w.nextId++, type: 'parking', level: 0, x: 2650, y: 2480, w: 600, h: 90, tier: 0 });
+  const roads = [{ a: { x: 3268, y: 2420 }, b: { x: 3268, y: 2700 } }, { a: { x: 2632, y: 2420 }, b: { x: 2632, y: 2700 } }];
+  for (const r of roads) w.ways.push({ id: w.nextId++, kind: 'road', ...r, cls: 0, lanes: 2 });
+  const d = derive(w); const g = d.gates.filter(q => q.zone.id === c.id); const links = d.airExtra.filter(l => l.link);
+  const gap = Math.min(...links.map(l => Math.min(...roads.map(r => along(l, p => segD(p, r.a, r.b))))));
+  check('roads either side of the car park: the way round goes past a road end, every gate reaches the runway, and no link comes within 30 m of a road (' + Math.round(gap) + ' m)', g.length >= 12 && g.every(q => q.rwys[0].size > 0) && gap >= 30);
+  const w3 = newWorld(); runway(w3); const c3 = conc(w3, 2800, 2700, 300, 60, { cls: 3 });
+  w3.zones.push({ id: w3.nextId++, type: 'parking', level: 0, x: 2600, y: 2420, w: 700, h: 60, tier: 0 });
+  const d3 = derive(w3); const g3 = d3.gates.filter(q => q.zone.id === c3.id);
+  const lot = { x: 2600, y: 2420, w: 700, h: 60 }; const boxD = p => Math.hypot(Math.max(0, lot.x - p.x, p.x - lot.x - lot.w), Math.max(0, lot.y - p.y, p.y - lot.y - lot.h));
+  const g3d = Math.min(...d3.airExtra.filter(l => l.link).map(l => along(l, boxD)));
+  check('an A380 concourse behind a car park: its way round keeps 47.5 m off the lot (' + Math.round(g3d) + ' m), and its gates reach the runway', g3.length > 0 && g3.every(q => q.rwys[0].size > 0) && g3d >= 47); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
