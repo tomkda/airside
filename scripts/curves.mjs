@@ -108,6 +108,16 @@ for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 
   check('every shop lot is inside the building', shops.length > 30 && out === 0);
   check('it is part of the terminal it was drawn out of', T && T.active && T.gateAreas === 2);
 }
+{ // v0.42: a tapered pier's interior is re-planned for its width along it: holdrooms keep their depth, lots take the taper
+  for (const [name, extra] of [['a pier 40 m wide at one end and 80 m at the other', { taper: 40, h: 60, y: 2688 }], ['one 30 m wide at one end and 110 m at the other', { taper: 80, h: 70, y: 2683 }], ['a bent one 78 m wide at one end and 42 m at the other', { taper: -36, h: 60, y: 2688, bend: 110 }]]) {
+    const { w, z } = mk(extra.bend, extra); const d = derive(w); const F = frameOf(z); const hy = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+    const holds = (d.frames.get(z.id)?.items ?? []).filter(i => i.k === 'hold').map(i => ({ u: toLocal(z, i.pts[0]).x - F.x, D: hy(i.pts[0], i.pts[i.pts.length - 1]), L: hy(i.pts[0], i.pts[1]) })).filter(h => h.D < h.L * 3);   // (the ones along a wall, not across an end)
+    const lots = (d.shops.get(z.id) ?? []).map(s => ({ u: toLocal(z, s.pts[0]).x - F.x, D: s.depth, out: s.pts.some(p => !inZone(p, z, 0.6)) }));
+    const wide = z.taper > 0 ? (q) => q.u > F.w - 120 : (q) => q.u < 120, narrow = z.taper > 0 ? (q) => q.u < 120 : (q) => q.u > F.w - 120;
+    const dW = Math.max(...lots.filter(wide).map(q => q.D)), dN = Math.max(...lots.filter(narrow).map(q => q.D));
+    console.log(name + ': holdrooms ' + Math.min(...holds.map(h => h.D)).toFixed(1) + '–' + Math.max(...holds.map(h => h.D)).toFixed(1) + ' m deep | deepest lot at the wide end ' + dW.toFixed(1) + ' m, at the narrow end ' + dN.toFixed(1) + ' m');
+    check('every holdroom along a wall of ' + name + ' is 9 m deep, from end to end', holds.length >= 6 && holds.every(h => Math.abs(h.D - 9) < 0.2));
+    check('its lots are deeper at the wide end than at the narrow end, and every one is inside the building', dW > dN + 8 && lots.every(q => !q.out)); } }
 { // a wide-ended A380 pier still joins its taxilanes round the wide end
   const { w, z } = mk(54, { w: 320, h: 109, y: 2718 - 109 / 2, rot: 0.537, taper: 94, cls: 3 }); const d = derive(w);
   const mine = d.gates.filter(g => g.zone.id === z.id);

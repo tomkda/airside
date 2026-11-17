@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { gripsOf, Grip, maxTwist, curved, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
+import { gripsOf, Grip, maxTwist, curved, widthK, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, carveFree, freeRing, Budget } from './bands';
@@ -581,9 +581,41 @@ export function derive(source: World): Derived {
         return { ...o, ...box, rot: undefined, sides: undefined };
       }) };
       C = carveConcourse(zl, local, gates.filter(g => g.zone.id === z.id).map(g => ({ ...g, zone: zl, door: toLocal(z, g.door) })));
+      // v0.42: a tapered pier is re-planned for its width at each point along it. Carried into the world, its frame is
+      // scaled across by the width there; so first each point is moved across the frame so that a holdroom keeps its
+      // true depth from its wall, the spine its true width about its middle, and the lots between them take up the
+      // difference (deeper at the wide end, shallower at the narrow one). Where that would leave a lot under 2 m deep,
+      // the layout there is scaled across as before.
+      if (z.taper && C.lat) {
+        const lat = C.lat; const Fw = frameOf(z).w;
+        const across = (v: number, uAt: number, k: number) => {
+          const L = lat(uAt); const c = (L.s0 + L.s1) / 2;
+          const from = [0, L.a, L.s0, L.s1, L.b, L.S], to = [0, L.a / k, c - (c - L.s0) / k, c + (L.s1 - c) / k, L.S - (L.S - L.b) / k, L.S];
+          const lotOK = (i: number) => from[i + 1] - from[i] < 0.5 || (to[i + 1] - to[i]) * k >= 2;
+          if (!lotOK(1) || !lotOK(3) || to.some((x, i) => i && x < to[i - 1] - 1e-9)) {
+            // (too narrow for lots: the holdrooms keep their depth, the lots go and the spine takes what is left, if
+            //  that is at least 4 m; else it is all scaled across)
+            const ha = L.a / k, hb = L.S - (L.S - L.b) / k;
+            if ((hb - ha) * k < 4) return v;
+            to[1] = to[2] = ha; to[3] = to[4] = hb;
+          }
+          for (let i = 0; i < 5; i++) if (v <= from[i + 1] || i === 4) { const s = from[i + 1] - from[i]; return s < 1e-9 ? to[i] : to[i] + ((v - from[i]) / s) * (to[i + 1] - to[i]); }
+          return v;
+        };
+        const kAt = (u: number) => Math.max(0.05, widthK(z, u / Fw));
+        const remap = (pts: Pt[], whole: boolean) => { const uc = pts.reduce((s, p) => s + p.x, 0) / pts.length - zl.x; return pts.map(p => { const u = p.x - zl.x; return { x: p.x, y: zl.y + across(p.y - zl.y, whole ? uc : u, kAt(u)) }; }); };
+        for (const sh of C.shops) { const uc = sh.pts.reduce((s, p) => s + p.x, 0) / sh.pts.length - zl.x; sh.pts = remap(sh.pts, true); sh.door = { x: sh.door.x, y: zl.y + across(sh.door.y - zl.y, uc, kAt(sh.door.x - zl.x)) }; }
+        for (const it of C.items) it.pts = remap(it.pts, !!it.closed);
+      }
       // a lot keeps its four corners (the sim and the renderers count on them; a lot is short enough that its walls
       // can stay straight). Floors, and the long lines down the building, are cut into short pieces that follow a bend.
       for (const sh of C.shops) { sh.zone = z; sh.pts = sh.pts.map(p => toWorld(z, p)); sh.door = toWorld(z, sh.door); }
+      // (and a lot of a tapered pier is as deep, and as big, as it really is: that is what decides who bids for it)
+      if (z.taper) for (const sh of C.shops) if (sh.pts.length === 4) {
+        const [p0, p1, p2, p3] = sh.pts; const fr = (dist(p0, p1) + dist(p3, p2)) / 2, dp = (dist(p0, p3) + dist(p1, p2)) / 2;
+        sh.depth = dp; sh.frontage = fr; sh.area = fr * dp;
+      }
+      if (z.taper) C.shops = C.shops.filter(sh => sh.depth >= 1.5);   // (a lot squeezed out at a narrow end is no lot)
       for (const it of C.items) it.pts = it.closed || it.k === 'spine' || it.k === 'lane' ? bendPath(z, it.pts, !!it.closed) : it.pts.map(p => toWorld(z, p));
     } else C = carveConcourse(z, world, gates);
     shops.set(z.id, C.shops); budgets.set(z.id, C.budget); bandItems.set(z.id, C.items);
