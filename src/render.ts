@@ -49,6 +49,8 @@ export class Renderer {
   showFront = false;            // road tool: frontage guides where a road would grow a curb
   /** v0.8: a true 3D view with an orbiting camera (render3d.ts), made on first use. */
   mode3d = false;
+  /** v0.43: a live edit is under way (ui.ts): the 3D model is rebuilt at most a few times a second meanwhile. */
+  liveEdit = false;
   r3?: Renderer3D;
   weather: WeatherKind = 'clear';
   /** v0.9 feedback: modules pulse as they appear, and what you spent floats up from where you built. */
@@ -165,6 +167,7 @@ export class Renderer {
       g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); g.clearRect(0, 0, this.W, this.H);
       this.r3.draw(sim, this.nightness(sim.t));
       if (this.weather !== 'fog') this.drawWeather(sim);
+      this.drawGrips(sim);   // (v0.43: a selected building's grips, on its roof)
       this.drawFloaters();
       return;
     }
@@ -1452,11 +1455,15 @@ export class Renderer {
       k.pts.forEach((p, i) => { const [x, y] = this.P(p.x, p.y, top); const r = this.gripHot === `v${i}` ? 7 : 5.5; g.fillStyle = this.gripHot === `v${i}` ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2; g.beginPath(); g.rect(x - r, y - r, 2 * r, 2 * r); g.fill(); g.stroke(); });
       return;
     }
-    if (this.selected?.kind !== 'zone' || this.mode3d) return;
+    if (this.selected?.kind !== 'zone') return;
     const zn = sim.world.zones.find(q => q.id === this.selected!.id); if (!zn || zn.auto) return;
-    const g = this.ctx; const top = this.tilt > 0.02 ? LEVELS[zn.level].z1 : 0;
+    const g = this.ctx; const top = this.mode3d || this.tilt > 0.02 ? LEVELS[zn.level].z1 : 0;
+    // (v0.43: in 3D the grips stand on the roof of the building's level, round its outline there, which follows a drag
+    //  at once while the model itself catches up a few times a second)
+    if (this.mode3d && zonePts(zn).every(p => !isNaN(this.P(p.x, p.y, top)[0]))) { g.setLineDash([6, 4]); g.strokeStyle = PAL.select; g.lineWidth = 2; this.path(zonePts(zn), top); g.closePath(); g.stroke(); g.setLineDash([]); }
     for (const gr of gripsFor(zn)) {
-      const [x, y] = this.P(gr.p.x, gr.p.y, top); const hot = this.gripHot === gr.grip; const r = hot ? 7 : 5.5;
+      const [x, y] = this.P(gr.p.x, gr.p.y, top); if (isNaN(x)) continue;   // (v0.43: behind the camera)
+      const hot = this.gripHot === gr.grip; const r = hot ? 7 : 5.5;
       // the bend grip is filled, like the one on a road
       g.fillStyle = hot || gr.grip === 'm' ? PAL.select : '#FBF8F1'; g.strokeStyle = gr.grip === 'm' ? '#FBF8F1' : PAL.select; g.lineWidth = 2;
       // v0.29: the turn handle, off the end of a hall or security block on a short stalk, with a turning arrow round it

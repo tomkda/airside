@@ -35,6 +35,9 @@ const ITEM_H: Record<string, number> = { counter: 1.1, xray: 1.6, body: 2.2, div
 const YELLOW = '#D6A43C', WHITE = '#F0ECE2';
 const RISE_MS = 1400;
 
+/** v0.43: how often, at most, the 3D model is rebuilt while a building is being reshaped by a grip (ms). A rebuild takes
+ *  some tens of milliseconds on the sample, so a few times a second keeps the drag itself smooth. */
+const LIVE_3D_MS = 180;
 export class Renderer3D {
   canvas: HTMLCanvasElement;
   gl: THREE.WebGLRenderer;
@@ -45,7 +48,7 @@ export class Renderer3D {
   private ghostG = new THREE.Group();
   private riseG = new THREE.Group();
   private key = '';
-  private dRef: unknown = null; private dGen = 0;
+  private dRef: unknown = null; private dGen = 0; private builtAt = 0;
   private sun: THREE.DirectionalLight; private hemi: THREE.HemisphereLight;
   private skyDay: THREE.Texture; private skyNight: THREE.Texture;
   // shared materials whose look follows the time of day
@@ -156,6 +159,14 @@ export class Renderer3D {
     this.controls.update();
   }
 
+  /** v0.43: the point on the horizontal plane at height z under a screen point, or null if the ray misses it (above
+   *  the horizon, or the camera below that height). */
+  hit(sx: number, sy: number, z = 0): Pt | null {
+    const r = this.ren.canvas.getBoundingClientRect();
+    this.ray.setFromCamera(new THREE.Vector2((sx / r.width) * 2 - 1, -(sy / r.height) * 2 + 1), this.camera);
+    const q = new THREE.Vector3();
+    return this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -z), q) ? { x: q.x, y: q.z } : null;
+  }
   /** Screen point to a point on the horizontal plane at height z (metres). */
   toWorld(sx: number, sy: number, z = 0): Pt {
     const r = this.ren.canvas.getBoundingClientRect();
@@ -166,6 +177,8 @@ export class Renderer3D {
   }
   project(x: number, y: number, z = 0): [number, number] {
     const v = new THREE.Vector3(x, z, y).project(this.camera);
+    // (v0.43: a point behind the camera has no place on the screen: it would come out mirrored)
+    if (v.z > 1) return [NaN, NaN];
     return [(v.x + 1) / 2 * this.ren.W, (1 - v.y) / 2 * this.ren.H];
   }
 
@@ -176,7 +189,9 @@ export class Renderer3D {
     if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; this.noteBirths(sim, now); }
     const rising = [...this.born.entries()].filter(([, t]) => now - t < RISE_MS).map(([id]) => id);
     const key = [this.dGen, this.ren.lod, this.ren.focus, this.ren.level, JSON.stringify(this.ren.selected), this.ren.commerce, sim.world.sites?.length, rising.join(',')].join('|');
-    if (key !== this.key) { this.key = key; this.buildStatic(sim, new Set(rising)); }
+    // (v0.43: while a grip is dragged the layout changes every frame; the model follows at most every LIVE_3D_MS, and at
+    //  once when the drag ends)
+    if (key !== this.key && (!this.ren.liveEdit || now - this.builtAt >= LIVE_3D_MS)) { this.key = key; this.buildStatic(sim, new Set(rising)); this.builtAt = now; }
     this.drawRising(sim, rising, now);
     this.drawMoving(sim, night, now);
     this.drawParked(sim);
