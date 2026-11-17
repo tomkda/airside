@@ -459,7 +459,8 @@ for (const deg of [12, -20]) {
   }
   const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.twist = 0.3; w.zones.find(z => z.type === 'concourse').twist = 0.3; w.zones.find(z => z.type === 'security').twist = 5;
   const m = migrateWorld(JSON.parse(JSON.stringify(w)));
-  check('a saved world keeps the S, drops a twist on a concourse and keeps one too tight within what the width allows', m.zones.filter(z => z.type === 'checkin' || z.type === 'claim').every(z => z.twist === 0.3) && m.zones.find(z => z.type === 'concourse').twist === undefined && Math.abs(m.zones.find(z => z.type === 'security').twist - maxTwist(m.zones.find(z => z.type === 'security').w, m.zones.find(z => z.type === 'security').h)) < 1e-9); }
+  const w2 = sampleWorld(); for (const z of w2.zones) if (z.type === 'checkin' || z.type === 'claim') z.twist = 5; const m2 = migrateWorld(JSON.parse(JSON.stringify(w2))); const h2 = m2.zones.find(z => z.type === 'checkin');
+  check('a saved world keeps the S, drops a twist on a concourse or on a module standing on end, and keeps one too tight within what the width allows', m.zones.filter(z => z.type === 'checkin' || z.type === 'claim').every(z => z.twist === 0.3) && m.zones.find(z => z.type === 'concourse').twist === undefined && m.zones.find(z => z.type === 'security').twist === undefined && Math.abs(h2.twist - maxTwist(h2.w, h2.h)) < 1e-9); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

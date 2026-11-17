@@ -100,7 +100,7 @@ export function migrateWorld(w: World): World {
     const m = maxBend(z.w, z.h + Math.abs(z.taper ?? 0) / 2); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
   }
   for (const z of w.zones) if (z.twist !== undefined) {   // v0.41: halls, security and passport control twist into an S, as far as they can
-    if (!BENDS.has(z.type) || z.sides || z.taper || z.poly || !isFinite(z.twist)) { delete z.twist; continue; }
+    if (!BENDS.has(z.type) || z.sides || z.taper || z.poly || !isFinite(z.twist) || (!z.rot && !z.bend && z.h > z.w)) { delete z.twist; continue; }   // (and along its length: one standing on end is turned first)
     const m = maxTwist(z.w, z.h, z.bend); z.twist = Math.max(-m, Math.min(m, z.twist)); if (Math.abs(z.twist) < 0.03) delete z.twist;
   }
 

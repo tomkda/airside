@@ -119,10 +119,13 @@ export function arcOf(z: Shaped): Arc | null {
 //   through two points with a given tangent at one of them is the only one there is. With no twist the two halves are
 //   one arc, the plain bend; with no bend they turn opposite ways, an S. The straight frame is the two halves' frames
 //   end to end, and a point is carried onto whichever half its place along the frame falls in.
-export interface Halves { h1: Shaped; h2: Shaped; L1: number; L2: number; La: number }
+export interface Halves { h1: Shaped; h2: Shaped; L1: number; L2: number; La: number; F1: Rect; F2: Rect }
 /** The two halves of a twisted bar, in its own unturned frame. */
+// (kept by shape: derive asks for them thousands of times a frame while a twisted hall is dragged)
+const halvesMemo = new Map<string, Halves>();
 export function halvesOf(z: Shaped): Halves | null {
   if (!z.twist || z.sides || z.poly) return null;
+  const key = `${z.x},${z.y},${z.w},${z.h},${z.bend ?? 0},${z.twist}`; const hit = halvesMemo.get(key); if (hit) return hit;
   const c0 = centreOf(z); const A = { x: c0.x - z.w / 2, y: c0.y }, B = { x: c0.x + z.w / 2, y: c0.y }, M = { x: c0.x, y: c0.y + (z.bend ?? 0) };
   const half = (P: Pt, Q: Pt, th: number): Shaped => {
     // (a bar on the chord P to Q, its middle pushed off that chord by the sagitta that turns it through `th` each side)
@@ -134,8 +137,10 @@ export function halvesOf(z: Shaped): Halves | null {
   // (a bar bent south, along its chord, leaves its west end turned south of the chord and reaches its east end turned
   //  north of it: the first half ends at M turned `d1 - th1`, the second starts there turned `d2 + th2`)
   const h1 = half(A, M, d1 - z.twist), h2 = half(M, B, z.twist - d2);
-  const L1 = frameOf(h1).w, L2 = frameOf(h2).w;
-  return { h1, h2, L1, L2, La: L1 + L2 };
+  const F1 = frameOf(h1), F2 = frameOf(h2);
+  const out = { h1, h2, L1: F1.w, L2: F2.w, La: F1.w + F2.w, F1, F2 };
+  if (halvesMemo.size > 512) halvesMemo.clear(); halvesMemo.set(key, out);
+  return out;
 }
 /** Is the bar curved: bent into one arc, or twisted into two? */
 export const curved = (z: Shaped) => !!arcOf(z) || !!halvesOf(z);
@@ -174,9 +179,9 @@ export function toLocal(z: Shaped, p: Pt): Pt {
   const H = halvesOf(z);
   if (H) {
     // (straightened in each half; it belongs to the first if it falls before the joint there)
-    const F = frameOf(z), F1 = frameOf(H.h1), F2 = frameOf(H.h2); const q1 = toLocal(H.h1, q);
-    if (q1.x <= F1.x + F1.w) return { x: F.x + (q1.x - F1.x), y: z.y + (q1.y - H.h1.y) };
-    const q2 = toLocal(H.h2, q); return { x: F.x + H.L1 + (q2.x - F2.x), y: z.y + (q2.y - H.h2.y) };
+    const Fx = z.x + z.w / 2 - H.La / 2, F1 = H.F1, F2 = H.F2; const q1 = toLocal(H.h1, q);
+    if (q1.x <= F1.x + F1.w) return { x: Fx + (q1.x - F1.x), y: z.y + (q1.y - H.h1.y) };
+    const q2 = toLocal(H.h2, q); return { x: Fx + H.L1 + (q2.x - F2.x), y: z.y + (q2.y - H.h2.y) };
   }
   const A = arcOf(z);
   if (A) {
@@ -191,9 +196,9 @@ export function toLocal(z: Shaped, p: Pt): Pt {
 export function toWorld(z: Shaped, p: Pt): Pt {
   const H = halvesOf(z);
   if (H) {
-    const F = frameOf(z); const u = p.x - F.x; let q: Pt;
-    if (u <= H.L1) { const F1 = frameOf(H.h1); q = toWorld(H.h1, { x: F1.x + u, y: H.h1.y + (p.y - z.y) }); }
-    else { const F2 = frameOf(H.h2); q = toWorld(H.h2, { x: F2.x + (u - H.L1), y: H.h2.y + (p.y - z.y) }); }
+    const u = p.x - (z.x + z.w / 2 - H.La / 2); let q: Pt;
+    if (u <= H.L1) q = toWorld(H.h1, { x: H.F1.x + u, y: H.h1.y + (p.y - z.y) });
+    else q = toWorld(H.h2, { x: H.F2.x + (u - H.L1), y: H.h2.y + (p.y - z.y) });
     return z.rot ? turn(q, centreOf(z), z.rot) : q;
   }
   const A = arcOf(z); let q = p;
@@ -253,10 +258,15 @@ export function zonePts(z: Shaped): Pt[] {
   if (z.poly) return z.poly.map(p => ({ x: p.x, y: p.y }));
   if (z.sides) return hallPts(z);
   if (halvesOf(z)) {
-    // (v0.41: an S-curve: its north wall west to east, then its south wall back, a point every 4 m or so)
-    const F = frameOf(z); const n = Math.max(8, Math.min(128, Math.ceil(F.w / 4))); const out: Pt[] = [];
-    for (let i = 0; i <= n; i++) out.push(toWorld(z, { x: F.x + (i / n) * F.w, y: F.y }));
-    for (let i = n; i >= 0; i--) out.push(toWorld(z, { x: F.x + (i / n) * F.w, y: F.y + F.h }));
+    // (v0.41: an S-curve: its north wall west to east, then its south wall back, each half in as many steps as a bend
+    //  of its own would take, with a point on the joint between them)
+    const H = halvesOf(z)!; const F = frameOf(z); const st = (q: Shaped) => { const A = arcOf(q); return A ? arcSteps(A, z.h) : 1; };
+    const n1 = st(H.h1), n2 = st(H.h2); const xs: number[] = [];
+    for (let i = 0; i <= n1; i++) xs.push(F.x + (i / n1) * H.L1);
+    for (let i = 1; i <= n2; i++) xs.push(F.x + H.L1 + (i / n2) * H.L2);
+    const out: Pt[] = [];
+    for (const x of xs) out.push(toWorld(z, { x, y: F.y }));
+    for (let i = xs.length - 1; i >= 0; i--) out.push(toWorld(z, { x: xs[i], y: F.y + F.h }));
     return out;
   }
   const A = arcOf(z);
