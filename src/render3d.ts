@@ -159,6 +159,14 @@ export class Renderer3D {
     this.controls.update();
   }
 
+  /** v0.43: the point on the horizontal plane at height z under a screen point, or null if the ray misses it (above
+   *  the horizon, or the camera below that height). */
+  hit(sx: number, sy: number, z = 0): Pt | null {
+    const r = this.ren.canvas.getBoundingClientRect();
+    this.ray.setFromCamera(new THREE.Vector2((sx / r.width) * 2 - 1, -(sy / r.height) * 2 + 1), this.camera);
+    const q = new THREE.Vector3();
+    return this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -z), q) ? { x: q.x, y: q.z } : null;
+  }
   /** Screen point to a point on the horizontal plane at height z (metres). */
   toWorld(sx: number, sy: number, z = 0): Pt {
     const r = this.ren.canvas.getBoundingClientRect();
@@ -169,6 +177,8 @@ export class Renderer3D {
   }
   project(x: number, y: number, z = 0): [number, number] {
     const v = new THREE.Vector3(x, z, y).project(this.camera);
+    // (v0.43: a point behind the camera has no place on the screen: it would come out mirrored)
+    if (v.z > 1) return [NaN, NaN];
     return [(v.x + 1) / 2 * this.ren.W, (1 - v.y) / 2 * this.ren.H];
   }
 

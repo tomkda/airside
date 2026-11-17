@@ -1460,9 +1460,10 @@ export class Renderer {
     const g = this.ctx; const top = this.mode3d || this.tilt > 0.02 ? LEVELS[zn.level].z1 : 0;
     // (v0.43: in 3D the grips stand on the roof of the building's level, round its outline there, which follows a drag
     //  at once while the model itself catches up a few times a second)
-    if (this.mode3d) { g.setLineDash([6, 4]); g.strokeStyle = PAL.select; g.lineWidth = 2; this.path(zonePts(zn), top); g.closePath(); g.stroke(); g.setLineDash([]); }
+    if (this.mode3d && zonePts(zn).every(p => !isNaN(this.P(p.x, p.y, top)[0]))) { g.setLineDash([6, 4]); g.strokeStyle = PAL.select; g.lineWidth = 2; this.path(zonePts(zn), top); g.closePath(); g.stroke(); g.setLineDash([]); }
     for (const gr of gripsFor(zn)) {
-      const [x, y] = this.P(gr.p.x, gr.p.y, top); const hot = this.gripHot === gr.grip; const r = hot ? 7 : 5.5;
+      const [x, y] = this.P(gr.p.x, gr.p.y, top); if (isNaN(x)) continue;   // (v0.43: behind the camera)
+      const hot = this.gripHot === gr.grip; const r = hot ? 7 : 5.5;
       // the bend grip is filled, like the one on a road
       g.fillStyle = hot || gr.grip === 'm' ? PAL.select : '#FBF8F1'; g.strokeStyle = gr.grip === 'm' ? '#FBF8F1' : PAL.select; g.lineWidth = 2;
       // v0.29: the turn handle, off the end of a hall or security block on a short stalk, with a turning arrow round it

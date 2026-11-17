@@ -369,7 +369,7 @@ export class UI {
     c.addEventListener('pointerdown', e => this.down(e));
     c.addEventListener('pointermove', e => this.move(e));
     c.addEventListener('pointerup', e => this.up(e));
-    c.addEventListener('pointerleave', () => { if (!this.drag) this.ren.cursor = null; });
+    c.addEventListener('pointerleave', () => { if (!this.drag) { this.ren.cursor = null; if (this.ren.mode3d) { this.ren.gripHot = null; this.ren.setOrbitLeft(this.tool === 'select'); } } });   // (v0.43: and a grip hovered last no longer holds the view)
     // a drag the browser takes away (a cancelled touch, lost capture, the window losing focus) is put back like Esc
     c.addEventListener('pointercancel', e => { this.pointers.delete(e.pointerId); this.cancelDrag(); this.drag = null; this.pinch = null; this.ren.ghost = null; });
     c.addEventListener('lostpointercapture', e => { if (this.drag && this.pointers.has(e.pointerId)) { this.pointers.delete(e.pointerId); this.cancelDrag(); } });
@@ -531,12 +531,13 @@ export class UI {
 
   down(e: PointerEvent) {
     // in 3D the orbit controls own drags with Select; build tools still draw on the ground plane
+    if (this.ren.mode3d && this.drag) return;   // (v0.43: a second finger while a grip is dragged in 3D)
     if (this.ren.mode3d && (this.tool === 'select' || e.button !== 0)) {
       // v0.43: a grip of the selected building is dragged in 3D as in the plan; anything else orbits
       const z3 = this.tool === 'select' && e.button === 0 && this.ren.selected?.kind === 'zone' ? this.world.zones.find(q => q.id === this.ren.selected!.id) : undefined;
       const grip3 = z3 && this.gripAt(z3, e.offsetX, e.offsetY);
       if (z3 && grip3) {
-        this.orbit3d(false); this.ren.canvas.setPointerCapture(e.pointerId);
+        this.orbit3d(false); this.ren.canvas.setPointerCapture(e.pointerId); this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
         this.beginLive([z3, ...(this.twin(z3) ? [this.twin(z3)!] : [])]);
         this.drag = { mode: 'grip', sx: e.offsetX, sy: e.offsetY, start: this.ren.toWorld(e.offsetX, e.offsetY, LEVELS[z3.level].z1), zone: z3, grip: grip3, z0: geomOf(z3), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return;
       }
@@ -608,7 +609,7 @@ export class UI {
       if (this.tool === 'select') {
         // v0.43: over a grip of the selected building the pointer grabs it rather than orbiting
         const z = this.ren.selected?.kind === 'zone' ? this.world.zones.find(q => q.id === this.ren.selected!.id) : undefined;
-        const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null; this.ren.gripHot = grip; this.orbit3d(!grip);
+        const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null; this.ren.gripHot = grip; this.ren.setOrbitLeft(!grip);   // (left drag only: the wheel and right-drag still work)
         this.ren.canvas.style.cursor = grip ? 'grab' : '';
         if (z && grip) this.hint(this.gripHint(z, grip));
       }
@@ -624,6 +625,12 @@ export class UI {
       cam.x = this.pinch.cam.x - (mid.x - this.pinch.mid.x) / cam.zoom;
       cam.y = this.pinch.cam.y - (mid.y - this.pinch.mid.y) / (cam.zoom * this.ren.yScale);
       return;
+    }
+    // (v0.43: a grip dragged in 3D where the pointer meets no roof, above the horizon or far beyond the view, stays
+    //  where it last was)
+    if (this.ren.mode3d && this.drag?.mode === 'grip' && this.drag.zone) {
+      const q = this.ren.r3?.hit(e.offsetX, e.offsetY, LEVELS[this.drag.zone.level].z1);
+      if (!q || dist(q, this.drag.start) > 3000) return;
     }
     const p = this.wpt(e);
     const dr = this.drag;
@@ -1097,7 +1104,7 @@ export class UI {
   }
 
   up(e: PointerEvent) {
-    if (this.ren.mode3d && this.drag?.mode === 'grip') this.orbit3d(true);
+    if (this.ren.mode3d && this.drag?.mode === 'grip') { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
     if (this.click3d) {
       const c = this.click3d; this.click3d = null;
       if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }
