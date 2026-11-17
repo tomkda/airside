@@ -461,6 +461,18 @@ for (const deg of [12, -20]) {
   const m = migrateWorld(JSON.parse(JSON.stringify(w)));
   const w2 = sampleWorld(); for (const z of w2.zones) if (z.type === 'checkin' || z.type === 'claim') z.twist = 5; const m2 = migrateWorld(JSON.parse(JSON.stringify(w2))); const h2 = m2.zones.find(z => z.type === 'checkin');
   check('a saved world keeps the S, drops a twist on a concourse or on a module standing on end, and keeps one too tight within what the width allows', m.zones.filter(z => z.type === 'checkin' || z.type === 'claim').every(z => z.twist === 0.3) && m.zones.find(z => z.type === 'concourse').twist === undefined && m.zones.find(z => z.type === 'security').twist === undefined && Math.abs(h2.twist - maxTwist(h2.w, h2.h)) < 1e-9); }
+// v0.44: a landside people mover, to a remote building screened at its own door
+{ const mk = dx => { const w = sampleWorld(); for (const z of w.zones) if (z.type === 'concourse' || z.type === 'security') { z.x += dx; delete z.site; } return w; };
+  { const d = derive(sampleWorld()); check('the sample has no landside people mover', !d.trainLinks.some(l => l.land)); }
+  const w = mk(700); const sim = new Sim(w, 7); sim.relayout(); const d = sim.d; const lm = d.trainLinks.filter(l => l.land);
+  const sec = w.zones.find(z => z.type === 'security'), hall = w.zones.find(z => z.type === 'checkin');
+  check('a concourse and security 700 m from the hall link themselves to it by one landside people mover, from security to check-in (' + lm.length + ')', lm.length === 1 && lm[0].from === sec.id && lm[0].to === hall.id && inZone(lm[0].a, sec) && inZone(lm[0].b, hall));
+  check('and Terminal 1 opens across it (' + (d.terminals[0].problems.join('; ') || 'open') + ')', d.terminals.length === 1 && d.terminals[0].active);
+  const dep = new WeakSet(), arr = new WeakSet(); let nd = 0, na = 0; let missed = 0, stranded = 0;
+  sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay();
+  while (sim.day < 1) { sim.step(0.25); for (const p of sim.pax) if (p.ride) { if (p.dep && !dep.has(p)) { dep.add(p); nd++; } else if (!p.dep && !arr.has(p)) { arr.add(p); na++; } } }
+  check('a day flies across it with 0 missed and 0 stranded (' + missed + ', ' + stranded + '), departing passengers riding out (' + nd + ') and arriving ones riding back (' + na + ')', missed === 0 && stranded === 0 && nd > 1000 && na > 1000);
+  const far = derive(mk(2600)); check('one out of reach gets no people mover, and the terminal stays closed', !far.trainLinks.some(l => l.land) && !far.terminals.some(t => t.active)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

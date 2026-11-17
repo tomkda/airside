@@ -1884,6 +1884,10 @@ export class UI {
         ${z.taper ? `<dt>Taper</dt><dd>${n0(endWidths(z)[0])} m wide at its west end, ${n0(endWidths(z)[1])} m at its east end (of its own frame)</dd>` : ''}
         <dt>Size</dt><dd>${arcOf(z) ? `${n0(arcOf(z)!.La)} m round the bend × ${n0(z.h)} m · radius ${n0(arcOf(z)!.R)} m · ${n0(polyArea(zonePts(z)))} m²` : z.twist ? `${n0(frameOf(z).w)} m along its S × ${n0(z.h)} m · ${n0(polyArea(zonePts(z)))} m²` : z.poly ? `${n0(floorArea(z))} m² · ${z.poly.length} corners` : `${n0(z.w)} × ${n0(z.h)} m · ${n0(floorArea(z))} m²`}</dd>
         ${(() => { const T = s.d.termOf.get(z.id); return T ? `<dt>Terminal</dt><dd class="${T.active ? '' : 'bad'}">${T.name} · ${T.active ? 'open' : 'closed'}</dd>` : ''; })()}
+        ${(() => {   // (v0.44: a people mover with a station in this module)
+          const mv = s.d.trainLinks.filter(l => l.apm && (l.from === z.id || l.to === z.id)); if (!mv.length) return '';
+          return `<dt>People mover</dt><dd>${mv.map(l => { const o = s.world.zones.find(q => q.id === (l.from === z.id ? l.to : l.from)); const L = dist(l.a, l.b); return `${n0(L)} m to ${o ? ZONES[o.type].short.toLowerCase() : 'the terminal'}, about ${(L / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} min${l.land ? ' · landside: passengers are screened at the far end' : ' · airside'}`; }).join('<br>')}</dd>`;
+        })()}
         ${z.type === 'concourse' ? this.gateSidesHTML(z) : ''}
         ${u.max && z.type !== 'concourse' && !z.auto ? `<dt>${z.type === 'claim' ? 'Carousels built' : def.unit[0].toUpperCase() + def.unit.slice(1)}</dt><dd>
           <span class="stepper"><button class="step" data-act="units-" aria-label="Fewer">−</button><b>${u.count}</b><button class="step" data-act="units+" aria-label="More">+</button></span>
