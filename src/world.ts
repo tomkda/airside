@@ -13,9 +13,9 @@ export type { Round, Piece } from './ways';
 import { gripsOf, Grip, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
-import { carveConcourse, carveHub, Budget } from './bands';
+import { carveConcourse, carveHub, carveFree, freeRing, Budget } from './bands';
 import { letLots } from './commerce';
-import { Shell, Cut, shellsOf, Junction, junctionsOf, inJunction, junctionGap, outsideRuns, counters } from './shell';
+import { Shell, Cut, shellsOf, Junction, junctionsOf, inJunction, junctionGap, outsideRuns, counters, JUNCTION } from './shell';
 
 export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
@@ -69,11 +69,6 @@ export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [], cuts: [] });
 
 /** Bring older saves up to date. */
-/** v0.32: the budget of a free-drawn area: nothing carved, its long axis its box's. */
-function openBudget(z: Zone, gates: number): Budget {
-  const horiz = z.w >= z.h, long = Math.max(z.w, z.h);
-  return { hold: 0, spine: 0, commerce: 0, seats: 0, spineW: 0, walkways: false, long, width: Math.min(z.w, z.h), lots: 0, window: 0, kinds: {}, depthA: 0, depthB: 0, horiz, entryU: 0, entrySide: 'E', uA: 0, uZ: long, dutyFreeOK: false, gates };
-}
 export function migrateWorld(w: World): World {
   // v0.32: free-drawn areas and cut-outs. An outline that is not a simple polygon is dropped (an area becomes its box).
   w.cuts = (w.cuts ?? []).filter(k => Array.isArray(k.pts) && k.pts.length >= 3 && simplePoly(k.pts));
@@ -516,7 +511,7 @@ export function derive(source: World): Derived {
   // v0.23: one outline per building; its pieces share a gate letter and one run of gate numbers
   const shells = shellsOf(source.zones, world.cuts ?? []); const shellOf = new Map<number, Shell>(); for (const sh of shells) for (const id of sh.ids) if (!shellOf.has(id)) shellOf.set(id, sh);   // (a piece a cut-out splits is in each part; it is named by the largest)
   const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
-  const junctions = junctionsOf(shells, source.zones);
+  const junctions = junctionsOf(shells, source.zones, z => freeRing((z as Zone).cls ?? 2));
   // (v0.32: and a building a cut-out takes from, or one with a free-drawn piece: its outline is not its pieces')
   const shellWalks = shells.filter(sh => sh.ids.length > 1 || sh.cut || sh.ids.some(id => source.zones.find(q => q.id === id)?.poly)).map(sh => ({ ids: sh.ids, outer: sh.outer, rings: sh.rings }));
   const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group, walks: shellWalks });
@@ -539,7 +534,7 @@ export function derive(source: World): Derived {
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     let C;
     // v0.32: a free-drawn area is open floor (the building's own space, planned in shell.ts): no bands, no lots of its own
-    if (z.poly) C = { shops: [] as Shop[], items: [] as LItem[], budget: openBudget(z, gates.filter(g => g.zone.id === z.id).length) };
+    if (z.poly) C = carveFree(z, shellOf.get(z.id)?.rings ?? [zonePts(z)], gates);   // (v0.33: holdrooms and lots round its walls, the hall in the middle)
     else if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
     else if (z.rot || z.bend || z.taper) {
       // an angled pier is laid out in its own upright frame, then every piece is turned into place
@@ -619,7 +614,10 @@ export function derive(source: World): Derived {
     const clash = (q: Pt[]) => others.some(sh => q.some(p => pointInPoly(p, sh.pts)) || sh.pts.some(p => pointInPoly(p, q)) || pointInPoly(polyCentre(q), sh.pts) || q.some((p, i) => sh.pts.some((r, k) => segsIntersect(p, q[(i + 1) % q.length], r, sh.pts[(k + 1) % sh.pts.length]))));
     // (and not against a wall with stands: a gate door wants its holdroom, not a kitchen)
     const doors = gates.filter(g => j.ids.includes(g.zone.id)).map(g => g.door);
-    counters(j, ends, doors).filter(c => !clash(c.pts)).forEach(c => {
+    // (v0.33: nor in front of a free area's lots, which face the space across its edge: a counter would block their shopfront)
+    const fronts = others.filter(sh => sh.zone.poly && sh.key.startsWith('F'));
+    const blocks = (q: Pt[]) => { const c = polyCentre(q); return fronts.some(sh => sh.pts.some((p, i) => segDist(c, p, sh.pts[(i + 1) % sh.pts.length]) < JUNCTION.counter.depth + 4)); };
+    counters(j, ends, doors).filter(c => !clash(c.pts) && !blocks(c.pts)).forEach(c => {
       // (named by the pieces it is between and where it stands in its owner's frame, so the name holds while the
       //  building is unchanged, whatever else is built: a sitting tenant and the day's takings stay with it)
       const at = toLocal(owner, polyCentre(c.pts)); const u = B.horiz ? at.x - F.x : at.y - F.y; const key = `J${[...j.ids].sort((a, b) => a - b).join('-')}@${Math.round(at.x)},${Math.round(at.y)}`;

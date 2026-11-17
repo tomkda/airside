@@ -143,7 +143,7 @@ function seedsIn(rings: Pt[][], outer: Pt[], step: number, margin: number, jitte
 }
 
 /** The spaces a building of several pieces keeps for itself: see above. One-piece buildings have none. */
-export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type: string; level: number })[]): Junction[] {
+export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type: string; level: number })[], ring: (z: Shaped) => number = () => 0): Junction[] {
   const out: Junction[] = [];
   for (const sh of shells) {
     const zs = zones.filter(z => sh.ids.includes(z.id));
@@ -171,7 +171,11 @@ export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type
       for (const e of over) if (Math.abs(area(fromPath(e.outer))) >= JUNCTION.min) cores.push({ ring: fromPath(e.outer), ids: [zs[i].id, zs[j].id] });
     }
     // v0.32: a free-drawn area is open floor: all of it is the building's own space (a hall, a food court or a garden)
-    zs.forEach(z => { if (z.poly) for (const e of clip(ClipperLib.ClipType.ctIntersection, [toPath(z.poly)], sh.rings.map(toPath), ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftEvenOdd)) cores.push({ ring: fromPath(e.outer), ids: [z.id] }); });
+    // (v0.33: less the band round its walls, `ring` deep, where its holdrooms and lots are planned: bands.ts `carveFree`)
+    zs.forEach(z => {
+      if (!z.poly) return; const d = ring(z); const walls = d > 0 ? offset(sh.rings.map(toPath), -(d + JUNCTION.grow)) : sh.rings.map(toPath);
+      if (walls.length) for (const e of clip(ClipperLib.ClipType.ctIntersection, [toPath(z.poly)], walls, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftEvenOdd)) cores.push({ ring: fromPath(e.outer), ids: [z.id] });
+    });
     // floor the shell added in its inside corners
     // (a large stretch of it, like the gap closed between two piers standing close side by side, is a garden of its
     //  own; only a corner's worth joins the junction beside it)
