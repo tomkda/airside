@@ -549,7 +549,10 @@ export function derive(source: World): Derived {
     if (z.poly) {
       // (every part of the building it is in: a cut-out may have split it, and each part keeps its own plan)
       const mineSh = shells.filter(sh => sh.ids.includes(z.id)); const rs = mineSh.length ? mineSh.flatMap(sh => sh.rings) : [zonePts(z)];
-      C = carveFree(z, rs, gates, world.zones.filter(o => o.id !== z.id && mineSh.some(sh => sh.ids.includes(o.id))));
+      // (v0.40: and the security or passport control that opens into it, where walk-through duty free can go; touching
+      //  or overlapping: carveFree finds where along its outline)
+      const near = (a: Rect, b: Rect, k: number) => a.x <= b.x + b.w + k && b.x <= a.x + a.w + k && a.y <= b.y + b.h + k && b.y <= a.y + a.h + k;
+      C = carveFree(z, rs, gates, world.zones.filter(o => o.id !== z.id && mineSh.some(sh => sh.ids.includes(o.id))), world.zones.filter(o => (o.type === 'security' || o.type === 'passport') && o.level === z.level && near(zoneBox(o), zoneBox(z), 2)));
     }   // (v0.33: holdrooms and lots round its walls, the hall in the middle)
     else if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
     else if (z.rot || z.bend || z.taper) {
@@ -637,7 +640,7 @@ export function derive(source: World): Derived {
     const doors = gates.filter(g => j.ids.includes(g.zone.id)).map(g => g.door);
     // (v0.33: nor in front of a free area's lots, which face the space across its edge: a counter would block their shopfront)
     // (v0.38: and not in front of a free area's restroom core, which faces the space as its lots do)
-    const fronts: { pts: Pt[] }[] = [...others.filter(sh => sh.zone.poly && sh.key.startsWith('F')), ...j.ids.filter(id => world.zones.find(q => q.id === id)?.poly).flatMap(id => (bandItems.get(id) ?? []).filter(it => it.k === 'wc' && it.pts.length === 4))];
+    const fronts: { pts: Pt[] }[] = [...others.filter(sh => sh.zone.poly && (sh.key.startsWith('F') || sh.key === 'DF')), ...j.ids.filter(id => world.zones.find(q => q.id === id)?.poly).flatMap(id => (bandItems.get(id) ?? []).filter(it => it.k === 'wc' && it.pts.length === 4))];
     const blocks = (q: Pt[]) => {
       const c = polyCentre(q);
       return fronts.some(sh => {
