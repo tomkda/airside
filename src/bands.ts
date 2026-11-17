@@ -371,9 +371,7 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
   const items: LItem[] = []; const shops: Shop[] = []; const kinds: Record<string, number> = {};
   let hold = 0, commerce = 0, seats = 0, windowLots = 0;
   const H = holdDepth(z.cls ?? 2), R = freeRing(z.cls ?? 2);
-  // (v0.38: each gate's holdroom is sized for its own aircraft, which may be smaller than the area's: a stand downsized
-  //  to fit leaves the lot behind its holdroom the depth it does not need)
-  const Hg = (g: Gate) => Math.min(H, holdDepth(g.cls));
+
   const P = z.poly!; const o0 = P[0];
   const horiz = z.w >= z.h, long = Math.max(z.w, z.h); const F = frameOf(z);
   const inside = (p: Pt) => rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1 && pointInPoly(p, P);
@@ -455,7 +453,7 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
     for (let k = 0; k < mods.length;) {
       const g = mods[k].g; let e = k; while (e + 1 < mods.length && mods[e + 1].g === g) e++;
       if (g) {
-        const hd = Math.min(Hg(g), ...mods.slice(k, e + 1).map(m => m.d));
+        const hd = Math.min(H, ...mods.slice(k, e + 1).map(m => m.d));
         const q = hd >= 4 ? fit(w, mods[k].s0, mods[e].s1, 0, hd) : null;
         if (q) {
           laid.push(q); items.unshift({ k: 'hold', pts: q, closed: true }); const len = dist(q[0], q[1]); hold += len * hd;
@@ -465,28 +463,36 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
       k = e + 1;
     }
   });
-  // ---- v0.38: restroom cores, as in a concourse: about every `FREE.wc` m along the walls (and at least one), each in
-  //      place of a lot, a window lot by preference (a gate's own module stays a way through)
+  // ---- v0.38: restroom cores, as in a concourse: about every `FREE.wc` m along the walls, each where a lot would be
+  //      (and in front of it, less deep), laid before the lots. Their places hang on the same grid from the area's
+  //      first corner as the modules (every `FREE.wc` m of it, a module or two either way if that one cannot take a
+  //      core), so an edit to one wall moves no core on another; an area whose walls are too short for that grid to
+  //      give one gets one where it best can.
+  const span = (w: Wall, m: { g: Gate | null; d: number }) => { const hd = m.g ? Math.min(H, m.d) : 0; return { d0: m.g ? hd + 0.5 : 0.5, d1: m.d - 0.5 }; };
+  const core = (w: Wall, m: { s0: number; s1: number; g: Gate | null; d: number; door: boolean; wc: boolean }) => {
+    if (m.door || m.wc) return false; const { d0, d1 } = span(w, m); if (d1 - d0 < 4) return false;
+    const pts = fit(w, m.s0, m.s1, d0, Math.min(d1, d0 + FREE.wcDepth)); if (!pts) return false;
+    m.wc = true; laid.push(pts); items.push({ k: 'wc', pts, closed: true, label: 'WC' }); return true;
+  };
   {
-    const all = walls.flatMap((w, wi) => plan[wi].map(m => ({ m, len: m.s1 - m.s0 })));
-    const total = all.reduce((t, q) => t + q.len, 0);
-    if (total >= FREE.module * 3) {
-      const n = Math.max(1, Math.round(total / FREE.wc)); let at = 0; const mids = all.map(q => { const c = at + q.len / 2; at += q.len; return c; });
-      for (let k = 0; k < n; k++) {
-        const want = (total * (k + 0.5)) / n;
-        let best = -1, bc = Infinity;
-        all.forEach((q, i) => { if (q.m.door || q.m.wc || q.m.d < 6) return; const c = Math.abs(mids[i] - want) + (q.m.g ? FREE.module * 1.5 : 0); if (c < bc) { bc = c; best = i; } });
-        if (best >= 0) all[best].m.wc = true;
-      }
-    }
+    const per = Math.max(1, Math.round(FREE.wc / FREE.module)); let laidAny = false;
+    walls.forEach((w, wi) => {
+      const mods = plan[wi]; const gi = mods.map(m => Math.floor(((m.c.x - o0.x) * w.t.x + (m.c.y - o0.y) * w.t.y) / FREE.module));
+      mods.forEach((m, k) => {
+        if ((((gi[k] % per) + per) % per) !== Math.floor(per / 2)) return;
+        // (the one on the grid, or the nearest beside it that can take a core, no gate's module before one without)
+        const order = [0, 1, -1, 2, -2].map(o => k + o).filter(q => q >= 0 && q < mods.length).sort((p, q) => Number(!!mods[p].g) - Number(!!mods[q].g));
+        for (const q of order) if (core(w, mods[q])) { laidAny = true; break; }
+      });
+    });
+    if (!laidAny) for (const [wi, w] of walls.entries()) { if (plan[wi].some(m => core(w, m))) break; }
   }
   // ---- then the lots: behind a holdroom, facing the hall (none at the gate itself: that is the way through); or one
   //      deep window lot where there is no gate
   walls.forEach((w, wi) => plan[wi].forEach(m => {
-    const hd = m.g ? Math.min(Hg(m.g), m.d) : 0; const d0 = m.g ? hd + 0.5 : 0.5, d1 = m.d - 0.5;
-    if (m.door || d1 - d0 < 4) return;
+    const { d0, d1 } = span(w, m);
+    if (m.door || m.wc || d1 - d0 < 4) return;
     const pts = fit(w, m.s0, m.s1, d0, d1); if (!pts) return;
-    if (m.wc) { laid.push(pts); items.push({ k: 'wc', pts, closed: true, label: 'WC' }); return; }
     const key = keyOf(m.c, w.n); if (keys.has(key)) return; keys.add(key); laid.push(pts);
     const fw = dist(pts[2], pts[3]); const door = { x: (pts[2].x + pts[3].x) / 2 + w.n.x * 1.4, y: (pts[2].y + pts[3].y) / 2 + w.n.y * 1.4 };
     const area = fw * (d1 - d0); const win = !m.g;

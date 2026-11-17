@@ -636,7 +636,8 @@ export function derive(source: World): Derived {
     // (and not against a wall with stands: a gate door wants its holdroom, not a kitchen)
     const doors = gates.filter(g => j.ids.includes(g.zone.id)).map(g => g.door);
     // (v0.33: nor in front of a free area's lots, which face the space across its edge: a counter would block their shopfront)
-    const fronts = others.filter(sh => sh.zone.poly && sh.key.startsWith('F'));
+    // (v0.38: and not in front of a free area's restroom core, which faces the space as its lots do)
+    const fronts: { pts: Pt[] }[] = [...others.filter(sh => sh.zone.poly && sh.key.startsWith('F')), ...j.ids.filter(id => world.zones.find(q => q.id === id)?.poly).flatMap(id => (bandItems.get(id) ?? []).filter(it => it.k === 'wc' && it.pts.length === 4))];
     const blocks = (q: Pt[]) => {
       const c = polyCentre(q);
       return fronts.some(sh => {
