@@ -387,6 +387,8 @@ export class UI {
   }
 
   floorZ() {
+    // (v0.43: a grip in 3D stands on the roof of its level, and is dragged across that height)
+    if (this.ren.mode3d && this.drag?.mode === 'grip' && this.drag.zone) return LEVELS[this.drag.zone.level].z1;
     if (this.ren.mode3d) return (this.tool in ZONES && !ZONES[this.tool as ZoneType].groundOnly) || (this.tool === 'select' && this.ren.lod === 'terminal') ? LEVELS[this.ren.level].z0 : 0;
     return this.ren.tilt > 0.02 && !isWay(this.tool) && this.tool !== 'runway' ? LEVELS[this.ren.level].z1 : 0;
   }
@@ -530,6 +532,14 @@ export class UI {
   down(e: PointerEvent) {
     // in 3D the orbit controls own drags with Select; build tools still draw on the ground plane
     if (this.ren.mode3d && (this.tool === 'select' || e.button !== 0)) {
+      // v0.43: a grip of the selected building is dragged in 3D as in the plan; anything else orbits
+      const z3 = this.tool === 'select' && e.button === 0 && this.ren.selected?.kind === 'zone' ? this.world.zones.find(q => q.id === this.ren.selected!.id) : undefined;
+      const grip3 = z3 && this.gripAt(z3, e.offsetX, e.offsetY);
+      if (z3 && grip3) {
+        this.orbit3d(false); this.ren.canvas.setPointerCapture(e.pointerId);
+        this.beginLive([z3, ...(this.twin(z3) ? [this.twin(z3)!] : [])]);
+        this.drag = { mode: 'grip', sx: e.offsetX, sy: e.offsetY, start: this.ren.toWorld(e.offsetX, e.offsetY, LEVELS[z3.level].z1), zone: z3, grip: grip3, z0: geomOf(z3), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return;
+      }
       if (e.button === 0) this.click3d = { x: e.offsetX, y: e.offsetY };
       return;
     }
@@ -595,6 +605,13 @@ export class UI {
 
   move(e: PointerEvent) {
     if (this.ren.mode3d && !this.drag) {
+      if (this.tool === 'select') {
+        // v0.43: over a grip of the selected building the pointer grabs it rather than orbiting
+        const z = this.ren.selected?.kind === 'zone' ? this.world.zones.find(q => q.id === this.ren.selected!.id) : undefined;
+        const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null; this.ren.gripHot = grip; this.orbit3d(!grip);
+        this.ren.canvas.style.cursor = grip ? 'grab' : '';
+        if (z && grip) this.hint(this.gripHint(z, grip));
+      }
       if (this.tool !== 'select') { const p = this.wpt(e); if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; } }
       return;
     }
@@ -828,9 +845,11 @@ export class UI {
   //   While a shape is dragged, the world itself is changed and everything derived from it is rebuilt once a frame,
   //   so gates, aprons, taxilanes, shop lots, forecourts and people movers follow the cursor. The sim stands still
   //   meanwhile. Letting go either keeps the change (one undo step, through `changed()`) or puts everything back.
-  //   Plan view only: the 3D model takes too long to rebuild every frame, so there it stays an outline.
+  //   v0.43: in 3D too, for a grip of the selected building: its outline follows at once, and the model itself is
+  //   rebuilt at most every `LIVE_3D_MS` (render3d.ts), since building it takes some tens of milliseconds.
   beginLive(zs: Zone[], cuts: Cut[] = []) {
-    if (this.live || this.ren.mode3d) return;
+    if (this.live) return;   // (v0.43: in 3D too, for a grip: the model is rebuilt a few times a second meanwhile)
+    this.ren.liveEdit = true;
     this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })) };
     this.ctl.hold = true; holdScenery(this.world, this.sim.d);
   }
@@ -865,7 +884,7 @@ export class UI {
   /** End a live edit. `keep` leaves the shapes as they are (the caller then calls `changed()`); otherwise all is put back. */
   endLive(keep: boolean) {
     const lv = this.live; if (!lv) return;
-    this.live = null; this.ctl.hold = false; holdScenery(null);
+    this.live = null; this.ctl.hold = false; holdScenery(null); this.ren.liveEdit = false;
     if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
     if (!keep) { for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; }
     this.sim.d = lv.d0;
@@ -886,8 +905,8 @@ export class UI {
   }
   /** Which grip of a selected shape is under the pointer. */
   gripAt(z: Zone, sx: number, sy: number): Grip | null {
-    if (z.auto || this.ren.mode3d) return null;
-    const top = this.ren.tilt > 0.02 ? LEVELS[z.level].z1 : 0;
+    if (z.auto) return null;
+    const top = this.ren.mode3d || this.ren.tilt > 0.02 ? LEVELS[z.level].z1 : 0;
     for (const g of gripsFor(z)) { const [x, y] = this.ren.P(g.p.x, g.p.y, top); if (Math.hypot(x - sx, y - sy) < 12) return g.grip; }
     return null;
   }
@@ -1066,7 +1085,10 @@ export class UI {
   }
 
   /** Stop whatever is being dragged and put it back (Esc). */
+  /** v0.43: in 3D, whether a left drag orbits (it does not over a grip, or while one is dragged). */
+  orbit3d(on: boolean) { if (this.ren.mode3d && this.ren.r3) this.ren.r3.controls.enabled = on; }
   cancelDrag() {
+    this.orbit3d(true);
     if (this.path) { this.path = null; this.pathLast = null; this.endLive(false); this.settle(); this.ren.ghost = null; this.hint(this.toolHint()); return true; }
     if (!this.drag) return false;
     this.endLive(false); this.settle(); this.drag = null; this.ren.ghost = null; this.ren.canvas.style.cursor = 'default';
@@ -1075,6 +1097,7 @@ export class UI {
   }
 
   up(e: PointerEvent) {
+    if (this.ren.mode3d && this.drag?.mode === 'grip') this.orbit3d(true);
     if (this.click3d) {
       const c = this.click3d; this.click3d = null;
       if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }

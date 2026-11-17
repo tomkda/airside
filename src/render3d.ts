@@ -35,6 +35,9 @@ const ITEM_H: Record<string, number> = { counter: 1.1, xray: 1.6, body: 2.2, div
 const YELLOW = '#D6A43C', WHITE = '#F0ECE2';
 const RISE_MS = 1400;
 
+/** v0.43: how often, at most, the 3D model is rebuilt while a building is being reshaped by a grip (ms). A rebuild takes
+ *  some tens of milliseconds on the sample, so a few times a second keeps the drag itself smooth. */
+const LIVE_3D_MS = 180;
 export class Renderer3D {
   canvas: HTMLCanvasElement;
   gl: THREE.WebGLRenderer;
@@ -45,7 +48,7 @@ export class Renderer3D {
   private ghostG = new THREE.Group();
   private riseG = new THREE.Group();
   private key = '';
-  private dRef: unknown = null; private dGen = 0;
+  private dRef: unknown = null; private dGen = 0; private builtAt = 0;
   private sun: THREE.DirectionalLight; private hemi: THREE.HemisphereLight;
   private skyDay: THREE.Texture; private skyNight: THREE.Texture;
   // shared materials whose look follows the time of day
@@ -176,7 +179,9 @@ export class Renderer3D {
     if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; this.noteBirths(sim, now); }
     const rising = [...this.born.entries()].filter(([, t]) => now - t < RISE_MS).map(([id]) => id);
     const key = [this.dGen, this.ren.lod, this.ren.focus, this.ren.level, JSON.stringify(this.ren.selected), this.ren.commerce, sim.world.sites?.length, rising.join(',')].join('|');
-    if (key !== this.key) { this.key = key; this.buildStatic(sim, new Set(rising)); }
+    // (v0.43: while a grip is dragged the layout changes every frame; the model follows at most every LIVE_3D_MS, and at
+    //  once when the drag ends)
+    if (key !== this.key && (!this.ren.liveEdit || now - this.builtAt >= LIVE_3D_MS)) { this.key = key; this.buildStatic(sim, new Set(rising)); this.builtAt = now; }
     this.drawRising(sim, rising, now);
     this.drawMoving(sim, night, now);
     this.drawParked(sim);
