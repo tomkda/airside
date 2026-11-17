@@ -16,7 +16,10 @@ import { Shaped, zonePts, heart } from './shapes';
 /** `rings`: the outline, outer boundaries and holes together (fill with the even-odd rule). `ids`: the zones it is made of. */
 export interface Shell { level: number; ids: number[]; rings: Pt[][]; outer: Pt[];
   /** v0.32: a cut-out takes something away from it (so its outline is no longer just its pieces'), and which. */
-  cut?: boolean; cuts?: number[] }
+  cut?: boolean; cuts?: number[];
+  /** v0.36: the floor the cut-outs actually took from this building (after its outline was rounded again): what no
+   *  one may walk across or stand in. Every part of a building a cut-out splits carries all of its building's voids. */
+  voids?: Pt[][] }
 /** v0.32: a cut-out: a polygon taken away from whatever building it is drawn over, on one level. Saved with the world. */
 export interface Cut { id: number; level: number; pts: Pt[] }
 export const SHELL = { fillet: 16, ease: 5, scale: 100 };   // inside-corner radius, outside-corner radius (m); Clipper works in whole numbers
@@ -78,7 +81,12 @@ export function shellsOf(zones: (Shaped & { id: number; type: string; level: num
         if (ids.length) parts.push({ ids, rings, outer, a: Math.abs(area(outer)) });
       }
       parts.sort((p, q) => q.a - p.a);
-      for (const p of parts) out.push({ level, ids: p.ids, rings: p.rings, outer: p.outer, cut: true, cuts: hit.map(k => k.id) });
+      const left = parts.flatMap(p => p.rings.map(toPath));
+      // (even-odd: the parts' rings are not wound to Clipper's rule, a courtyard's the same way as the wall round it)
+      const vc = new ClipperLib.Clipper(); vc.AddPaths(paths, ClipperLib.PolyType.ptSubject, true); vc.AddPaths(left, ClipperLib.PolyType.ptClip, true);
+      const vt = new ClipperLib.PolyTree(); vc.Execute(ClipperLib.ClipType.ctDifference, vt, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftEvenOdd);
+      const voids = (ClipperLib.JS.PolyTreeToExPolygons(vt) as { outer: IPath; holes: IPath[] }[]).map(e => fromPath(e.outer)).filter(r => Math.abs(area(r)) > 20);
+      for (const p of parts) out.push({ level, ids: p.ids, rings: p.rings, outer: p.outer, cut: true, cuts: hit.map(k => k.id), voids });
     }
   }
   return out;

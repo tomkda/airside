@@ -319,6 +319,30 @@ for (const deg of [12, -20]) {
   check('Terminal 1 opens with security bent (' + (sim.d.terminals[0].problems.join('; ') || 'open') + ')', sim.d.terminals[0].active);
   sim.startDay(); while (sim.day < 1) sim.step(0.25);
   check('and flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
+// v0.36: no one walks across a courtyard or a notch, or waits in one
+{ const P = a => a.map(([x, y]) => ({ x, y })); const w = sampleWorld();
+  const court = P([[2950, 2635], [3050, 2635], [3050, 2665], [2950, 2665]]), notch = P([[3200, 2600], [3300, 2600], [3300, 2660], [3250, 2672], [3200, 2660]]);
+  w.cuts = [{ id: w.nextId++, level: 1, pts: court }, { id: w.nextId++, level: 1, pts: notch }];
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d;
+  const a = { x: 3000, y: 2628 }, b = { x: 3000, y: 2672 }, r = d.pedRoute(a, 1, b, 1); const legs = [a, ...r.pts];
+  const crosses = (p, q, poly) => poly.some((u, i) => segsIntersect(p, q, u, poly[(i + 1) % poly.length]));
+  check('a walk from one side of a courtyard to the other goes round it, never off the floor (' + Math.round(r.len) + ' m against ' + Math.round(Math.hypot(b.x - a.x, b.y - a.y)) + ' m straight across)', r.len > 60 && !legs.some((p, i) => i > 0 && Array.from({ length: 40 }, (_, k) => d.inCut({ x: legs[i - 1].x + (p.x - legs[i - 1].x) * (k + 0.5) / 40, y: legs[i - 1].y + (p.y - legs[i - 1].y) * (k + 0.5) / 40 }, 1)).some(Boolean)));
+  let seen = 0, off = 0, missed = 0, stranded = 0, k = 0; sim.onDayEnd = q => { missed += q.stats.missed; stranded += q.stats.stranded; };
+  sim.startDay(); while (sim.day < 1) { sim.step(0.25); if (k++ % 8 === 0) for (const p of sim.pax) if (p.level === 1 && p.stage !== 'done') { seen++; if (d.inCut(p, 1)) off++; } }
+  check('a day with a courtyard and a deep notch: nobody stands in either (' + off + ' of ' + seen + ' sightings), 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', seen > 10000 && off === 0 && missed === 0 && stranded === 0); }
+// v0.36 (cases found by review): an L-shaped courtyard, two close together, a narrow strip filled back, a cut right across
+{ const P = a => a.map(([x, y]) => ({ x, y })); const mk = cs => { const w = sampleWorld(); w.cuts = cs.map(pts => ({ id: w.nextId++, level: 1, pts: P(pts) })); return derive(w); };
+  const clean = (d, a, b) => { const r = d.pedRoute(a, 1, b, 1); if (!r) return null; const L = [a, ...r.pts]; return L.every((p, i) => !i || Array.from({ length: 40 }, (_, k) => !d.inCut({ x: L[i - 1].x + (p.x - L[i - 1].x) * (k + 0.5) / 40, y: L[i - 1].y + (p.y - L[i - 1].y) * (k + 0.5) / 40 }, 1)).every(Boolean)) ? r : false; };
+  const dL = mk([[[2900, 2632], [3000, 2632], [3000, 2648], [2930, 2648], [2930, 2670], [2900, 2670]]]);
+  const rL = clean(dL, { x: 2950, y: 2626 }, { x: 2950, y: 2675 });
+  check('a walk across an L-shaped courtyard goes round it on the floor', rL && rL.len > 60);
+  const d2 = mk([[[2900, 2632], [2960, 2632], [2960, 2668], [2900, 2668]], [[2962, 2632], [3020, 2632], [3020, 2668], [2962, 2668]]]);
+  const r2 = clean(d2, { x: 2961, y: 2626 }, { x: 2961, y: 2674 });
+  check('two courtyards 2 m apart: the gap between them is not floor, and a walk goes round both', r2 && r2.len > 100 && d2.inCut({ x: 2961, y: 2650 }, 1));
+  const d3 = mk([[[3150, 2630], [3153, 2630], [3153, 2670], [3150, 2670]]]); const r3 = clean(d3, { x: 3130, y: 2650 }, { x: 3170, y: 2650 });
+  check('a 3 m slot inside the floor, closed again by the rounding, takes none: a walk goes straight across it', r3 && r3.len < 41 && !d3.inCut({ x: 3151.5, y: 2650 }, 1));
+  const d4 = mk([[[3200, 2590], [3220, 2590], [3220, 2700], [3200, 2700]]]);
+  check('a cut-out right across the concourse: no walk across it, and the design check says so', d4.pedRoute({ x: 3150, y: 2650 }, 1, { x: 3260, y: 2650 }, 1) === null && d4.issues.some(q => q.text.startsWith('A cut-out cuts'))); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
