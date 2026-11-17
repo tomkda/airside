@@ -367,7 +367,7 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     if (!bend) {
       if (!z0.bend && !z0.taper) return geomOf(z0);   // pulled straight again: as it was
       // (v0.34: a hall pulled straight and square to the grid is an upright rectangle again, so it keeps shared walls)
-      if (!turns && (!P.rot || Math.abs(Math.abs(P.rot) - Math.PI / 2) < 1e-6)) { const v = !!P.rot; return { ...P, bend: undefined, rot: undefined, x: c.x - (v ? P.h : P.w) / 2, y: c.y - (v ? P.w : P.h) / 2, w: v ? P.h : P.w, h: v ? P.w : P.h }; }
+      if (!turns && (!P.rot || Math.abs(Math.sin(2 * P.rot)) < 1e-3)) { const v = !!P.rot && Math.abs(Math.cos(P.rot)) < 0.5; return { ...P, bend: undefined, rot: undefined, x: c.x - (v ? P.h : P.w) / 2, y: c.y - (v ? P.w : P.h) / 2, w: v ? P.h : P.w, h: v ? P.w : P.h }; }
       return { ...P, bend: undefined };
     }
     return { ...P, bend };

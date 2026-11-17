@@ -11,6 +11,7 @@
 import { Pt, add, sub, mul, norm, dist, polyLen, sliceLine } from './geom';
 import type { Derived, Zone } from './world';
 import { isRingRef, roundR, roundDef, RING_REF } from './ways';
+import { FACE_ID } from './frontage';
 
 export interface RoadSeg { a: Pt; b: Pt; w: number; lanes: number; hwy: boolean; ref: number; eid: number; trimA: number; trimB: number }
 /** v0.11: a run of road between junctions, as one polyline, so curves draw smooth and dashes keep their rhythm. */
@@ -58,7 +59,10 @@ export function roadPlan(d: Derived): RoadPlan {
   // ---- paths: chain edges of one road through the nodes where nothing else joins
   // (v0.28: a deck ramp leaving or joining a road does not break it: the road, and its median, run on past the ramp)
   const legsOf = (n: number, ramp: boolean) => ramp ? net.adj[n] : net.adj[n].filter(k => !d.rampRefs.has(net.edges[k].ref));
-  const through = (n: number, ramp = false) => { const a = legsOf(n, ramp); return a.length === 2 && net.edges[a[0]].ref === net.edges[a[1]].ref && net.edges[a[0]].kind === net.edges[a[1]].kind && !isRingRef(net.edges[a[0]].ref); };
+  // (v0.34: the chords of a frontage road that follows a curved face run on into each other, as one road)
+  const chainOf = (ref: number) => (ref >= FACE_ID && ref < FACE_ID + 32 * 100000 && !isRingRef(ref) ? Math.floor((ref - FACE_ID) / 32) : null);
+  const sameRoad = (r1: number, r2: number) => r1 === r2 || (chainOf(r1) !== null && chainOf(r1) === chainOf(r2));
+  const through = (n: number, ramp = false) => { const a = legsOf(n, ramp); return a.length === 2 && sameRoad(net.edges[a[0]].ref, net.edges[a[1]].ref) && net.edges[a[0]].kind === net.edges[a[1]].kind && !isRingRef(net.edges[a[0]].ref); };
   const paths: RoadPath[] = []; const seen = new Uint8Array(net.edges.length);
   for (const e0 of net.edges) {
     if (seen[e0.id] || isRingRef(e0.ref)) continue;

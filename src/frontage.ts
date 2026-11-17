@@ -16,13 +16,15 @@ import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way, RampGeo } from './world';
 import { sidesOf } from './gates';
 import { waySegs, wayPts, roundDef } from './ways';
-import { zonesOverlap, shaped, zonePts, inZone, Shaped, arcOf, frameOf, toWorld } from './shapes';
+import { zonesOverlap, shaped, zonePts, inZone, Shaped, arcOf, frameOf, toWorld, toLocal } from './shapes';
 
 export type Deck = 'dep' | 'arr' | 'both';
 export interface AutoTag { road: number; module: number; deck: Deck; gap: number; /** v0.34: a piece of a curb along a curved wall: which wall, and where along it */ chain?: string; k?: number }
 /** An elevated stretch of road, drawn as an upper deck over the ground-level road. */
 export interface DeckSpan {
   road: number; a: Pt; b: Pt; width: number;
+  /** v0.34: along a curved face, every chord of the road the deck runs over */
+  roads?: number[];
   /** v0.13: the deck's centreline from where it leaves the ground to where it lands again, with the height
    *  (0 on the ground, 1 at deck level) and the width at each point. A ramp may curve away from the ground road. */
   pts: Pt[]; zs: number[]; ws: number[];
@@ -37,22 +39,28 @@ export interface FrontGuide { zone: Zone; a: Pt; b: Pt; out: Pt }
 const FRONT_TYPES = new Set<ZoneType>(['checkin', 'claim', 'security']);
 const roadWidth = (lanes: number) => (lanes >= 4 ? 16 : 9);
 
-interface Cand { m: Zone; road: Way; level: Level; a: Pt; b: Pt; out: Pt; gap: number; t0: number; t1: number; line: number; chain?: string; k?: number }
+interface Cand { m: Zone; road: Way; level: Level; a: Pt; b: Pt; out: Pt; gap: number; t0: number; t1: number; line: number; chain?: string; k?: number; sag?: number }
 /** v0.34: a face of a module. A curved wall (a bent hall's) is cut into straight pieces about `FACE_PIECE` m long, each
  *  a face of its own; `chain` names the wall and `k` is the piece's place along it. */
-interface Face { a: Pt; b: Pt; out: Pt; chain?: string; k?: number }
+interface Face { a: Pt; b: Pt; out: Pt; chain?: string; k?: number; sag?: number }
 const FACE_PIECE = 40;
 export function facesOf(m: Zone): Face[] {
   return sidesOf(m).flatMap((sd): Face[] => {
     if (sd.curve === undefined || !arcOf(m)) return [sd];
-    const F = frameOf(m); const A = arcOf(m)!; const n = Math.max(2, Math.floor(A.La / FACE_PIECE));
-    const at = (x: number) => toWorld(m, { x, y: sd.curve! });
+    const F = frameOf(m); const at = (x: number) => toWorld(m, { x, y: sd.curve! });
     const [x0, x1] = dist(at(F.x), sd.a) < dist(at(F.x + F.w), sd.a) ? [F.x, F.x + F.w] : [F.x + F.w, F.x];
+    // (as many pieces as this wall's own length holds: the inside wall of a bend is shorter than its centreline)
+    let wl = 0; for (let i = 1; i <= 32; i++) wl += dist(at(x0 + ((x1 - x0) * (i - 1)) / 32), at(x0 + ((x1 - x0) * i) / 32));
+    const n = Math.max(1, Math.floor(wl / FACE_PIECE));
     const pts = Array.from({ length: n + 1 }, (_, i) => at(x0 + ((x1 - x0) * i) / n));
+    // which way is out: away from the building's middle, in its own straight frame (the north wall's out is -y)
+    const sgn = sd.curve! <= F.y + F.h / 2 ? -1 : 1;
     return pts.slice(0, -1).map((a, k) => {
       const b = pts[k + 1]; const d = norm(sub(b, a)); let out = { x: -d.y, y: d.x }; const mid = lerpPt(a, b, 0.5);
-      if (inZone({ x: mid.x + out.x * 1.5, y: mid.y + out.y * 1.5 }, m)) out = { x: -out.x, y: -out.y };
-      return { a, b, out, chain: `${m.id}:${sd.side}`, k };
+      const xm = x0 + ((x1 - x0) * (k + 0.5)) / n; const wm = at(xm);
+      const off = toLocal(m, { x: wm.x + out.x, y: wm.y + out.y }).y - toLocal(m, wm).y; if (off * sgn < 0) out = { x: -out.x, y: -out.y };
+      // (and how far the wall stands off the chord at its middle: a curb must reach that far in to meet it)
+      return { a, b, out, chain: `${m.id}:${sd.side}`, k, sag: dist(mid, wm) };
     });
   });
 }
@@ -71,10 +79,12 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
     if (inner || L < FRONTAGE.minLen) continue;
     guides.push({ zone: m, a: sd.a, b: sd.b, out: sd.out });
     for (const r of roads) {
-      const f = fronts(r, sd, L, al); if (!f) continue;
+      // (v0.34: a piece of a curved wall takes a curb from two thirds of the usual run: on the inside of a tight bend
+      //  the road's chords are shorter than the wall's)
+      const f = fronts(r, sd, L, al, sd.chain ? FRONTAGE.minLen * 2 / 3 : FRONTAGE.minLen); if (!f) continue;
       const { gap, t0, t1 } = f;
       const line = Math.round(dot(sd.a, sd.out));   // which building line this face sits on
-      const cd: Cand = { m, road: r, level: m.level, a: sd.a, b: sd.b, out: sd.out, gap, t0, t1, line, ...(sd.chain ? { chain: sd.chain, k: sd.k } : {}) };
+      const cd: Cand = { m, road: r, level: m.level, a: sd.a, b: sd.b, out: sd.out, gap, t0, t1, line, ...(sd.chain ? { chain: sd.chain, k: sd.k, sag: sd.sag } : {}) };
       // (v0.34: a piece of a curved wall may front two chords of a road that follows the curve: it takes the one it
       //  shares the most with)
       if (sd.chain) { const i = cands.findIndex(o => o.m === m && o.chain === sd.chain && o.k === sd.k); if (i >= 0) { if (t1 - t0 > cands[i].t1 - cands[i].t0 + 1e-6) cands[i] = cd; continue; } }
@@ -90,10 +100,12 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
     const p0 = { x: c.a.x + al.x * t0, y: c.a.y + al.y * t0 }, p1 = { x: c.a.x + al.x * t1, y: c.a.y + al.y * t1 };
     // (v0.29: off a turned face the curb is turned too, and reaches half a metre into the building, so that the two
     //  overlap and are joined on foot as turned shapes are)
-    const r = tilted(c.out) ? quad(p0, p1, c.out, c.gap, -0.5) : boxOf(p0, p1, c.out, c.gap - 0.5, 0);
+    // (v0.34: a piece of a curved wall reaches in as far as the wall stands off its chord, so it meets the wall)
+    const r = c.chain ? quad(p0, p1, c.out, c.gap + (c.sag ?? 0), -(0.5 + (c.sag ?? 0))) : tilted(c.out) ? quad(p0, p1, c.out, c.gap, -0.5) : boxOf(p0, p1, c.out, c.gap - 0.5, 0);
     // never on top of something the player built on that level
     if (world.zones.some(o => o.level === level && o.id !== c.m.id && hits(shrink(r, 0.6), o))) return;
-    const id = -(c.road.id * 100000 + c.m.id * 2 + level);
+    // (each piece of a curved wall a curb of its own, though several may front one straight road)
+    const id = c.chain ? -(1e13 + (c.road.id * 100000 + c.m.id * 2 + level) * 64 + c.k!) : -(c.road.id * 100000 + c.m.id * 2 + level);
     if (curbs.some(z => z.id === id)) return;
     curbs.push({ id, type: 'curb', level, ...r, tier: 0, auto: { road: c.road.id, module: c.m.id, deck, gap: c.gap, ...(c.chain ? { chain: c.chain, k: c.k } : {}) } });
   };
@@ -114,7 +126,9 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         const W = roadWidth(c.road.lanes);
         // each end: a ramp that splits off the approach road and curves up onto the deck (a forecourt has these),
         // or else a straight ramp along the frontage road itself
-        const curves = extra.filter(w => w.fore === 'ramp' && group.some(o => o.road.id === w.face) && w.rg);
+        // (a curved face's ramps belong to its whole forecourt: any chord of it, whichever the ramp is tied to)
+        const fcOf = (rid: number) => (rid >= FACE_ID ? Math.floor((rid - FACE_ID) / 32) : -1 - rid);
+        const curves = extra.filter(w => w.fore === 'ramp' && w.face !== undefined && group.some(o => o.road.id === w.face || fcOf(o.road.id) === fcOf(w.face!)) && w.rg);
         const atOf = (o: Cand, t: number) => { const a2 = norm(sub(o.b, o.a)); const k2 = o.gap + roadWidth(o.road.lanes) / 2; return { x: o.a.x + a2.x * t + o.out.x * k2, y: o.a.y + a2.y * t + o.out.y * k2 }; };
         const La = at(c.t0), Lb = atOf(last, last.t1);
         const mids = group.slice(0, -1).map(o => atOf(o, o.t1));   // (where one piece's curb meets the next)
@@ -143,7 +157,7 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         });
         const arrows = [...U.arrows, ...Dn.arrows];
         const gores = [U.gore, Dn.gore].filter((q): q is Pt[] => !!q), seams = [U.seam, Dn.seam].filter((q): q is Pt[] => !!q);
-        decks.push({ road: c.road.id, a: at(c.t0 - FRONTAGE.ramp), b: atOf(last, last.t1 + FRONTAGE.ramp), width: W, pts, zs, ws, abut, gores, seams, arrows });
+        decks.push({ road: c.road.id, ...(c.chain ? { roads: group.map(o => o.road.id) } : {}), a: at(c.t0 - FRONTAGE.ramp), b: atOf(last, last.t1 + FRONTAGE.ramp), width: W, pts, zs, ws, abut, gores, seams, arrows });
       } else if (!ground(c).length) pushCurb(c, 0, 'both', c.t0, c.t1);   // a single-level road reaches the face through a frontage core
     } else {
       const above = cands.some(o => o.level === 1 && o.road === c.road && o.line === c.line && o.out.x === c.out.x && o.out.y === c.out.y && o.t1 > c.t0 && o.t0 < c.t1 && (o.m.type === 'checkin' || o.m.type === 'security'));
@@ -154,14 +168,14 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
 }
 
 /** Does this straight road run along this building face closely enough to grow a curb? */
-function fronts(r: Way, sd: { a: Pt; b: Pt; out: Pt }, L: number, al: Pt): { gap: number; t0: number; t1: number } | null {
+function fronts(r: Way, sd: { a: Pt; b: Pt; out: Pt }, L: number, al: Pt, min: number = FRONTAGE.minLen): { gap: number; t0: number; t1: number } | null {
   if (Math.abs(dot(norm(sub(r.b, r.a)), al)) < 0.985) return null;
   const d = (dot(sub(r.a, sd.a), sd.out) + dot(sub(r.b, sd.a), sd.out)) / 2;
   const gap = d - roadWidth(r.lanes) / 2;
   if (gap < FRONTAGE.minGap || gap > FRONTAGE.maxGap) return null;
   const s0 = dot(sub(r.a, sd.a), al), s1 = dot(sub(r.b, sd.a), al);
   const t0 = Math.max(0, Math.min(s0, s1)), t1 = Math.min(L, Math.max(s0, s1));
-  return t1 - t0 < FRONTAGE.minLen ? null : { gap, t0, t1 };
+  return t1 - t0 < min ? null : { gap, t0, t1 };
 }
 
 /**
@@ -254,7 +268,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
   for (const m of halls) {
     // the hall and whatever is stacked with it (claim under check-in) count as one building
     const fam = world.zones.filter(z => z === m || ((z.type === 'checkin' || z.type === 'claim') && over(z, m)));
-    const sides = fam.flatMap(z => sidesOf(z).map(sd => ({ z, sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) })));
+    const sides = fam.flatMap(z => facesOf(z).map(sd => ({ z, sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) })));   // (v0.34: a curved wall piece by piece)
     if (sides.some(q => q.L >= FRONTAGE.minLen && straight.some(r => fronts(r, q.sd, q.L, q.al)))) continue;   // the player drew its frontage
     if (out.some(w => w.fore === 'face' && sides.some(q => q.L >= FRONTAGE.minLen && fronts(w, q.sd, q.L, q.al)))) continue;   // a neighbour's forecourt already serves it
     let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[]; chain?: Pt[] } | null = null;
@@ -265,8 +279,10 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     for (const { sd, L, al } of sidesOf(m).map(sd => ({ sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) }))) {
       if (L < FRONTAGE.minLen) continue;
       if (sd.curve !== undefined && arcOf(m)) {
-        const pcs = facesOf(m).filter(f => f.chain === `${m.id}:${sd.side}`); if (!pcs.length) continue;
-        if (pcs.some(f => { const pr = faceBox(lerpPt(f.a, f.b, 0.1), lerpPt(f.a, f.b, 0.9), f.out, 1.5); return world.zones.some(o => !fam.includes(o) && TERMINAL_SET.has(o.type) && hits(pr, o)); })) continue;
+        // (every piece long enough for a curb; and not a face that is all interior. A piece that meets security is
+        //  left without a curb, and the road must still get past it: `blocked` below says whether it does)
+        const pcs = facesOf(m).filter(f => f.chain === `${m.id}:${sd.side}`); if (!pcs.length || pcs.some(f => dist(f.a, f.b) < FRONTAGE.minLen)) continue;
+        if (pcs.every(f => { const pr = faceBox(lerpPt(f.a, f.b, 0.1), lerpPt(f.a, f.b, 0.9), f.out, 1.5); return world.zones.some(o => !fam.includes(o) && TERMINAL_SET.has(o.type) && hits(pr, o)); })) continue;
         // the road: each joint of the wall carried out along the wall's normal there, and straight on past each end
         const nAt = (i: number) => norm(i === 0 ? pcs[0].out : i === pcs.length ? pcs[pcs.length - 1].out : { x: pcs[i - 1].out.x + pcs[i].out.x, y: pcs[i - 1].out.y + pcs[i].out.y });
         const wall = [...pcs.map(f => f.a), pcs[pcs.length - 1].b];
@@ -456,7 +472,7 @@ function blocker(world: World, zones: Zone[], aprons: Rect[]) {
     const segHits = (r: Rect) => { for (let i = 1; i < 24; i++) { const t = i / 24; const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; if (p.x > r.x + 1 && p.x < r.x + r.w - 1 && p.y > r.y + 1 && p.y < r.y + r.h - 1) return true; } return false; };
     // (v0.29: a turned one by its true outline)
     const segIn = (z: Zone) => { for (let i = 1; i < 24; i++) { const t = i / 24; if (inZone({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, z, -1)) return true; } return false; };
-    if (zones.some(z => z.level === 0 && !ends.includes(z) && (z.rot ? segIn(z) : segHits(z)))) return true;
+    if (zones.some(z => z.level === 0 && !ends.includes(z) && (shaped(z) ? segIn(z) : segHits(z)))) return true;   // (v0.34: a bent one too)
     if (aprons.some(segHits)) return true;
     if (world.ways.some(w => w.kind === 'taxi' && segsCross(a, b, w.a, w.b))) return true;
     return world.runways.some(r => segsCross(a, b, r.a, r.b));

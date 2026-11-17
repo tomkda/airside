@@ -824,6 +824,12 @@ export class UI {
       const tw = this.twin(z); const ids = [z.id, ...(tw ? [tw.id] : [])];
       const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, level: z.level }, z.type, ids, this.aprons);
       const chk2 = chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, level: tw.level }, tw.type, ids, this.aprons) : chk;
+      if (chk2.ok && g.bend && BENDS.has(z.type)) {
+        // (v0.34: a bent hall joins by overlap; a bend or reshape that pulls it off a module it was joined to is refused)
+        const base = this.drag?.z0 ?? geomOf(z); const grown = (q: Geom): Geom => (q.rot || q.bend ? q : { ...q, x: q.x - 1, y: q.y - 1, w: q.w + 2, h: q.h + 2 });
+        const lost = this.world.zones.find(o => !ids.includes(o.id) && !o.auto && o.level === z.level && ZONES[o.type].terminal && zonesOverlap(grown(base), o) && !zonesOverlap(g, o, 4));
+        if (lost) return { ok: false, reason: `Bent this way it pulls away from ${ZONES[lost.type].short.toLowerCase()}: bend it the other way, into it, or move ${ZONES[lost.type].short.toLowerCase()} to meet it` };
+      }
       return chk2.ok ? this.siteRules(zoneBox({ ...g, rot: g.rot, bend: g.bend }), z.id) : chk2;   // and the same site rules as an upright one
     }
     if (g.poly) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, poly: g.poly, level: z.level }, z.id);   // (v0.32: a free area)

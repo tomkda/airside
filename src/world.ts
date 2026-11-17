@@ -446,7 +446,8 @@ export const TURNABLE = new Set<ZoneType>(['checkin', 'claim', 'security', 'pass
 export const gripsFor = (z: Zone): { grip: Grip; p: Pt }[] => {
   if (!TURNABLE.has(z.type)) return gripsOf(z, canTurn(z));
   const c = centreOf(z); const ax = z.w >= z.h; const off = 16;
-  const turn = { grip: 't' as Grip, p: toWorld(z, ax ? { x: z.x + z.w + off, y: c.y } : { x: c.x, y: z.y + z.h + off }) };
+  // (off the end of a bent hall's chord, where the turn measures its angle from: not a point on its arc)
+  const turn = { grip: 't' as Grip, p: z.bend ? { x: c.x + Math.cos(z.rot ?? 0) * (z.w / 2 + off), y: c.y + Math.sin(z.rot ?? 0) * (z.w / 2 + off) } : toWorld(z, ax ? { x: z.x + z.w + off, y: c.y } : { x: c.x, y: z.y + z.h + off }) };
   // v0.34: a hall (check-in over claim) also bends, by a grip in its middle, as a pier does; bent, it has a pier's
   // grips (its ends, its two long walls and its middle) but never tapers
   if (!BENDS.has(z.type)) return [...gripsOf(z, false), turn];

@@ -4,7 +4,8 @@ import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
 import { derive, newWorld, canPlaceWay, canPlaceTurned, gripsFor, canPlacePier, migrateWorld } from './src/world';
-import { zonePts } from './src/shapes';
+import { zonePts, zonesOverlap, inZone, centreOf, frameOf } from './src/shapes';
+import { facesOf } from './src/frontage';
 import { shellsOf } from './src/shell';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
@@ -287,6 +288,23 @@ for (const deg of [12, -20]) {
   check('a saved world keeps the hall bent', m.zones.filter(z => z.type === 'checkin' || z.type === 'claim').every(z => z.bend === -30));
   let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
   check('the bent hall flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
+// v0.34 (cases found by review): a tight bend with the road on its inside, straightening after an end grip, the turn handle
+{ const w = newWorld(); const ci = w.nextId++, cl = w.nextId++;
+  w.zones.push({ id: ci, type: 'checkin', level: 1, x: 1000, y: 1000, w: 250, h: 40, tier: 0, units: 10, pair: cl, bend: 100 });
+  w.zones.push({ id: cl, type: 'claim', level: 0, x: 1000, y: 1000, w: 250, h: 40, tier: 0, pair: ci, bend: 100 });
+  w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 600, y: 820 }, b: { x: 1700, y: 820 }, cls: 0, lanes: 4 });
+  w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 600, y: 820 }, b: { x: 600, y: 5700 }, cls: 0, lanes: 4 });
+  const d = derive(w); const hall = w.zones[0]; const fs = facesOf(hall).filter(f => f.chain);
+  check('every piece of a tightly bent wall faces out of the hall', fs.length >= 6 && fs.every(f => !inZone({ x: (f.a.x + f.b.x) / 2 + f.out.x * 3, y: (f.a.y + f.b.y) / 2 + f.out.y * 3 }, hall)));
+  const faces = d.autoRoads.filter(r => r.fore === 'face'); const curbs = d.zones.filter(z => z.auto);
+  check('its frontage road runs outside it, on the inside of the bend', faces.length >= 5 && faces.every(r => !inZone(r.a, hall, 1) && !inZone(r.b, hall, 1)));
+  check('every piece of the inside wall has curbs, each reaching into the hall (' + curbs.length + ')', curbs.length === 2 * fs.filter(f => f.chain.endsWith(':n')).length && curbs.every(z => zonesOverlap(z, w.zones.find(q => q.id === z.auto.module), 4))); }
+{ const w = sampleWorld(); const z = w.zones.find(q => q.type === 'checkin'); const lim = { minLen: 60, minWide: 30, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 };
+  const c = { x: z.x + z.w / 2, y: z.y + z.h / 2 }; const g1 = regrip(z, 'm', { x: c.x, y: c.y - 30 }, false, lim);
+  const F = frameOf(g1); const g2 = regrip(g1, 'b', toWorld(g1, { x: F.x + F.w, y: c.y }), false, lim), g3 = regrip(g2, 'm', centreOf(g2), false, lim);
+  check('a bent hall whose end grip is dropped where it was, then pulled straight, is the upright hall again', !g3.rot && !g3.bend && g3.x === z.x && g3.y === z.y && g3.w === z.w && g3.h === z.h);
+  for (const b of [-30, -100]) { const t = gripsFor({ ...z, bend: b }).find(q => q.grip === 't'); const tb = gripsFor({ ...z, bend: b }).find(q => q.grip === 'b');
+    check('the turn handle of a bent hall (' + b + ') stands off the end of its chord, clear of its end grip, and grabbing it turns nothing', !inZone(t.p, { ...z, bend: b }) && Math.hypot(t.p.x - tb.p.x, t.p.y - tb.p.y) >= 8 && !regrip({ ...z, bend: b }, 't', t.p, false, lim).rot); } }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
