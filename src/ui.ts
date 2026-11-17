@@ -513,9 +513,14 @@ export class UI {
     for (const gs of chains.values()) {
       gs.sort((u, v) => u.k! - v.k!);
       const at = (q: Pt, n: Pt) => ({ x: q.x + n.x * off, y: q.y + n.y * off });
-      const line = [at(gs[0].a, gs[0].out), ...gs.slice(1).map((g, i) => lerpPt(at(g.a, g.out), at(gs[i].b, gs[i].out), 0.5)), at(gs[gs.length - 1].b, gs[gs.length - 1].out)];
-      for (let i = 1; i < line.length; i++) {
-        const u = line[i - 1], v = line[i]; const d = sub(v, u); const t = clamp(dot(sub(p, u), d) / (dot(d, d) || 1), 0, 1);
+      // (each piece's guide, its ends met halfway with its neighbour's; a piece left out, an interior one, breaks the line)
+      const segs: [Pt, Pt][] = gs.map((g, i) => {
+        const pv = gs[i - 1], nx = gs[i + 1];
+        const a = pv && pv.k === g.k! - 1 ? lerpPt(at(g.a, g.out), at(pv.b, pv.out), 0.5) : at(g.a, g.out);
+        const b = nx && nx.k === g.k! + 1 ? lerpPt(at(g.b, g.out), at(nx.a, nx.out), 0.5) : at(g.b, g.out);
+        return [a, b];
+      });
+      for (const [u, v] of segs) { const d = sub(v, u); const t = clamp(dot(sub(p, u), d) / (dot(d, d) || 1), 0, 1);
         const q = lerpPt(u, v, t); const e = dist(p, q); if (e < FRONTAGE.snap / 2 && (!best || e < best.d)) best = { q, d: e };
       }
     }

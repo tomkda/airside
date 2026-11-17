@@ -97,7 +97,9 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
 
   const curbs: Zone[] = [];
   const decks: DeckSpan[] = [];
-  const ground = (c: Cand) => cands.filter(o => o !== c && o.level === 0 && o.road === c.road && o.line === c.line && o.out.x === c.out.x && o.out.y === c.out.y && o.t1 > c.t0 && o.t0 < c.t1);
+  // (v0.39: the two levels match by the road itself: a curved road's stretch opposite each face is an object of its own)
+  const real = (r: Way) => realOf.get(r) ?? r;
+  const ground = (c: Cand) => cands.filter(o => o !== c && o.level === 0 && real(o.road) === real(c.road) && o.line === c.line && o.out.x === c.out.x && o.out.y === c.out.y && o.t1 > c.t0 && o.t0 < c.t1);
   const pushCurb = (c: Cand, level: Level, deck: Deck, t0: number, t1: number) => {
     const al = norm(sub(c.b, c.a));
     const p0 = { x: c.a.x + al.x * t0, y: c.a.y + al.y * t0 }, p1 = { x: c.a.x + al.x * t1, y: c.a.y + al.y * t1 };
@@ -134,7 +136,10 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         const curves = extra.filter(w => w.fore === 'ramp' && w.face !== undefined && group.some(o => o.road.id === w.face || fcOf(o.road.id) === fcOf(w.face!)) && w.rg);
         const atOf = (o: Cand, t: number) => { const a2 = norm(sub(o.b, o.a)); const k2 = o.gap + roadWidth(o.road.lanes) / 2; return { x: o.a.x + a2.x * t + o.out.x * k2, y: o.a.y + a2.y * t + o.out.y * k2 }; };
         const La = at(c.t0), Lb = atOf(last, last.t1);
-        const mids = group.slice(0, -1).map(o => atOf(o, o.t1));   // (where one piece's curb meets the next)
+        let mids = group.slice(0, -1).map(o => atOf(o, o.t1));   // (where one piece's curb meets the next)
+        // (v0.39: over a curved road along a straight face, the deck follows the road between the curb's ends)
+        const rw = realOf.get(c.road);
+        if (!c.chain && rw?.c) { const k = curveOf(rw); const sa = k.sOf(La), sb = k.sOf(Lb); const dir = sb > sa ? 1 : -1; mids = k.cum.filter(s => (s - sa) * dir > 2 && (sb - s) * dir > 2).sort((u, v) => (u - v) * dir).map(k.ptAt); }
         // the ramp that lands nearer this end of the curb, laid out from the ground up to where it lands on the deck
         const end = (p: Pt, other: Pt): RampLine | null => {
           const r = curves.filter(w => dist(w.rg!.D, p) < dist(w.rg!.D, other)).sort((v, w) => dist(v.rg!.D, p) - dist(w.rg!.D, p))[0];
@@ -144,15 +149,12 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         const straight = (p: Pt): RampLine => ({ pts: [p], zs: [0], ws: [W], nIn: [null], gore: null, seam: null, arrows: [] });
         // (v0.39: over a curved road the player drew, the deck comes down along the curve, not straight on)
         const bendEnd = (o: Cand, p: Pt, other: Pt): RampLine | null => {
-          const w = realOf.get(o.road); if (!w?.c) return null;
-          const pl = wayPts(w); const cum = [0]; for (let i = 1; i < pl.length; i++) cum.push(cum[i - 1] + dist(pl[i - 1], pl[i]));
-          const sOf = (q: Pt) => { let bs = 0, bd = Infinity; for (let i = 1; i < pl.length; i++) { const d = sub(pl[i], pl[i - 1]); const L2 = dot(d, d) || 1; const k = Math.max(0, Math.min(1, dot(sub(q, pl[i - 1]), d) / L2)); const e = dist(q, lerpPt(pl[i - 1], pl[i], k)); if (e < bd) { bd = e; bs = cum[i - 1] + k * Math.sqrt(L2); } } return bs; };
-          const ptAt = (s: number) => { for (let i = 1; i < pl.length; i++) if (s <= cum[i] || i === pl.length - 1) return lerpPt(pl[i - 1], pl[i], Math.max(0, Math.min(1, (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1)))); return pl[pl.length - 1]; };
-          const sp = sOf(p), dir = sp < sOf(other) ? -1 : 1, s1 = Math.max(0, Math.min(cum[cum.length - 1], sp + dir * FRONTAGE.ramp));
+          const w = realOf.get(o.road); if (!w?.c) return null; const k = curveOf(w);
+          const sp = k.sOf(p), dir = sp < k.sOf(other) ? -1 : 1, s1 = Math.max(0, Math.min(k.total, sp + dir * FRONTAGE.ramp));
           const run = Math.abs(s1 - sp); if (run < 2) return null;
           // from where it leaves the ground, through every joint of the road between, to just short of the curb
-          const ss = [s1, ...cum.filter(s => (s - s1) * dir < 0 && (s - sp) * dir > 2).sort((u, v) => (u - v) * -dir)];
-          return { pts: ss.map(ptAt), zs: ss.map(s => 1 - Math.abs(s - sp) / run), ws: ss.map(() => W), nIn: ss.map(() => null), gore: null, seam: null, arrows: [] };
+          const ss = [s1, ...k.cum.filter(s => (s - s1) * dir < 0 && (s - sp) * dir > 2).sort((u, v) => (u - v) * -dir)];
+          return { pts: ss.map(k.ptAt), zs: ss.map(s => 1 - Math.abs(s - sp) / run), ws: ss.map(() => W), nIn: ss.map(() => null), gore: null, seam: null, arrows: [] };
         };
         // (a straight ramp lands on the road it is over, however short that road is)
         const ts = [c.road.a, c.road.b].map(p => dot(sub(p, c.a), al)); const tLo = Math.min(...ts), tHi = Math.max(...ts);
@@ -175,7 +177,7 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         decks.push({ road: c.road.id, ...(c.chain ? { roads: group.map(o => o.road.id) } : {}), a: at(c.t0 - FRONTAGE.ramp), b: atOf(last, last.t1 + FRONTAGE.ramp), width: W, pts, zs, ws, abut, gores, seams, arrows });
       } else if (!ground(c).length) pushCurb(c, 0, 'both', c.t0, c.t1);   // a single-level road reaches the face through a frontage core
     } else {
-      const above = cands.some(o => o.level === 1 && o.road === c.road && o.line === c.line && o.out.x === c.out.x && o.out.y === c.out.y && o.t1 > c.t0 && o.t0 < c.t1 && (o.m.type === 'checkin' || o.m.type === 'security'));
+      const above = cands.some(o => o.level === 1 && real(o.road) === real(c.road) && o.line === c.line && o.out.x === c.out.x && o.out.y === c.out.y && o.t1 > c.t0 && o.t0 < c.t1 && (o.m.type === 'checkin' || o.m.type === 'security'));
       pushCurb(c, 0, above ? 'arr' : 'both', c.t0, c.t1);
     }
   }
@@ -208,6 +210,14 @@ export function opposite(r: Way, sd: { a: Pt; b: Pt }, L: number, al: Pt, memo?:
   }
   memo?.set(key, out);
   return out;
+}
+
+/** v0.39: a curved road as a polyline with its running length: where a point is along it, and the point at a length. */
+function curveOf(w: Way) {
+  const pl = wayPts(w); const cum = [0]; for (let i = 1; i < pl.length; i++) cum.push(cum[i - 1] + dist(pl[i - 1], pl[i]));
+  const sOf = (q: Pt) => { let bs = 0, bd = Infinity; for (let i = 1; i < pl.length; i++) { const d = sub(pl[i], pl[i - 1]); const L2 = dot(d, d) || 1; const k = Math.max(0, Math.min(1, dot(sub(q, pl[i - 1]), d) / L2)); const e = dist(q, lerpPt(pl[i - 1], pl[i], k)); if (e < bd) { bd = e; bs = cum[i - 1] + k * Math.sqrt(L2); } } return bs; };
+  const ptAt = (s: number) => { for (let i = 1; i < pl.length; i++) if (s <= cum[i] || i === pl.length - 1) return lerpPt(pl[i - 1], pl[i], Math.max(0, Math.min(1, (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1)))); return pl[pl.length - 1]; };
+  return { pl, cum, total: cum[cum.length - 1], sOf, ptAt };
 }
 
 /** Does this straight road run along this building face closely enough to grow a curb? */

@@ -395,6 +395,12 @@ for (const deg of [12, -20]) {
   w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 2830, y: 3230 }, cls: 0, lanes: 4 }, { id: w.nextId++, kind: 'road', a: { x: 3270, y: 2898 }, b: { x: 3270, y: 3230 }, cls: 0, lanes: 4 });
   const d = derive(w);
   check('a gently curved road along the upright hall is its frontage too: curbs on both levels and no forecourt', !d.autoRoads.some(r => r.fore) && d.zones.some(z => z.auto?.deck === 'dep' && z.auto.road === road.id) && d.zones.some(z => z.auto?.deck === 'arr' && z.auto.road === road.id));
+  { const dk = d.decks.filter(k => k.road === road.id); const pl = wayPts(road); const sd = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+    check('and its deck follows the road the whole way', dk.length === 1 && dk[0].pts.length > 12 && dk[0].pts.every(p => Math.min(...pl.slice(1).map((q, i) => sd(p, pl[i], q))) < 3.5)); }
+  { const w2 = sampleWorld(); const ci = w2.zones.find(z => z.type === 'checkin'), cl = w2.zones.find(z => z.type === 'claim'); delete ci.pair; delete cl.pair; cl.x = 2950; cl.w = 200;
+    const r2 = { ...road, id: w2.nextId++, c: { x: 3050, y: 2904 } }; w2.ways.push(r2, { id: w2.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 2830, y: 3230 }, cls: 0, lanes: 4 }, { id: w2.nextId++, kind: 'road', a: { x: 3270, y: 2898 }, b: { x: 3270, y: 3230 }, cls: 0, lanes: 4 });
+    const d4 = derive(w2); const kinds = d4.zones.filter(z => z.auto?.road === r2.id).map(z => (z.level ? 'L1 ' : 'G ') + z.auto.deck).sort().join(', ');
+    check('with separate check-in and claim it splits into departures over arrivals as a straight road does (' + kinds + ')', kinds === 'G arr, L1 dep' && d4.decks.filter(k => k.road === r2.id).length === 1); }
   road.c = { x: 3050, y: 2990 };
   const d2 = derive(w);
   check('one that swings away from the face grows no curb, and the hall lays its own forecourt', !d2.zones.some(z => z.auto?.road === road.id) && d2.autoRoads.some(r => r.fore === 'face')); }
