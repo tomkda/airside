@@ -10,7 +10,7 @@ import { Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, projT, rect
 import { APRON, CLASSES, Cls, SITE, TAXI_CLASSES } from './config';
 import { roundOuter, Round } from './ways';
 import type { World, Zone, Way, Apron, Gate, RunwayInfo } from './world';
-import { zonePts, zoneParts, toWorld, toLocal, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts, arcOf, frameOf, inZone, heart } from './shapes';
+import { zonePts, zoneParts, toWorld, toLocal, dirWorld, polyClip, polyArea, polyBox, shaped, hallPts, arcOf, curved, frameOf, inZone, heart } from './shapes';
 import { pointInPoly } from './geom';
 
 /** n, e, s, w for a rectangle (of its own frame); `f0.`, `f1.` … for the facets of a round or polygonal hall (v0.18). */
@@ -57,7 +57,7 @@ const inset = (r: Rect, k: number): Rect => ({ x: r.x + k, y: r.y + k, w: Math.m
  *  a and b are then the ends of the wall and `out` only the way its middle faces. */
 export interface Side { side: SideKey; a: Pt; b: Pt; out: Pt; curve?: number }
 export function sidesOf(z: Zone): Side[] {
-  if (arcOf(z)) {
+  if (curved(z)) {
     const F = frameOf(z); const P = (x: number, y: number) => toWorld(z, { x, y });
     const nw = P(F.x, F.y), ne = P(F.x + F.w, F.y), se = P(F.x + F.w, F.y + F.h), sw = P(F.x, F.y + F.h);
     const face = (a: Pt, b: Pt) => { const d = norm(sub(b, a)); return { x: d.y, y: -d.x }; };

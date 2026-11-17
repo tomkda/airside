@@ -16,7 +16,7 @@ import { FRONTAGE, Level, ZoneType } from './config';
 import type { World, Zone, Way, RampGeo } from './world';
 import { sidesOf } from './gates';
 import { waySegs, wayPts, roundDef } from './ways';
-import { zonesOverlap, shaped, zonePts, inZone, Shaped, arcOf, frameOf, toWorld, toLocal } from './shapes';
+import { zonesOverlap, shaped, zonePts, inZone, Shaped, arcOf, curved, frameOf, toWorld, toLocal } from './shapes';
 
 export type Deck = 'dep' | 'arr' | 'both';
 export interface AutoTag { road: number; module: number; deck: Deck; gap: number; /** v0.34: a piece of a curb along a curved wall: which wall, and where along it */ chain?: string; k?: number }
@@ -46,7 +46,7 @@ interface Face { a: Pt; b: Pt; out: Pt; chain?: string; k?: number; sag?: number
 const FACE_PIECE = 40;
 export function facesOf(m: Zone): Face[] {
   return sidesOf(m).flatMap((sd): Face[] => {
-    if (sd.curve === undefined || !arcOf(m)) return [sd];
+    if (sd.curve === undefined || !curved(m)) return [sd];
     const F = frameOf(m); const at = (x: number) => toWorld(m, { x, y: sd.curve! });
     const [x0, x1] = dist(at(F.x), sd.a) < dist(at(F.x + F.w), sd.a) ? [F.x, F.x + F.w] : [F.x + F.w, F.x];
     // (as many pieces as this wall's own length holds: the inside wall of a bend is shorter than its centreline)
@@ -331,7 +331,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     const fcs: FC[] = [];
     for (const { sd, L, al } of sidesOf(m).map(sd => ({ sd, L: dist(sd.a, sd.b), al: norm(sub(sd.b, sd.a)) }))) {
       if (L < FRONTAGE.minLen) continue;
-      if (sd.curve !== undefined && arcOf(m)) {
+      if (sd.curve !== undefined && curved(m)) {
         // (every piece long enough for a curb; and not a face that is all interior. A piece that meets security is
         //  left without a curb, and the road must still get past it: `blocked` below says whether it does)
         const pcs = facesOf(m).filter(f => f.chain === `${m.id}:${sd.side}`); if (!pcs.length || pcs.some(f => dist(f.a, f.b) < FRONTAGE.minLen)) continue;
