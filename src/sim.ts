@@ -800,7 +800,11 @@ export class Sim {
         const g = p.flight.gate;
         const inward = { x: -g.outward.x, y: -g.outward.y };
         const wd = CLASSES[g.cls].gateSpacing * 0.6;
-        const target = clampIn(add(add(g.door, mul(inward, 1 + this.r() * 7)), { x: (this.r() - .5) * wd * Math.abs(inward.y), y: (this.r() - .5) * wd * Math.abs(inward.x) }), g.zone);
+        const spot = () => clampIn(add(add(g.door, mul(inward, 1 + this.r() * 7)), { x: (this.r() - .5) * wd * Math.abs(inward.y), y: (this.r() - .5) * wd * Math.abs(inward.x) }), g.zone);
+        let target = spot();
+        // (v0.36: never a spot in a courtyard or notch: another one, or else the door itself)
+        for (let k = 0; k < 4 && this.d.inCut(target, g.zone.level); k++) target = spot();
+        if (this.d.inCut(target, g.zone.level)) target = g.door;
         route = go(target, g.zone.level);
         if (!route) { this.stuck(p, 'No walking route to the gates'); return; }
         break;

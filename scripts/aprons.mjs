@@ -319,6 +319,17 @@ for (const deg of [12, -20]) {
   check('Terminal 1 opens with security bent (' + (sim.d.terminals[0].problems.join('; ') || 'open') + ')', sim.d.terminals[0].active);
   sim.startDay(); while (sim.day < 1) sim.step(0.25);
   check('and flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
+// v0.36: no one walks across a courtyard or a notch, or waits in one
+{ const P = a => a.map(([x, y]) => ({ x, y })); const w = sampleWorld();
+  const court = P([[2950, 2635], [3050, 2635], [3050, 2665], [2950, 2665]]), notch = P([[3200, 2600], [3300, 2600], [3300, 2660], [3250, 2672], [3200, 2660]]);
+  w.cuts = [{ id: w.nextId++, level: 1, pts: court }, { id: w.nextId++, level: 1, pts: notch }];
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d;
+  const a = { x: 3000, y: 2628 }, b = { x: 3000, y: 2672 }, r = d.pedRoute(a, 1, b, 1); const legs = [a, ...r.pts];
+  const crosses = (p, q, poly) => poly.some((u, i) => segsIntersect(p, q, u, poly[(i + 1) % poly.length]));
+  check('a walk from one side of a courtyard to the other goes round it (' + Math.round(r.len) + ' m against ' + Math.round(Math.hypot(b.x - a.x, b.y - a.y)) + ' m straight across)', r.len > 60 && !legs.some((p, i) => i > 0 && crosses(legs[i - 1], p, court.map(q => ({ x: q.x + (q.x < 3000 ? 0.6 : -0.6), y: q.y + (q.y < 2650 ? 0.6 : -0.6) })))));
+  let seen = 0, off = 0, missed = 0, stranded = 0, k = 0; sim.onDayEnd = q => { missed += q.stats.missed; stranded += q.stats.stranded; };
+  sim.startDay(); while (sim.day < 1) { sim.step(0.25); if (k++ % 8 === 0) for (const p of sim.pax) if (p.level === 1 && p.stage !== 'done') { seen++; if (d.inCut(p, 1)) off++; } }
+  check('a day with a courtyard and a deep notch: nobody stands in either (' + off + ' of ' + seen + ' sightings), 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', seen > 10000 && off === 0 && missed === 0 && stranded === 0); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

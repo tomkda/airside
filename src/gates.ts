@@ -40,7 +40,7 @@ export interface GateOpts {
   walks?: Walk[];
 }
 /** A building's outline to lay stands along: the pieces it is made of, its outer boundary, and all its rings (holes too). */
-export interface Walk { ids: number[]; outer: Pt[]; rings: Pt[][] }
+export interface Walk { ids: number[]; outer: Pt[]; rings: Pt[][]; /** v0.36: a cut-out takes floor from it */ cut?: boolean }
 
 export const standDepth = (c: number) => CLASSES[c].length + 22;          // building face to taxiway centreline
 /** Face to taxilane centreline for an apron a concourse lays itself: nose-in gap, aircraft, then the taxilane's clearance (see APRON). */
@@ -328,6 +328,8 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       if (!ok) { s0 += 6; down = null; continue; }
       // which piece the gate belongs to (its door is in it), and its key in that piece's own terms
       const door = add(wm, mul(nc, -7));
+      // (v0.36: and its door on the building's floor: round a notch's corner, 7 m in can be out in the notch again)
+      if (W.cut && !inside(door)) { s0 += 6; down = null; continue; }
       const z = ownerAt(door);
       let side: string;
       if (z.sides) { const c = heart(z); const n = gateFacets(z); const ang = Math.atan2(door.y - c.y, door.x - c.x) - (z.rot ?? 0) + Math.PI / 2; const st = (2 * Math.PI) / n; side = `f${((((z.sides >= 24 ? Math.floor((ang + st / 4) / st) : Math.round(ang / st)) % n) + n) % n)}.`; }

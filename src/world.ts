@@ -69,6 +69,8 @@ export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: 
 export const newWorld = (): World => ({ zones: [], runways: [], ways: [], nextId: 1, sites: [], rounds: [], cuts: [] });
 
 /** Bring older saves up to date. */
+/** v0.36: how far a walk keeps off the edge of a cut-out, and how far out the corners it turns at are (m). */
+const SKIRT = { clear: -0.5, off: 3 };   // (clear: the walls a walk may not cross are the cut-out's own, half a metre in)
 export function migrateWorld(w: World): World {
   // v0.32: free-drawn areas and cut-outs. An outline that is not a simple polygon is dropped (an area becomes its box).
   w.cuts = (w.cuts ?? []).filter(k => Array.isArray(k.pts) && k.pts.length >= 3 && simplePoly(k.pts));
@@ -238,6 +240,8 @@ export interface Derived {
   isTrainNode(p: Pt): boolean;
   zoneAt(p: Pt, lv: Level): Zone | undefined;
   pedRoute(p: Pt, lv: Level, q: Pt, lvq: Level): Route | null;
+  /** v0.36: is this point inside a cut-out that takes floor from a building, on this level? */
+  inCut(p: Pt, lv: Level): boolean;
   zoneReach(a: number, b: number): boolean;
   gateUsable(g: Gate, c: number): boolean;
 }
@@ -521,7 +525,7 @@ export function derive(source: World): Derived {
   const group = new Map<number, number>(); shells.forEach((sh, i) => { for (const id of sh.ids) group.set(id, i); });
   const junctions = junctionsOf(shells, source.zones, z => freeRing((z as Zone).cls ?? 2));
   // (v0.32: and a building a cut-out takes from, or one with a free-drawn piece: its outline is not its pieces')
-  const shellWalks = shells.filter(sh => sh.ids.length > 1 || sh.cut || sh.ids.some(id => source.zones.find(q => q.id === id)?.poly)).map(sh => ({ ids: sh.ids, outer: sh.outer, rings: sh.rings }));
+  const shellWalks = shells.filter(sh => sh.ids.length > 1 || sh.cut || sh.ids.some(id => source.zones.find(q => q.id === id)?.poly)).map(sh => ({ ids: sh.ids, outer: sh.outer, rings: sh.rings, cut: sh.cut }));
   const GA = buildGateAreas(world, runways, runwayWidth, { self: true, keep, group, walks: shellWalks });
   aprons.push(...GA.aprons); gates.push(...GA.gates);
   for (const [id, u] of GA.units) units.set(id, u);
@@ -604,7 +608,8 @@ export function derive(source: World): Derived {
   const cutJ = (world.cuts ?? []).filter(k => took.has(k.id)).map(k => ({ level: k.level, rings: [k.pts] } as unknown as Junction));
   if (cutJ.length) for (const [id, list] of shops) {
     const z = world.zones.find(q => q.id === id)!; const ks = cutJ.filter(k => k.level === z.level); if (!ks.length) continue;
-    shops.set(id, list.filter(sh => !ks.some(k => inJunction(polyCentre(sh.pts), k))));
+    // (v0.36: and none that reaches into one, or whose door is in one: no one shops in a courtyard)
+    shops.set(id, list.filter(sh => !ks.some(k => inJunction(polyCentre(sh.pts), k) || inJunction(sh.door, k) || sh.pts.some(p => inJunction(lerpPt(p, polyCentre(sh.pts), 0.05), k)))));
     const items = bandItems.get(id);
     if (items) bandItems.set(id, items.flatMap(it => {
       if (it.closed || it.pts.length < 2 || (it.k !== 'spine' && it.k !== 'lane')) { const c = polyCentre(it.pts); return ks.some(k => inJunction(c, k)) ? [] : [it]; }
@@ -888,9 +893,49 @@ export function derive(source: World): Derived {
     }
     return { pts, lvs, len: r.len + extra };
   };
+  // v0.36: and no one walks across a courtyard or a notch. A leg that crosses a cut-out goes round it instead, by the
+  // shortest way through its corners (set `SKIRT.off` out), keeping to the floor that is left: a visibility graph of
+  // the two ends and those corners, searched with Dijkstra. Small: a cut-out has a handful of corners.
+  const skirtCuts = (world.cuts ?? []).filter(k => took.has(k.id)).map(k => {
+    const n = k.pts.length; const ccw = k.pts.reduce((t, p, i) => t + (p.x * k.pts[(i + 1) % n].y - k.pts[(i + 1) % n].x * p.y), 0) > 0;
+    const grow = (d: number) => k.pts.map((p, i) => {
+      // each corner moved out along its bisector, far enough that both its walls are `d` clear
+      const a = k.pts[(i + n - 1) % n], b = k.pts[(i + 1) % n]; const e0 = norm(sub(p, a)), e1 = norm(sub(b, p));
+      const out = (e: Pt) => (ccw ? { x: e.y, y: -e.x } : { x: -e.y, y: e.x });
+      const m = norm(add(out(e0), out(e1))); const c = Math.max(0.35, dot(m, out(e0))); return add(p, mul(m, d / c));
+    });
+    const onFloor = (p: Pt) => shells.some(sh => sh.level === k.level && sh.rings.reduce((t, r) => t + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1);
+    return { level: k.level, wall: grow(SKIRT.clear), nodes: grow(SKIRT.off).filter(onFloor) };
+  });
+  const crosses = (a: Pt, b: Pt, poly: Pt[]) => pointInPoly(lerpPt(a, b, 0.5), poly) || pointInPoly(a, poly) || pointInPoly(b, poly) || poly.some((p, i) => segsIntersect(a, b, p, poly[(i + 1) % poly.length]));
+  const skirt = (from: Pt, lv0: Level, r: Route): Route => {
+    if (!skirtCuts.length) return r;
+    const pts: Pt[] = [], lvs: Level[] = []; let a = from, la = lv0, extra = 0;
+    for (let i = 0; i < r.pts.length; i++) {
+      const b = r.pts[i], lb = r.lvs[i];
+      const hit = la === lb ? skirtCuts.filter(c => c.level === la && crosses(a, b, c.wall)) : [];
+      if (hit.length) {
+        const V = [a, b, ...hit.flatMap(c => c.nodes)]; const walls = skirtCuts.filter(c => c.level === la).map(c => c.wall);
+        const ok = (u: Pt, v: Pt) => !walls.some(w => crosses(u, v, w));
+        const dd = V.map(() => Infinity), pv = V.map(() => -1), done = V.map(() => false); dd[0] = 0;
+        for (;;) {
+          let u = -1; for (let k = 0; k < V.length; k++) if (!done[k] && dd[k] < Infinity && (u < 0 || dd[k] < dd[u])) u = k;
+          if (u < 0 || u === 1) break; done[u] = true;
+          for (let k = 0; k < V.length; k++) if (!done[k] && k !== u) { const c = dd[u] + dist(V[u], V[k]); if (c < dd[k] && ok(V[u], V[k])) { dd[k] = c; pv[k] = u; } }
+        }
+        if (dd[1] < Infinity) {
+          const via: Pt[] = []; for (let k = pv[1]; k > 0; k = pv[k]) via.unshift(V[k]);
+          for (const q of via) { pts.push(q); lvs.push(lb); }
+          extra += dd[1] - dist(a, b);
+        }
+      }
+      pts.push(b); lvs.push(lb); a = b; la = lb;
+    }
+    return extra ? { pts, lvs, len: r.len + extra } : r;
+  };
   const pedRoute = (p: Pt, lv: Level, q: Pt, lvq: Level): Route | null => {
     const za = zoneAt(p, lv), zb = zoneAt(q, lvq);
-    if (za && zb && za.id === zb.id) return thread(p, lv, { pts: [q], lvs: [lvq], len: dist(p, q) });
+    if (za && zb && za.id === zb.id) return skirt(p, lv, thread(p, lv, { pts: [q], lvs: [lvq], len: dist(p, q) }));
     const S = za ? (byZone.get(za.id) ?? []).map(n => ({ n, c: dist(p, ped[n].p) })) : nearPed(p, lv);
     const T = zb ? (byZone.get(zb.id) ?? []).map(n => ({ n, c: dist(q, ped[n].p) })) : nearPed(q, lvq);
     let best = Infinity, bs = -1, bt = -1;
@@ -900,7 +945,7 @@ export function derive(source: World): Derived {
     let i = bs, guard = 0;
     while (i !== bt && guard++ < 2000) { i = nxt[i * N + bt]; pts.push(ped[i].p); lvs.push(ped[i].level); }
     pts.push(q); lvs.push(lvq);
-    return thread(p, lv, { pts, lvs, len: best });
+    return skirt(p, lv, thread(p, lv, { pts, lvs, len: best }));
   };
 
   // ---- Road network: the highway plus player roads; curbs and lots attach where a road ends.
@@ -1097,7 +1142,7 @@ export function derive(source: World): Derived {
   return {
     runways, aprons, gates, shells, shellOf, junctions, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
     road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
-    zoneAt, pedRoute, zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,
+    zoneAt, pedRoute, inCut: (p: Pt, lv: Level) => skirtCuts.some(c => c.level === lv && pointInPoly(p, c.wall)) && !shells.some(sh => sh.level === lv && sh.rings.reduce((t, r) => t + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1), zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,   // (inCut: in a cut-out, and off the floor: a notch's rounded corners keep a little of it)
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
     roadPieces: pieces, rounds, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),
     autoRoads: laidRoads, trainLinks: [...tLinks.map(l => ({ a: center(l.a), b: center(l.b) })), ...movers.map(m => ({ ...m, apm: true }))], served, isTrainNode: (p: Pt) => tKeys.has(tKey(p)),
