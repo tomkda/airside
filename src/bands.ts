@@ -371,6 +371,7 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
   const items: LItem[] = []; const shops: Shop[] = []; const kinds: Record<string, number> = {};
   let hold = 0, commerce = 0, seats = 0, windowLots = 0;
   const H = holdDepth(z.cls ?? 2), R = freeRing(z.cls ?? 2);
+
   const P = z.poly!; const o0 = P[0];
   const horiz = z.w >= z.h, long = Math.max(z.w, z.h); const F = frameOf(z);
   const inside = (p: Pt) => rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1 && pointInPoly(p, P);
@@ -443,7 +444,7 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
       const s1 = cuts[k + 1]; const c = { x: w.a.x + w.t.x * (s0 + s1) / 2, y: w.a.y + w.t.y * (s0 + s1) / 2 };
       const g = mine.reduce<{ g: Gate; d: number } | null>((m, q) => { const d = dist(q.door, c); return d < CLASSES[q.cls].gateSpacing * 0.55 && (!m || d < m.d) ? { g: q, d } : m; }, null);
       const d = Math.min(...[s0 + 1, (s0 + s1) / 2, s1 - 1].map(s => depthAt({ x: w.a.x + w.t.x * s, y: w.a.y + w.t.y * s }, w.n)));
-      return { s0, s1, c, g: g?.g ?? null, door: !!g && g.d < FREE.module / 2, d };
+      return { s0, s1, c, g: g?.g ?? null, door: !!g && g.d < FREE.module / 2, d, wc: false };
     });
   });
   // ---- holdrooms first (a gate wants its holdroom more than a shop wants a corner): one per gate per wall
@@ -462,11 +463,35 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
       k = e + 1;
     }
   });
+  // ---- v0.38: restroom cores, as in a concourse: about every `FREE.wc` m along the walls, each where a lot would be
+  //      (and in front of it, less deep), laid before the lots. Their places hang on the same grid from the area's
+  //      first corner as the modules (every `FREE.wc` m of it, a module or two either way if that one cannot take a
+  //      core), so an edit to one wall moves no core on another; an area whose walls are too short for that grid to
+  //      give one gets one where it best can.
+  const span = (w: Wall, m: { g: Gate | null; d: number }) => { const hd = m.g ? Math.min(H, m.d) : 0; return { d0: m.g ? hd + 0.5 : 0.5, d1: m.d - 0.5 }; };
+  const core = (w: Wall, m: { s0: number; s1: number; g: Gate | null; d: number; door: boolean; wc: boolean }) => {
+    if (m.door || m.wc) return false; const { d0, d1 } = span(w, m); if (d1 - d0 < 4) return false;
+    const pts = fit(w, m.s0, m.s1, d0, Math.min(d1, d0 + FREE.wcDepth)); if (!pts) return false;
+    m.wc = true; laid.push(pts); items.push({ k: 'wc', pts, closed: true, label: 'WC' }); return true;
+  };
+  {
+    const per = Math.max(1, Math.round(FREE.wc / FREE.module)); let laidAny = false;
+    walls.forEach((w, wi) => {
+      const mods = plan[wi]; const gi = mods.map(m => Math.floor(((m.c.x - o0.x) * w.t.x + (m.c.y - o0.y) * w.t.y) / FREE.module));
+      mods.forEach((m, k) => {
+        if ((((gi[k] % per) + per) % per) !== Math.floor(per / 2)) return;
+        // (the one on the grid, or the nearest beside it that can take a core, no gate's module before one without)
+        const order = [0, 1, -1, 2, -2].map(o => k + o).filter(q => q >= 0 && q < mods.length).sort((p, q) => Number(!!mods[p].g) - Number(!!mods[q].g));
+        for (const q of order) if (core(w, mods[q])) { laidAny = true; break; }
+      });
+    });
+    if (!laidAny) for (const [wi, w] of walls.entries()) { if (plan[wi].some(m => core(w, m))) break; }
+  }
   // ---- then the lots: behind a holdroom, facing the hall (none at the gate itself: that is the way through); or one
   //      deep window lot where there is no gate
   walls.forEach((w, wi) => plan[wi].forEach(m => {
-    const hd = m.g ? Math.min(H, m.d) : 0; const d0 = m.g ? hd + 0.5 : 0.5, d1 = m.d - 0.5;
-    if (m.door || d1 - d0 < 4) return;
+    const { d0, d1 } = span(w, m);
+    if (m.door || m.wc || d1 - d0 < 4) return;
     const pts = fit(w, m.s0, m.s1, d0, d1); if (!pts) return;
     const key = keyOf(m.c, w.n); if (keys.has(key)) return; keys.add(key); laid.push(pts);
     const fw = dist(pts[2], pts[3]); const door = { x: (pts[2].x + pts[3].x) / 2 + w.n.x * 1.4, y: (pts[2].y + pts[3].y) / 2 + w.n.y * 1.4 };

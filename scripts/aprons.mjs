@@ -365,6 +365,14 @@ for (const deg of [12, -20]) {
   const lot = { x: 2600, y: 2420, w: 700, h: 60 }; const boxD = p => Math.hypot(Math.max(0, lot.x - p.x, p.x - lot.x - lot.w), Math.max(0, lot.y - p.y, p.y - lot.y - lot.h));
   const g3d = Math.min(...d3.airExtra.filter(l => l.link).map(l => along(l, boxD)));
   check('an A380 concourse behind a car park: its way round keeps 47.5 m off the lot (' + Math.round(g3d) + ' m), and its gates reach the runway', g3.length > 0 && g3.every(q => q.rwys[0].size > 0) && g3d >= 47); }
+// v0.38: restroom cores along a free area's walls
+{ const w = sampleWorld(); const pts = [[3350, 2600], [3560, 2600], [3560, 2470], [3700, 2470], [3700, 2650], [3380, 2650]].map(([x, y]) => ({ x, y }));
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const z = { id: w.nextId++, type: 'concourse', level: 1, x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), tier: 0, cls: 2, poly: pts }; w.zones.push(z);
+  const d = derive(w); const items = d.frames.get(z.id)?.items ?? []; const wc = items.filter(i => i.k === 'wc'), holds = items.filter(i => i.k === 'hold');
+  const mid = q => q.reduce((a, p) => ({ x: a.x + p.x / q.length, y: a.y + p.y / q.length }), { x: 0, y: 0 });
+  const far = Math.max(...holds.map(h => Math.min(...wc.map(c => Math.hypot(mid(h.pts).x - mid(c.pts).x, mid(h.pts).y - mid(c.pts).y)))));
+  check('a large free area has restroom cores along its walls (' + wc.length + '), every holdroom within 130 m of one (' + Math.round(far) + ' m), each inside the area', wc.length >= 3 && far <= 130 && wc.every(c => c.pts.every(p => inPoly(p, pts) || Math.min(...pts.map((a, i) => { const b = pts[(i + 1) % pts.length]; const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); })) < 0.7))); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
