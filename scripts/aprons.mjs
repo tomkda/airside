@@ -424,6 +424,18 @@ for (const deg of [12, -20]) {
   let missed = 0, stranded = 0, rev = 0, passed = 0, dep = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; rev += r.stats.rev.dutyfree; passed += sim.lotPrev.get(df.id)?.passed ?? 0; dep += r.stats.paxDep; };
   sim.startDay(); while (sim.day < 1) sim.step(0.25);
   check('every departing passenger walks through it and some buy (' + passed + ' of ' + dep + ' through, $' + Math.round(rev) + '), with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', dep > 1500 && passed >= 0.95 * dep && rev > 0 && missed === 0 && stranded === 0); }
+// v0.40 (cases found by review): passport control is not an entry; security too deep leaves no room; no counter at the store's way out
+{ const mk = (fn) => { const w = sampleWorld(); const c = w.zones.find(z => z.type === 'concourse'); const sec = w.zones.find(z => z.type === 'security');
+    Object.assign(c, { x: 2800, y: 2620, w: 600, h: 70, poly: [[2800, 2620], [3400, 2620], [3340, 2690], [2860, 2690]].map(([x, y]) => ({ x, y })), dutyFree: true }); fn(w, c, sec); return { w, c, d: derive(w) }; };
+  { const { c, d } = mk((w, c, sec) => { sec.type = 'passport'; });
+    check('a free area only passport control runs into takes no duty free', !d.budgets.get(c.id).dutyFreeOK && !(d.shops.get(c.id) ?? []).some(q => q.tenant === 'dutyfree')); }
+  { const { c, d } = mk((w, c, sec) => { sec.y -= 25; });
+    check('security reaching 35 m into the area leaves no room for a store, and the area says so', !d.budgets.get(c.id).dutyFreeOK && !(d.shops.get(c.id) ?? []).some(q => q.tenant === 'dutyfree')); }
+  { const { c, d } = mk((w, c) => { c.poly = [[2800, 2620], [3400, 2620], [3340, 2680], [2860, 2680]].map(([x, y]) => ({ x, y })); c.h = 60; });
+    const sh = d.shops.get(c.id) ?? []; const df = sh.find(q => q.tenant === 'dutyfree');
+    const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+    const front = df && sh.filter(q => q.court).filter(q => Math.min(...q.pts.map(p => near(p, df.door))) < 6);
+    check('with security against its wall, the store stands inside the band and no counter stands at its way out (' + (front ? front.length : 'no store') + ')', !!df && front.length === 0 && df.pts.every(p => p.y >= 2659)); } }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

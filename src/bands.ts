@@ -457,37 +457,43 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
   //      of wall it opens through is the entry; with duty free on, a store `COMMERCE.dfLen` m along that wall, centred
   //      on the entry and as deep as the band, is laid before anything else, with its way out on the hall side, so every
   //      departing passenger walks through it. Nothing else is laid on its modules.
+  //      (the entry is security's: passport control is on the way in from a flight, not out to one; where several
+  //       security zones open in, the one with the longest stretch of the area's outline)
   let entry: { w: number; s: number } | null = null;
   {
-    const hit: Pt[] = [];
-    P.forEach((a, i) => { const b = P[(i + 1) % P.length]; const k = Math.max(1, Math.round(dist(a, b) / 2)); for (let j = 0; j <= k; j++) { const p = lerp(a, b, j / k); if (ups.some(u => u.level === z.level && inZone(p, u, 1))) hit.push(p); } });
+    const hits = new Map<Zone, Pt[]>();
+    P.forEach((a, i) => { const b = P[(i + 1) % P.length]; const k = Math.max(1, Math.round(dist(a, b) / 2)); for (let j = 0; j <= k; j++) { const p = lerp(a, b, j / k); const u = ups.find(o => o.type === 'security' && o.level === z.level && inZone(p, o, 1)); if (u) hits.set(u, [...(hits.get(u) ?? []), p]); } });
+    const hit = [...hits.values()].sort((p, q) => q.length - p.length)[0] ?? [];
     if (hit.length >= 2) {
       const c = hit.reduce((m, p) => ({ x: m.x + p.x / hit.length, y: m.y + p.y / hit.length }), { x: 0, y: 0 });
       let best = Infinity;
       walls.forEach((w, wi) => { const s0 = (c.x - w.a.x) * w.t.x + (c.y - w.a.y) * w.t.y; if (s0 < -1 || s0 > w.L + 1) return; const off = Math.abs((c.x - w.a.x) * w.n.x + (c.y - w.a.y) * w.n.y); if (off < 3 && off < best) { best = off; entry = { w: wi, s: Math.max(0, Math.min(w.L, s0)) }; } });
     }
   }
-  const dutyFreeOK = !!entry;
-  if (z.dutyFree && entry) {
+  // (where the store would stand: from where security stops to the depth of the band, at least 6 m deep, wholly on the
+  //  floor with its way out on it too. With nowhere to put it, the area cannot take duty free.)
+  let store: { wi: number; a: number; b: number; q: Pt[]; door: Pt } | null = null;
+  if (entry) {
     const { w: wi, s } = entry as { w: number; s: number }; const w = walls[wi]; const len = Math.min(SC.dfLen, w.L);
     const a = Math.max(0, Math.min(w.L - len, s - len / 2)), b = a + len;
     const dd = Math.min(...[a + 1, (a + b) / 2, b - 1].map(t => depthAt({ x: w.a.x + w.t.x * t, y: w.a.y + w.t.y * t }, w.n)));
-    // (it starts where security stops, if security runs on into the area)
     const e0 = { x: w.a.x + w.t.x * s, y: w.a.y + w.t.y * s }; let pen = 0; while (pen < dd && ups2.some(u => inZone({ x: e0.x + w.n.x * (pen + 0.5), y: e0.y + w.n.y * (pen + 0.5) }, u))) pen += 1;
-    const d1 = Math.max(dd, pen + 12) - 0.5;
-    const q = d1 - pen >= 6 ? fit(w, a, b, pen + 0.5, d1) : null;
-    if (q) {
-      laid.push(q); for (const m of plan[wi]) if (m.s1 > a + 1 && m.s0 < b - 1) { m.df = true; m.g = null; }
-      const door = { x: (q[2].x + q[3].x) / 2 + w.n.x * 1.4, y: (q[2].y + q[3].y) / 2 + w.n.y * 1.4 };
-      const us = q.map(v => { const l = toLocal(z, v); return horiz ? l.x - F.x : l.y - F.y; }); const area = dist(q[0], q[1]) * dist(q[1], q[2]);
-      shops.push({
-        zone: z, i: shops.length, key: 'DF', id: `${z.id}:DF`, pts: q, door, type: 'shop', kind: '', tenant: 'dutyfree',
-        area, cap: 4, window: false, rank: 0, side: 'E', u0: Math.min(...us), u1: Math.max(...us), depth: dist(q[1], q[2]), frontage: dist(q[0], q[1]),
-        vis: 1, near: 1, far: 0, gates: gateSeats * 0.6, gateScore: 0, prior: gateSeats * 0.8 * 2.4,
-        foot: 0, dwell: 0, measured: false, footScore: 0, dwellScore: 0, bids: {}, bid: 0, rent: 0,
-      });
-      commerce += area;
-    }
+    const q = dd - 0.5 - (pen + 0.5) >= 6 ? fit(w, a, b, pen + 0.5, dd - 0.5) : null;
+    const door = q ? { x: (q[2].x + q[3].x) / 2 + w.n.x * 1.4, y: (q[2].y + q[3].y) / 2 + w.n.y * 1.4 } : null;
+    if (q && door && inside(door)) store = { wi, a, b, q, door };
+  }
+  const dutyFreeOK = !!store;
+  if (z.dutyFree && store) {
+    const { wi, a, b, q, door } = store;
+    laid.push(q); for (const m of plan[wi]) if (m.s1 > a + 1 && m.s0 < b - 1) { m.df = true; m.g = null; }
+    const us = q.map(v => { const l = toLocal(z, v); return horiz ? l.x - F.x : l.y - F.y; }); const area = dist(q[0], q[1]) * dist(q[1], q[2]);
+    shops.push({
+      zone: z, i: shops.length, key: 'DF', id: `${z.id}:DF`, pts: q, door, type: 'shop', kind: '', tenant: 'dutyfree',
+      area, cap: 4, window: false, rank: 0, side: 'E', u0: Math.min(...us), u1: Math.max(...us), depth: dist(q[1], q[2]), frontage: dist(q[0], q[1]),
+      vis: 1, near: 1, far: 0, gates: gateSeats * 0.6, gateScore: 0, prior: gateSeats * 0.8 * 2.4,
+      foot: 0, dwell: 0, measured: false, footScore: 0, dwellScore: 0, bids: {}, bid: 0, rent: 0,
+    });
+    commerce += area;
   }
   // ---- holdrooms first (a gate wants its holdroom more than a shop wants a corner): one per gate per wall
   //      (v0.40: sized by seats. Each gate needs `holdArea` for its own aircraft, spread over all the wall it has

@@ -1839,7 +1839,7 @@ export class UI {
         ${this.dutyFreeHTML(z)}
         <dt>Mezzanine</dt><dd>${s.has('mezz') ? `<div class="seg"><button data-act="mezz0" aria-pressed="${!z.mezz}">None</button><button data-act="mezz1" aria-pressed="${!!z.mezz}">Lounge floor${z.mezz ? '' : ` · ${money(floorArea(z) * GROWTH.mezzCostPerM2 * 0.3)}`}</button></div>
           <span class="muted small">A floor over the spine: one more lounge, and every lounge holds twice as many.</span>` : `<span class="muted small">Unlocks at ${n0(UNLOCKS.find(u => u.id === 'mezz')!.at)} departures a day.</span>`}</dd>
-        <dt></dt><dd class="muted small">Every gate claims ${Math.round(holdDepth(z.cls ?? 2))} m of holdroom behind its frontage. Remove gates on a side to free that wall for window restaurants and lounges; widen the concourse to fit both.</dd>
+        <dt></dt><dd class="muted small">${z.poly ? `Every gate's holdroom is sized by its aircraft's seats over the wall it has: ${Math.round(holdDepth(z.cls ?? 2))} m deep with a full gate's frontage, deeper where a corner squeezes it.` : `Every gate claims ${Math.round(holdDepth(z.cls ?? 2))} m of holdroom behind its frontage.`} Remove gates on a side to free that wall for window restaurants and lounges; widen the concourse to fit both.</dd>
         ${this.lotHTML(z, sel.key)}`;
     }
     const upCost = floorArea(z) * def.tierCostPerM2;
@@ -1873,7 +1873,7 @@ export class UI {
   /** Walk-through duty free: only where the concourse's entry wall is shared with security. */
   dutyFreeHTML(z: Zone) {
     const B = this.sim.d.budgets.get(z.id); if (!B) return '';
-    if (!B.dutyFreeOK) return `<dt>Duty free</dt><dd class="muted small">Walk-through duty free needs security opening straight into this concourse.</dd>`;
+    if (!B.dutyFreeOK) return `<dt>Duty free</dt><dd class="muted small">${z.poly ? 'Walk-through duty free needs security running into this area, with room between where it stops and the middle of the floor for a store at least 6 m deep.' : 'Walk-through duty free needs security opening straight into this concourse.'}</dd>`;
     const sh = (this.sim.d.shops.get(z.id) ?? []).find(q => q.tenant === 'dutyfree');
     const L = sh ? this.sim.lotDay.get(sh.id) : undefined;
     const now = L && L.passed ? `<br><span class="small">Today: ${n0(L.passed)} walked through · ${n0(L.visits)} bought (${Math.round((100 * L.visits) / L.passed)}%) · ${money(L.rev)}</span>` : '';

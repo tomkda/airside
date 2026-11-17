@@ -26,7 +26,7 @@ export const GOALS: Goal[] = [
   { id: 'lots', title: 'Lease 40 commercial lots', hint: 'Footfall leases lots: put shops where departing passengers walk.', reward: 10e6,
     progress: s => [leased(s), 40] },
   { id: 'df', title: 'Open walk-through duty free', hint: 'Select a concourse that security opens into and switch on Walk-through.', reward: 6e6,
-    progress: s => [s.world.zones.some(z => z.dutyFree) ? 1 : 0, 1] },
+    progress: s => [s.world.zones.some(z => z.dutyFree && (s.d.shops.get(z.id) ?? []).some(sh => sh.tenant === 'dutyfree')) ? 1 : 0, 1] },   // (v0.40: switched on where a store was laid)
   { id: 'sat', title: 'Satisfaction 88 for a day', hint: 'Short queues, short walks, seats at the gate.', reward: 20e6,
     progress: (s, r) => [Math.round(r?.sat ?? 0), 88] },
   { id: 'twin', title: 'Open a second terminal', hint: 'New terminal (N), lay it out, give it a curb and gates.', reward: 30e6,
