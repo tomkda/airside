@@ -1248,6 +1248,8 @@ export class Renderer {
     const z = this.cam.zoom;
     if (z < 0.42) return;
     if (zn.sides && Math.min(zn.w, zn.h) < 80 && z < 1.2 && (sim.d.shellOf.get(zn.id)?.ids.length ?? 1) < 2) return;   // a small corner hall between two piers needs no name of its own until you are close
+    // (v0.34: a curb along a curved wall is named once, on its middle piece)
+    const ch = zn.auto?.chain; if (ch !== undefined) { const ks = sim.d.zones.filter(q => q.auto?.chain === ch && q.level === zn.level).map(q => q.auto!.k!).sort((a, b) => a - b); if (zn.auto!.k !== ks[Math.floor((ks.length - 1) / 2)]) return; }
     const u = sim.d.units.get(zn.id);
     const def = ZONES[zn.type];
     let c = heart(zn);   // (the middle of the building itself: a bent pier's box centre can lie outside it)
