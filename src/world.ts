@@ -454,8 +454,8 @@ export const gripsFor = (z: Zone): { grip: Grip; p: Pt }[] => {
   if (z.bend) return [...gripsOf(z, true).filter(g => g.grip !== 'ta' && g.grip !== 'tb'), turn];
   return [...gripsOf(z, false), { grip: 'm', p: c }, turn];
 };
-/** v0.34: the landside modules that bend: a hall, check-in over claim. */
-export const BENDS = new Set<ZoneType>(['checkin', 'claim']);
+/** v0.34: the landside modules that bend: a hall, check-in over claim; v0.35: security and passport control too. */
+export const BENDS = new Set<ZoneType>(['checkin', 'claim', 'security', 'passport']);
 /** v0.29: can a turned hall, security or passport module take this shape? Like a pier, it may overlap the other
  *  terminal modules on its level (it joins them where they overlap), but not a road, a curb, a lot or another hall. */
 export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; bend?: number; level: Level }, type: ZoneType, ignore: number[] = [], aprons: Apron[] = []): PlaceCheck {
