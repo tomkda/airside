@@ -143,7 +143,7 @@ function seedsIn(rings: Pt[][], outer: Pt[], step: number, margin: number, jitte
 }
 
 /** The spaces a building of several pieces keeps for itself: see above. One-piece buildings have none. */
-export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type: string; level: number })[]): Junction[] {
+export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type: string; level: number })[], ring: (z: Shaped) => number = () => 0): Junction[] {
   const out: Junction[] = [];
   for (const sh of shells) {
     const zs = zones.filter(z => sh.ids.includes(z.id));
@@ -152,7 +152,7 @@ export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type
     const P = zs.map(z => toPath(zonePts(z)));
     const shell = sh.rings.map(toPath); const EO = ClipperLib.PolyFillType.pftEvenOdd;
     // where two pieces overlap (a hall already has its own open middle, so a pier running into one is left to the hall)
-    const cores: { ring: Pt[]; ids: number[] }[] = [];
+    const cores: { ring: Pt[]; ids: number[]; holes?: IPath[] }[] = [];
     const hubs = zs.map((z, i) => (z.sides ? P[i] : null)).filter((q): q is IPath => !!q);
     const boxes = P.map(q => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const v of q) { x0 = Math.min(x0, v.X); y0 = Math.min(y0, v.Y); x1 = Math.max(x1, v.X); y1 = Math.max(y1, v.Y); } return { x0, y0, x1, y1 }; });
     const areas = P.map(q => Math.abs(area(fromPath(q))));
@@ -171,13 +171,22 @@ export function junctionsOf(shells: Shell[], zones: (Shaped & { id: number; type
       for (const e of over) if (Math.abs(area(fromPath(e.outer))) >= JUNCTION.min) cores.push({ ring: fromPath(e.outer), ids: [zs[i].id, zs[j].id] });
     }
     // v0.32: a free-drawn area is open floor: all of it is the building's own space (a hall, a food court or a garden)
-    zs.forEach(z => { if (z.poly) for (const e of clip(ClipperLib.ClipType.ctIntersection, [toPath(z.poly)], sh.rings.map(toPath), ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftEvenOdd)) cores.push({ ring: fromPath(e.outer), ids: [z.id] }); });
+    // (v0.33: less the band round its walls, `ring` deep, where its holdrooms and lots are planned: bands.ts `carveFree`)
+    zs.forEach(z => {
+      if (!z.poly) return; const d = ring(z);
+      // (the outer wall moved in and every courtyard grown out, each wound the right way first: a ring's winding as it
+      //  comes out of the shell is not to be trusted)
+      const pos = (q: IPath) => (ClipperLib.Clipper.Area(q) < 0 ? [...q].reverse() : q);
+      const holes = sh.rings.filter(r => r !== sh.outer).map(r => pos(toPath(r)));
+      const walls = d > 0 ? flat(clip(ClipperLib.ClipType.ctDifference, offset([pos(toPath(sh.outer))], -(d + JUNCTION.grow)), offset(holes, d + JUNCTION.grow))) : sh.rings.map(toPath);
+      if (walls.length) for (const e of clip(ClipperLib.ClipType.ctIntersection, [toPath(z.poly)], walls, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftEvenOdd)) cores.push({ ring: fromPath(e.outer), ids: [z.id], holes: e.holes });   // (its holes too: the band round a courtyard is not hall)
+    });
     // floor the shell added in its inside corners
     // (a large stretch of it, like the gap closed between two piers standing close side by side, is a garden of its
     //  own; only a corner's worth joins the junction beside it)
     const fills = clip(ClipperLib.ClipType.ctDifference, shell, P, EO);
     const big = fills.filter(e => Math.abs(area(fromPath(e.outer))) > JUNCTION.corner), fill = flat(fills.filter(e => !big.includes(e)));
-    const grown = cores.length ? offset(cores.map(c => toPath(c.ring)), JUNCTION.grow) : [];
+    const grown = cores.length ? offset(cores.flatMap(c => [toPath(c.ring), ...(c.holes ?? [])]), JUNCTION.grow) : [];
     let space = flat(clip(ClipperLib.ClipType.ctIntersection, flat(clip(ClipperLib.ClipType.ctUnion, [...grown, ...fill], [])), shell, ClipperLib.PolyFillType.pftNonZero, EO));
     space = offset(offset(space, -1.5), 1.5);   // slivers along a wall are not a space
     if (big.length) space = flat(clip(ClipperLib.ClipType.ctDifference, space, flat(big)));

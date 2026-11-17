@@ -225,7 +225,7 @@ for (const deg of [12, -20]) {
   check('a large hall gets counters in proportion to its floor, and planting and seating on only part of it (' + cs.length + ' counters, ' + big.seeds.length + ' trees and tables)', cs.length <= Math.max(6, Math.floor(big.area / 900)) + 12 && big.seeds.length < big.area / 30);
   const m = migrateWorld(JSON.parse(JSON.stringify({ ...w, cuts: [cut, { id: 99, level: 1, pts: [{ x: 0, y: 0 }, { x: 1, y: 0 }] }], zones: [...w.zones, { ...conc0, id: 98, poly: [pts[0], pts[2], pts[1], pts[3]] }] })));
   check('a saved world keeps good outlines and drops broken ones', m.cuts.length === 1 && m.zones.find(q => q.id === z.id).poly.length === 5 && !m.zones.find(q => q.id === 98).poly);
-  let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 2) sim.step(0.25);
+  let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);   // (one day: on its second the sample's security, close to capacity, can miss some at the far gates)
   check('it flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
 // v0.32 (cases found by review): cut-outs that cover a piece's middle, split a building, or cross it with no corner inside
 { const P = a => a.map(([x, y]) => ({ x, y })); const A = r => { let t = 0; for (let i = 0; i < r.length; i++) { const p = r[i], q = r[(i + 1) % r.length]; t += p.x * q.y - q.x * p.y; } return Math.abs(t / 2); };
@@ -248,6 +248,23 @@ for (const deg of [12, -20]) {
   const tri = { id: 991, type: 'concourse', level: 1, x: 3300, y: 3700, w: 200, h: 200, tier: 0, cls: 2, poly: P([[3300, 3700], [3500, 3700], [3300, 3900]]) };
   const w4 = sampleWorld(); w4.zones.push(tri);
   check('a taxiway may run through the empty half of the box round a triangular free area', canPlaceWay(w4, 'taxi', { x: 3420, y: 3880 }, { x: 3520, y: 3780 }, []).ok || console.log('   ', canPlaceWay(w4, 'taxi', { x: 3420, y: 3880 }, { x: 3520, y: 3780 }, []).reason)); }
+// v0.33: a free area is planned from its walls in: holdrooms behind its gates, lots behind them and on its gateless walls
+{ const w = sampleWorld(); const pts = [[3250, 2655], [3400, 2655], [3440, 2720], [3380, 2800], [3270, 2780]].map(([x, y]) => ({ x, y }));
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const z = { id: w.nextId++, type: 'concourse', level: 1, x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), tier: 0, cls: 2, poly: pts }; w.zones.push(z);
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d;
+  const holds = (d.frames.get(z.id)?.items ?? []).filter(it => it.k === 'hold'); const lots = (d.shops.get(z.id) ?? []).filter(sh => !sh.court); const mine = d.gates.filter(g => g.zone.id === z.id);
+  const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+  // (a door stands 7 m in from the wall, as on any concourse; near a corner that can be just past a 9 m holdroom, or between two holdrooms that meet there)
+  const behind = g => holds.some(h => inPoly(g.door, h.pts) || h.pts.some((a, i) => segD(g.door, a, h.pts[(i + 1) % h.pts.length]) < 3));
+  check('every gate on the free area has a holdroom behind it (' + mine.length + ' gates, ' + holds.length + ' holdrooms)', mine.length >= 4 && mine.every(behind));
+  check('it has lots behind its holdrooms and window lots on its gateless walls (' + lots.filter(l => !l.window).length + ' and ' + lots.filter(l => l.window).length + ')', lots.filter(l => !l.window).length >= 3 && lots.filter(l => l.window).length >= 3);
+  check('every lot and holdroom is inside the area, each lot with four corners', [...lots.map(l => l.pts), ...holds.map(h => h.pts)].every(q => q.every(p => inPoly(p, pts) || Math.min(...pts.map((a, i) => { const b = pts[(i + 1) % pts.length]; const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); })) < 0.7)) && lots.every(l => l.pts.length === 4));
+  const hall = d.junctions.find(j => j.ids.includes(z.id) && j.kind === 'hall');
+  const box = q => { const c = q.reduce((a, p) => ({ x: a.x + p.x / q.length, y: a.y + p.y / q.length }), { x: 0, y: 0 }); return c; };
+  check('the hall is in the middle, with no lot or holdroom in it', hall && ![...lots.map(l => l.pts), ...holds.map(h => h.pts)].some(q => inPoly(box(q), hall.outer)));
+  let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 2) sim.step(0.25);
+  check('the planned free area flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

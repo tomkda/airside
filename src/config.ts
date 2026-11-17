@@ -332,6 +332,12 @@ export const LOD = {
 
 // ---------------------------------------------------------------- Concourse commerce (v0.7)
 // Footfall, visibility and dwell scores per lot, tenants bidding for lots, walk-through duty free.
+/** v0.33: the plan inside a free-drawn area. Along a wall with gates: the holdroom band (bands.ts `holdDepth`, from
+ *  the ACRP load rule) and behind it a row of lots `lot` m deep fronting the hall, in the middle of the shops-and-cafés
+ *  range (8–15 m, see bands.ts). Along a wall without gates: one deep window lot (restaurants, lounges) of the same
+ *  total depth. Lots are `module` m of frontage. Where the area is thin, the bands on facing walls stop short of each
+ *  other to leave `aisle` m to walk down (ACRP Report 25 gives 9–14 m for a main circulation width). */
+export const FREE = { lot: 12, module: 14, aisle: 10 };
 export const COMMERCE = {
   // v0.26: lots that front a junction space (a hall, food court or garden the building keeps where its pieces meet)
   plazaReach: 9,           // a lot this close to the space fronts it, m
