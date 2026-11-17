@@ -343,6 +343,12 @@ for (const deg of [12, -20]) {
   check('a 3 m slot inside the floor, closed again by the rounding, takes none: a walk goes straight across it', r3 && r3.len < 41 && !d3.inCut({ x: 3151.5, y: 2650 }, 1));
   const d4 = mk([[[3200, 2590], [3220, 2590], [3220, 2700], [3200, 2700]]]);
   check('a cut-out right across the concourse: no walk across it, and the design check says so', d4.pedRoute({ x: 3150, y: 2650 }, 1, { x: 3260, y: 2650 }, 1) === null && d4.issues.some(q => q.text.startsWith('A cut-out cuts'))); }
+// v0.37: a taxilane link that finds its way round what is in the way
+{ const w = newWorld(); runway(w); const c = conc(w, 2800, 2700, 300, 60);
+  w.zones.push({ id: w.nextId++, type: 'parking', level: 0, x: 2650, y: 2480, w: 600, h: 90, tier: 0 });
+  const d = derive(w); const g = d.gates.filter(q => q.zone.id === c.id);
+  const crossesLot = d.airExtra.some(l => { for (let t = 0.05; t < 1; t += 0.05) { const p = { x: l.a.x + (l.b.x - l.a.x) * t, y: l.a.y + (l.b.y - l.a.y) * t }; if (p.x > 2650 && p.x < 3250 && p.y > 2480 && p.y < 2570) return true; } return false; });
+  check('a car park wider than the concourse between it and the runway: its taxilanes go round it, and every gate reaches the runway (' + g.filter(q => q.rwys[0].size > 0).length + ' of ' + g.length + ')', g.length >= 12 && g.every(q => q.rwys[0].size > 0) && !crossesLot && !d.issues.some(i => /no clear way/.test(i.text))); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

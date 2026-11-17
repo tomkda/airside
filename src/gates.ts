@@ -588,6 +588,46 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     if (w) lay(w, r);
   }
 
+  // v0.37: a way round. When no straight link or link with one turn gets a run out, it looks for a path round the
+  // buildings and aprons in the way: the corners of every one nearby, set `DETOUR.off` out, are the turning points,
+  // and the goals are points along the taxiways, runways and connected taxilanes within `APRON.reach` of the run (the
+  // same reach as a straight link, so a building too far from the airfield stays cut off). Every leg must be clear as a
+  // straight link must (`clearLine`), and the whole way may be at most `DETOUR.long` times that reach. Dijkstra, with
+  // the legs tried lazily; it runs only for a run nothing else could link.
+  const DETOUR = { off: 16, step: 40, long: 1.75 };
+  const detour = (r: Run, ok: boolean[]): Way2 | null => {
+    const starts = [r.pts[0], r.pts[r.pts.length - 1], r.pts[Math.floor(r.pts.length / 2)]];
+    const near = (p: Pt) => starts.some(s => dist(s, p) <= APRON.reach);
+    const goals: { p: Pt; rwy: boolean }[] = [];
+    const sample = (a: Pt, b: Pt, rwy: boolean) => { const L = dist(a, b); const n = Math.max(1, Math.ceil(L / DETOUR.step)); for (let k = 0; k <= n; k++) { const p = lerpPt(a, b, k / n); if (near(p)) goals.push({ p, rwy }); } };
+    for (const w of taxis) sample(w.a, w.b, false);
+    for (const rw of runways) sample(rw.rw.a, rw.rw.b, true);
+    lanes.forEach((l, k) => { if (ok[k] && l.run !== r) sample(l.a, l.b, false); });
+    if (!goals.length) return null;
+    const R = APRON.reach * 1.2; const inReach = (b: Rect) => starts.some(s => s.x >= b.x - R && s.x <= b.x + b.w + R && s.y >= b.y - R && s.y <= b.y + b.h + R);
+    const corners: Pt[] = [];
+    const around = (b: Rect) => { const m = DETOUR.off; for (const p of [{ x: b.x - m, y: b.y - m }, { x: b.x + b.w + m, y: b.y - m }, { x: b.x + b.w + m, y: b.y + b.h + m }, { x: b.x - m, y: b.y + b.h + m }]) if (onSite(p)) corners.push(p); };
+    for (const o of outlines) if (inReach(o.box)) around(o.box);
+    for (const a of aprons) if (a !== r.ap && inReach(a.rect)) around(a.rect);
+    const V: Pt[] = [...starts, ...corners, ...goals.map(g => g.p)]; const ns = starts.length, ng = goals.length, n0 = V.length - ng;
+    const dd = V.map((_, i) => (i < ns ? 0 : Infinity)), pv = V.map(() => -1), done = V.map(() => false);
+    for (;;) {
+      let u = -1; for (let i = 0; i < V.length; i++) if (!done[i] && dd[i] < Infinity && (u < 0 || dd[i] < dd[u])) u = i;
+      if (u < 0) return null;
+      if (u >= n0) {
+        const pts: Pt[] = []; for (let i = u; i >= 0; i = pv[i]) pts.unshift(V[i]);
+        if (pts.length < 2) return null;
+        return { pts, cost: dd[u] * (goals[u - n0].rwy ? APRON.runwayCost : 1) + 40 };
+      }
+      done[u] = true;
+      for (let i = ns; i < V.length; i++) {
+        if (done[i]) continue; const c = dd[u] + dist(V[u], V[i]);
+        if (c >= dd[i] || c > APRON.reach * DETOUR.long || dist(V[u], V[i]) > APRON.reach) continue;
+        if (!clearLine(V[u], V[i])) continue;
+        dd[i] = c; pv[i] = u;
+      }
+    }
+  };
   // ---- anything still cut off (a ring has no loose end) takes the shortest clear way out to the airfield proper
   const anchors = [...taxis.map(w => ({ a: w.a, b: w.b })), ...runways.map(r => ({ a: r.rw.a, b: r.rw.b }))];
   const far = (p: { a: Pt; b: Pt }, q: { a: Pt; b: Pt }) => Math.min(p.a.x, p.b.x) > Math.max(q.a.x, q.b.x) + 4 || Math.max(p.a.x, p.b.x) < Math.min(q.a.x, q.b.x) - 4 || Math.min(p.a.y, p.b.y) > Math.max(q.a.y, q.b.y) + 4 || Math.max(p.a.y, p.b.y) < Math.min(q.a.y, q.b.y) - 4;
@@ -607,6 +647,12 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       // a lane that curves faces a different way at every stand: try straight out from each in turn
       if (r.pts.length > 3) for (let k = 1; k + 1 < r.pts.length; k += 2) { const t0 = norm(sub(r.pts[k + 1], r.pts[k - 1])); const o0 = { x: t0.y, y: -t0.x }; const o1 = dot(o0, r.outs[2]) < -0.2 && r.pts.length < 6 ? mul(o0, -1) : o0; cands.push(waysOut(r.pts[k], o1, [], r, ok)); }
       for (const w of cands) if (w && (!best || w.cost < best.w.cost)) best = { w, r };
+    }
+    // v0.37: nothing straight or with one turn: find a way round whatever is in the way
+    // (not for a stand or two in a pocket of a building: those are not worth a long way round, and go below)
+    if (!best) for (const r of runs) {
+      if (lanes.some((l, k) => l.run === r && ok[k]) || (r.stray && r.stray <= 2)) continue;
+      const w = detour(r, ok); if (w && (!best || w.cost < best.w.cost)) best = { w, r };
     }
     if (!best) break;
     const B = best as { w: Way2; r: Run };
