@@ -549,7 +549,10 @@ export function derive(source: World): Derived {
     if (z.poly) {
       // (every part of the building it is in: a cut-out may have split it, and each part keeps its own plan)
       const mineSh = shells.filter(sh => sh.ids.includes(z.id)); const rs = mineSh.length ? mineSh.flatMap(sh => sh.rings) : [zonePts(z)];
-      C = carveFree(z, rs, gates, world.zones.filter(o => o.id !== z.id && mineSh.some(sh => sh.ids.includes(o.id))));
+      // (v0.40: and the security or passport control that opens into it, where walk-through duty free can go; touching
+      //  or overlapping: carveFree finds where along its outline)
+      const near = (a: Rect, b: Rect, k: number) => a.x <= b.x + b.w + k && b.x <= a.x + a.w + k && a.y <= b.y + b.h + k && b.y <= a.y + a.h + k;
+      C = carveFree(z, rs, gates, world.zones.filter(o => o.id !== z.id && mineSh.some(sh => sh.ids.includes(o.id))), world.zones.filter(o => (o.type === 'security' || o.type === 'passport') && o.level === z.level && near(zoneBox(o), zoneBox(z), 2)));
     }   // (v0.33: holdrooms and lots round its walls, the hall in the middle)
     else if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
     else if (z.rot || z.bend || z.taper) {

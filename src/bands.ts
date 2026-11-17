@@ -27,11 +27,15 @@ export interface Budget {
 }
 export interface Carved { shops: Shop[]; items: LItem[]; budget: Budget }
 
-/** Holdroom depth behind one gate of this class, m. */
-export function holdDepth(c: number) {
+/** Holdroom floor one gate of this class needs, m²: 80% of its seats boarding, 60% of them seated at 1.4 m² and 40%
+ *  standing at 0.9 m², plus the podium (21 m²) and the boarding queue (17 m²), as in ACRP Report 25's holdroom rule. */
+export function holdArea(c: number) {
   const C = CLASSES[c]; const pax = 0.8 * C.seats;
-  const area = pax * (0.6 * 1.4 + 0.4 * 0.9) + 21 + 17;
-  return Math.max(9, area / C.gateSpacing + 2);
+  return pax * (0.6 * 1.4 + 0.4 * 0.9) + 21 + 17;
+}
+/** Holdroom depth behind one gate of this class, m: its floor across one gate spacing, and 2 m to walk along the front. */
+export function holdDepth(c: number) {
+  return Math.max(9, holdArea(c) / CLASSES[c].gateSpacing + 2);
 }
 export const spineWidth = (long: number) => (long > 300 ? 13.4 : 9);
 
@@ -366,7 +370,7 @@ export const freeRing = (cls: number) => holdDepth(cls) + FREE.lot;
  * nothing is laid in the other pieces of the building (`others`). What is left in the middle is the building's hall
  * (shell.ts `junctionsOf`, with the same depth).
  */
-export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] = []): Carved {
+export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] = [], ups: Zone[] = []): Carved {
   const mine = gates.filter(g => g.zone.id === z.id); const SC = COMMERCE;
   const items: LItem[] = []; const shops: Shop[] = []; const kinds: Record<string, number> = {};
   let hold = 0, commerce = 0, seats = 0, windowLots = 0;
@@ -418,7 +422,9 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
     const pr = (V: Pt[]) => V.map(v => (v.x * nx + v.y * ny) / l); const a = pr(A), b = pr(B);
     return Math.max(...a) <= Math.min(...b) + 0.05 || Math.max(...b) <= Math.min(...a) + 0.05;
   }));
-  const clear = (q: Pt[]) => q.every(v => inZone(v, z, 0.6)) && inside(polyCentre(q)) && !others.some(o => q.some(v => inZone(v, o, -0.6)) || inZone(polyCentre(q), o)) && laid.every(o => sep(q, o));
+  // (v0.40: nor on security or passport control where it runs into the area)
+  const ups2 = ups.filter(u => u.level === z.level);
+  const clear = (q: Pt[]) => q.every(v => inZone(v, z, 0.6)) && inside(polyCentre(q)) && ![...others, ...ups2].some(o => q.some(v => inZone(v, o, -0.6)) || inZone(polyCentre(q), o)) && laid.every(o => sep(q, o));
   const quad = (w: Wall, s0: number, s1: number, d0: number, d1: number): Pt[] => { const a = { x: w.a.x + w.t.x * s0, y: w.a.y + w.t.y * s0 }, b = { x: w.a.x + w.t.x * s1, y: w.a.y + w.t.y * s1 }; return [{ x: a.x + w.n.x * d0, y: a.y + w.n.y * d0 }, { x: b.x + w.n.x * d0, y: b.y + w.n.y * d0 }, { x: b.x + w.n.x * d1, y: b.y + w.n.y * d1 }, { x: a.x + w.n.x * d1, y: a.y + w.n.y * d1 }]; };
   // a piece that clashes at a corner gives way: it is cut back from either end, 2 m at a time, to half its length
   const fit = (w: Wall, s0: number, s1: number, d0: number, d1: number): Pt[] | null => {
@@ -444,23 +450,70 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
       const s1 = cuts[k + 1]; const c = { x: w.a.x + w.t.x * (s0 + s1) / 2, y: w.a.y + w.t.y * (s0 + s1) / 2 };
       const g = mine.reduce<{ g: Gate; d: number } | null>((m, q) => { const d = dist(q.door, c); return d < CLASSES[q.cls].gateSpacing * 0.55 && (!m || d < m.d) ? { g: q, d } : m; }, null);
       const d = Math.min(...[s0 + 1, (s0 + s1) / 2, s1 - 1].map(s => depthAt({ x: w.a.x + w.t.x * s, y: w.a.y + w.t.y * s }, w.n)));
-      return { s0, s1, c, g: g?.g ?? null, door: !!g && g.d < FREE.module / 2, d, wc: false };
+      return { s0, s1, c, g: g?.g ?? null, door: !!g && g.d < FREE.module / 2, d, wc: false, df: false, hd: 0 };
     });
   });
+  // ---- v0.40: walk-through duty free. Where security (or passport control) opens straight into the area, the stretch
+  //      of wall it opens through is the entry; with duty free on, a store `COMMERCE.dfLen` m along that wall, centred
+  //      on the entry and as deep as the band, is laid before anything else, with its way out on the hall side, so every
+  //      departing passenger walks through it. Nothing else is laid on its modules.
+  let entry: { w: number; s: number } | null = null;
+  {
+    const hit: Pt[] = [];
+    P.forEach((a, i) => { const b = P[(i + 1) % P.length]; const k = Math.max(1, Math.round(dist(a, b) / 2)); for (let j = 0; j <= k; j++) { const p = lerp(a, b, j / k); if (ups.some(u => u.level === z.level && inZone(p, u, 1))) hit.push(p); } });
+    if (hit.length >= 2) {
+      const c = hit.reduce((m, p) => ({ x: m.x + p.x / hit.length, y: m.y + p.y / hit.length }), { x: 0, y: 0 });
+      let best = Infinity;
+      walls.forEach((w, wi) => { const s0 = (c.x - w.a.x) * w.t.x + (c.y - w.a.y) * w.t.y; if (s0 < -1 || s0 > w.L + 1) return; const off = Math.abs((c.x - w.a.x) * w.n.x + (c.y - w.a.y) * w.n.y); if (off < 3 && off < best) { best = off; entry = { w: wi, s: Math.max(0, Math.min(w.L, s0)) }; } });
+    }
+  }
+  const dutyFreeOK = !!entry;
+  if (z.dutyFree && entry) {
+    const { w: wi, s } = entry as { w: number; s: number }; const w = walls[wi]; const len = Math.min(SC.dfLen, w.L);
+    const a = Math.max(0, Math.min(w.L - len, s - len / 2)), b = a + len;
+    const dd = Math.min(...[a + 1, (a + b) / 2, b - 1].map(t => depthAt({ x: w.a.x + w.t.x * t, y: w.a.y + w.t.y * t }, w.n)));
+    // (it starts where security stops, if security runs on into the area)
+    const e0 = { x: w.a.x + w.t.x * s, y: w.a.y + w.t.y * s }; let pen = 0; while (pen < dd && ups2.some(u => inZone({ x: e0.x + w.n.x * (pen + 0.5), y: e0.y + w.n.y * (pen + 0.5) }, u))) pen += 1;
+    const d1 = Math.max(dd, pen + 12) - 0.5;
+    const q = d1 - pen >= 6 ? fit(w, a, b, pen + 0.5, d1) : null;
+    if (q) {
+      laid.push(q); for (const m of plan[wi]) if (m.s1 > a + 1 && m.s0 < b - 1) { m.df = true; m.g = null; }
+      const door = { x: (q[2].x + q[3].x) / 2 + w.n.x * 1.4, y: (q[2].y + q[3].y) / 2 + w.n.y * 1.4 };
+      const us = q.map(v => { const l = toLocal(z, v); return horiz ? l.x - F.x : l.y - F.y; }); const area = dist(q[0], q[1]) * dist(q[1], q[2]);
+      shops.push({
+        zone: z, i: shops.length, key: 'DF', id: `${z.id}:DF`, pts: q, door, type: 'shop', kind: '', tenant: 'dutyfree',
+        area, cap: 4, window: false, rank: 0, side: 'E', u0: Math.min(...us), u1: Math.max(...us), depth: dist(q[1], q[2]), frontage: dist(q[0], q[1]),
+        vis: 1, near: 1, far: 0, gates: gateSeats * 0.6, gateScore: 0, prior: gateSeats * 0.8 * 2.4,
+        foot: 0, dwell: 0, measured: false, footScore: 0, dwellScore: 0, bids: {}, bid: 0, rent: 0,
+      });
+      commerce += area;
+    }
+  }
   // ---- holdrooms first (a gate wants its holdroom more than a shop wants a corner): one per gate per wall
+  //      (v0.40: sized by seats. Each gate needs `holdArea` for its own aircraft, spread over all the wall it has
+  //       behind it, on every wall it stands on, and 2 m to walk along the front; so a gate squeezed by a corner or a
+  //       neighbour gets a deeper holdroom, never less than the usual depth and never deeper than the band)
+  const runsOf = (wi: number) => { const mods = plan[wi]; const out: { k: number; e: number; g: Gate }[] = []; for (let k = 0; k < mods.length;) { const g = mods[k].g; let e = k; while (e + 1 < mods.length && mods[e + 1].g === g) e++; if (g) out.push({ k, e, g }); k = e + 1; } return out; };
+  const wide = new Map<Gate, number>();
+  walls.forEach((w, wi) => { for (const r of runsOf(wi)) wide.set(r.g, (wide.get(r.g) ?? 0) + plan[wi][r.e].s1 - plan[wi][r.k].s0); });
+  const need = (g: Gate, len: number) => Math.max(H, holdArea(g.cls) / Math.max(1, len) + 2);
   walls.forEach((w, wi) => {
     const mods = plan[wi];
-    for (let k = 0; k < mods.length;) {
-      const g = mods[k].g; let e = k; while (e + 1 < mods.length && mods[e + 1].g === g) e++;
-      if (g) {
-        const hd = Math.min(H, ...mods.slice(k, e + 1).map(m => m.d));
-        const q = hd >= 4 ? fit(w, mods[k].s0, mods[e].s1, 0, hd) : null;
-        if (q) {
-          laid.push(q); items.unshift({ k: 'hold', pts: q, closed: true }); const len = dist(q[0], q[1]); hold += len * hd;
-          for (let v = 2.8; v < hd - 1.4; v += 2.4) { items.push({ k: 'seat', pts: [lerp(q[0], q[3], v / hd), lerp(q[1], q[2], v / hd)].map((p, i, arr) => lerp(p, arr[1 - i], 0.1)) }); seats += Math.floor((len * 0.8) / 0.6); }
-        } else for (let j = k; j <= e; j++) mods[j].g = null;   // (no room for a holdroom: the wall is planned as if it had no gate)
+    for (const { k, e, g } of runsOf(wi)) {
+      const room = Math.min(R, ...mods.slice(k, e + 1).map(m => m.d)); const share = holdArea(g.cls) * (mods[e].s1 - mods[k].s0) / (wide.get(g) || 1);
+      let hd = Math.min(room, need(g, wide.get(g)!));
+      let q = hd >= 4 ? fit(w, mods[k].s0, mods[e].s1, 0, hd) : null;
+      // (cut back at a corner: deeper again, over what it kept, if that fits)
+      if (q && dist(q[0], q[1]) * (hd - 2) < share - 1) {
+        const t0 = (q[0].x - w.a.x) * w.t.x + (q[0].y - w.a.y) * w.t.y, t1 = (q[1].x - w.a.x) * w.t.x + (q[1].y - w.a.y) * w.t.y;
+        const hd2 = Math.min(room, share / Math.max(1, t1 - t0) + 2); const q2 = hd2 > hd ? quad(w, t0, t1, 0, hd2) : null;
+        if (q2 && clear(q2)) { q = q2; hd = hd2; }
       }
-      k = e + 1;
+      if (q) {
+        laid.push(q); items.unshift({ k: 'hold', pts: q, closed: true }); const len = dist(q[0], q[1]); hold += len * hd;
+        for (let j = k; j <= e; j++) mods[j].hd = hd;
+        for (let v = 2.8; v < hd - 1.4; v += 2.4) { items.push({ k: 'seat', pts: [lerp(q[0], q[3], v / hd), lerp(q[1], q[2], v / hd)].map((p, i, arr) => lerp(p, arr[1 - i], 0.1)) }); seats += Math.floor((len * 0.8) / 0.6); }
+      } else for (let j = k; j <= e; j++) mods[j].g = null;   // (no room for a holdroom: the wall is planned as if it had no gate)
     }
   });
   // ---- v0.38: restroom cores, as in a concourse: about every `FREE.wc` m along the walls, each where a lot would be
@@ -468,9 +521,9 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
   //      first corner as the modules (every `FREE.wc` m of it, a module or two either way if that one cannot take a
   //      core), so an edit to one wall moves no core on another; an area whose walls are too short for that grid to
   //      give one gets one where it best can.
-  const span = (w: Wall, m: { g: Gate | null; d: number }) => { const hd = m.g ? Math.min(H, m.d) : 0; return { d0: m.g ? hd + 0.5 : 0.5, d1: m.d - 0.5 }; };
-  const core = (w: Wall, m: { s0: number; s1: number; g: Gate | null; d: number; door: boolean; wc: boolean }) => {
-    if (m.door || m.wc) return false; const { d0, d1 } = span(w, m); if (d1 - d0 < 4) return false;
+  const span = (w: Wall, m: { g: Gate | null; d: number; hd: number }) => ({ d0: m.g ? m.hd + 0.5 : 0.5, d1: m.d - 0.5 });
+  const core = (w: Wall, m: { s0: number; s1: number; g: Gate | null; d: number; door: boolean; wc: boolean; df: boolean; hd: number }) => {
+    if (m.door || m.wc || m.df) return false; const { d0, d1 } = span(w, m); if (d1 - d0 < 4) return false;
     const pts = fit(w, m.s0, m.s1, d0, Math.min(d1, d0 + FREE.wcDepth)); if (!pts) return false;
     m.wc = true; laid.push(pts); items.push({ k: 'wc', pts, closed: true, label: 'WC' }); return true;
   };
@@ -491,7 +544,7 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
   //      deep window lot where there is no gate
   walls.forEach((w, wi) => plan[wi].forEach(m => {
     const { d0, d1 } = span(w, m);
-    if (m.door || m.wc || d1 - d0 < 4) return;
+    if (m.door || m.wc || m.df || d1 - d0 < 4) return;
     const pts = fit(w, m.s0, m.s1, d0, d1); if (!pts) return;
     const key = keyOf(m.c, w.n); if (keys.has(key)) return; keys.add(key); laid.push(pts);
     const fw = dist(pts[2], pts[3]); const door = { x: (pts[2].x + pts[3].x) / 2 + w.n.x * 1.4, y: (pts[2].y + pts[3].y) / 2 + w.n.y * 1.4 };
@@ -510,6 +563,6 @@ export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] 
   }));
   return {
     shops, items,
-    budget: { hold, spine: 0, commerce, seats, spineW: 0, walkways: false, long, width: Math.min(z.w, z.h), lots: shops.length, window: windowLots, kinds, depthA: R, depthB: R, horiz, entryU: 0, entrySide: 'E', uA: 0, uZ: long, dutyFreeOK: false, gates: mine.length },
+    budget: { hold, spine: 0, commerce, seats, spineW: 0, walkways: false, long, width: Math.min(z.w, z.h), lots: shops.length, window: windowLots, kinds, depthA: R, depthB: R, horiz, entryU: 0, entrySide: 'E', uA: 0, uZ: long, dutyFreeOK, gates: mine.length },
   };
 }

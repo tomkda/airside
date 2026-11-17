@@ -12,6 +12,7 @@ import { Sim } from './src/sim';
 import { regrip, gripsOf, toWorld } from './src/shapes';
 import { segsIntersect } from './src/geom';
 import { wayPts } from './src/ways';
+import { holdArea } from './src/bands';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
 const rep = (name, w) => {
@@ -404,6 +405,25 @@ for (const deg of [12, -20]) {
   road.c = { x: 3050, y: 2990 };
   const d2 = derive(w);
   check('one that swings away from the face grows no curb, and the hall lays its own forecourt', !d2.zones.some(z => z.auto?.road === road.id) && d2.autoRoads.some(r => r.fore === 'face')); }
+// v0.40: walk-through duty free and holdrooms sized by seats inside a free area
+{ const w = sampleWorld(); const c = w.zones.find(z => z.type === 'concourse'); const sec = w.zones.find(z => z.type === 'security');
+  const pts = [[2800, 2620], [3400, 2620], [3340, 2690], [2860, 2690]].map(([x, y]) => ({ x, y }));
+  Object.assign(c, { x: 2800, y: 2620, w: 600, h: 70, poly: pts });
+  const d0 = derive(w); const lots0 = (d0.shops.get(c.id) ?? []).length;
+  check('a free area security runs into can take walk-through duty free', d0.budgets.get(c.id).dutyFreeOK && !(d0.shops.get(c.id) ?? []).some(q => q.tenant === 'dutyfree'));
+  const items = d0.frames.get(c.id)?.items ?? []; const holds = items.filter(i => i.k === 'hold');
+  const len = (a, b) => Math.hypot(a.x - b.x, a.y - b.y); const gs = d0.gates.filter(g => g.zone.id === c.id);
+  const floor = holds.reduce((n, h) => n + len(h.pts[0], h.pts[1]) * (len(h.pts[1], h.pts[2]) - 2), 0), want = gs.reduce((n, g) => n + holdArea(g.cls), 0);
+  check('its holdrooms hold the floor their gates seats need (' + Math.round(floor) + ' of ' + Math.round(want) + ' m2), and one squeezed by a corner is deeper than 9 m', floor >= 0.95 * want && holds.some(h => len(h.pts[0], h.pts[1]) < 40 && len(h.pts[1], h.pts[2]) > 9.2));
+  check('no lot stands on security where it runs into the area', (d0.shops.get(c.id) ?? []).every(q => q.pts.every(p => !inZone(p, sec, -0.6))));
+  c.dutyFree = true;
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d; const df = (d.shops.get(c.id) ?? []).find(q => q.tenant === 'dutyfree');
+  check('with duty free on, a store stands just inside security, clear of it, with its way out to the hall', !!df && df.pts.every(p => inZone(p, c, 0.7) && !inZone(p, sec, -0.6)) && Math.min(...df.pts.map(p => Math.hypot(p.x - 3050, p.y - 2680))) < 25 && inZone(df.door, c) && !inZone(df.door, sec));
+  check('and takes the place of lots, not of holdrooms (' + lots0 + ' lots before, ' + (d.shops.get(c.id) ?? []).filter(q => q.tenant !== 'dutyfree').length + ' after)', (d.shops.get(c.id) ?? []).filter(q => q.tenant !== 'dutyfree').length < lots0 && (d.frames.get(c.id)?.items ?? []).filter(i => i.k === 'hold').length === holds.length);
+  check('Terminal 1 opens (' + (d.terminals[0].problems.join('; ') || 'open') + ')', d.terminals[0].active);
+  let missed = 0, stranded = 0, rev = 0, passed = 0, dep = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; rev += r.stats.rev.dutyfree; passed += sim.lotPrev.get(df.id)?.passed ?? 0; dep += r.stats.paxDep; };
+  sim.startDay(); while (sim.day < 1) sim.step(0.25);
+  check('every departing passenger walks through it and some buy (' + passed + ' of ' + dep + ' through, $' + Math.round(rev) + '), with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', dep > 1500 && passed >= 0.95 * dep && rev > 0 && missed === 0 && stranded === 0); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
