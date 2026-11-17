@@ -118,6 +118,17 @@ for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 
     console.log(name + ': holdrooms ' + Math.min(...holds.map(h => h.D)).toFixed(1) + '–' + Math.max(...holds.map(h => h.D)).toFixed(1) + ' m deep | deepest lot at the wide end ' + dW.toFixed(1) + ' m, at the narrow end ' + dN.toFixed(1) + ' m');
     check('every holdroom along a wall of ' + name + ' is 9 m deep, from end to end', holds.length >= 6 && holds.every(h => Math.abs(h.D - 9) < 0.2));
     check('its lots are deeper at the wide end than at the narrow end, and every one is inside the building', dW > dN + 8 && lots.every(q => !q.out)); } }
+{ // v0.42 (cases found by review): the holdroom's edge line, every lot's corners and the spine line, at extreme tapers
+  const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+  for (const [name, extra] of [['24 m at one end and 160 m at the other', { taper: 136, h: 92, y: 2672 }], ['the same the other way round, its north gates off', { taper: -136, h: 92, y: 2672, off: ['n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'n8', 'n9', 'n10', 'n11', 'n12', 'n13', 'n14', 'n15', 'n16', 'n17', 'n18', 'n19', 'n20'] }], ['bent and 30 to 110 m', { taper: 80, h: 70, y: 2683, bend: 90 }]]) {
+    const { w, z } = mk(extra.bend, extra); const d = derive(w); const items = d.frames.get(z.id)?.items ?? []; const out = zonePts(z); const F = frameOf(z);
+    const wallD = p => Math.min(...out.map((a, i) => segD(p, a, out[(i + 1) % out.length])));
+    const lanes = items.filter(i => i.k === 'lane' && Math.abs(toLocal(z, i.pts[0]).y - toLocal(z, i.pts[i.pts.length - 1]).y) < 1);
+    const laneErr = Math.max(0, ...lanes.flatMap(i => i.pts.filter(p => { const u = toLocal(z, p).x - F.x; return u > 12 && u < F.w - 12; }).map(p => Math.abs(wallD(p) - 9))));   // (clear of the ends, where the nearest wall is the end wall)
+    const lots = d.shops.get(z.id) ?? []; const thin = lots.filter(q => Math.min(Math.hypot(q.pts[0].x - q.pts[3].x, q.pts[0].y - q.pts[3].y), Math.hypot(q.pts[1].x - q.pts[2].x, q.pts[1].y - q.pts[2].y)) < 1).length;
+    const sp = items.filter(i => i.k === 'spine').flatMap(i => i.pts.map(p => toLocal(z, p).y)); const skew = sp.length ? Math.max(...sp) - Math.min(...sp) : 0;
+    console.log('a tapered pier ' + name + ': holdroom edge lines off 9 m by ' + laneErr.toFixed(2) + ' m at most | lots with a collapsed corner ' + thin + ' | spine line off straight by ' + skew.toFixed(2) + ' m');
+    check('a tapered pier ' + name + ' has its holdroom edge lines 9 m off the wall, no lot with a collapsed corner, and a straight spine line', lanes.length >= 2 && laneErr < 0.3 && thin === 0 && skew < 0.5); } }
 { // a wide-ended A380 pier still joins its taxilanes round the wide end
   const { w, z } = mk(54, { w: 320, h: 109, y: 2718 - 109 / 2, rot: 0.537, taper: 94, cls: 3 }); const d = derive(w);
   const mine = d.gates.filter(g => g.zone.id === z.id);

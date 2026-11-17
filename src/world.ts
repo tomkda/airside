@@ -588,24 +588,43 @@ export function derive(source: World): Derived {
       // the layout there is scaled across as before.
       if (z.taper && C.lat) {
         const lat = C.lat; const Fw = frameOf(z).w;
-        const across = (v: number, uAt: number, k: number) => {
-          const L = lat(uAt); const c = (L.s0 + L.s1) / 2;
-          const from = [0, L.a, L.s0, L.s1, L.b, L.S], to = [0, L.a / k, c - (c - L.s0) / k, c + (L.s1 - c) / k, L.S - (L.S - L.b) / k, L.S];
-          const lotOK = (i: number) => from[i + 1] - from[i] < 0.5 || (to[i + 1] - to[i]) * k >= 2;
-          if (!lotOK(1) || !lotOK(3) || to.some((x, i) => i && x < to[i - 1] - 1e-9)) {
+        const kAt = (u: number) => Math.max(0.05, widthK(z, u / Fw));
+        // (across the frame at one place along it: the band edges read at `uAt`, which way to plan decided at width
+        //  `kb` (an item's narrowest, so all its corners take the same way), and the point itself carried at `k`.
+        //  The spine's middle stays where it is in the frame, so the spine line never slants)
+        const across = (v: number, uAt: number, k: number, kb = k) => {
+          const L = lat(uAt); const c = (L.s0 + L.s1) / 2; const from = [0, L.a, L.s0, c, L.s1, L.b, L.S];
+          const at = (q: number) => [0, L.a / q, c - (c - L.s0) / q, c, c + (L.s1 - c) / q, L.S - (L.S - L.b) / q, L.S];
+          const tb = at(kb); const lotOK = (i: number) => from[i + 1] - from[i] < 0.5 || (tb[i + 1] - tb[i]) * kb >= 2;
+          let mode = 0;
+          if (!lotOK(1) || !lotOK(4) || tb.some((x, i) => i && x < tb[i - 1] - 1e-9)) {
             // (too narrow for lots: the holdrooms keep their depth, the lots go and the spine takes what is left, if
             //  that is at least 4 m; else it is all scaled across)
-            const ha = L.a / k, hb = L.S - (L.S - L.b) / k;
-            if ((hb - ha) * k < 4) return v;
-            to[1] = to[2] = ha; to[3] = to[4] = hb;
+            const ha = L.a / kb, hb = L.S - (L.S - L.b) / kb; mode = (hb - ha) * kb < 4 || c < ha || c > hb ? 2 : 1;
           }
-          for (let i = 0; i < 5; i++) if (v <= from[i + 1] || i === 4) { const s = from[i + 1] - from[i]; return s < 1e-9 ? to[i] : to[i] + ((v - from[i]) / s) * (to[i + 1] - to[i]); }
+          if (mode === 2) return v;
+          const to = at(k); if (mode === 1) { to[1] = to[2] = L.a / k; to[4] = to[5] = L.S - (L.S - L.b) / k; }
+          for (let i = 0; i < 6; i++) if (v <= from[i + 1] || i === 5) { const s = from[i + 1] - from[i]; return s < 1e-9 ? to[i] : to[i] + ((v - from[i]) / s) * (to[i + 1] - to[i]); }
           return v;
         };
-        const kAt = (u: number) => Math.max(0.05, widthK(z, u / Fw));
-        const remap = (pts: Pt[], whole: boolean) => { const uc = pts.reduce((s, p) => s + p.x, 0) / pts.length - zl.x; return pts.map(p => { const u = p.x - zl.x; return { x: p.x, y: zl.y + across(p.y - zl.y, whole ? uc : u, kAt(u)) }; }); };
-        for (const sh of C.shops) { const uc = sh.pts.reduce((s, p) => s + p.x, 0) / sh.pts.length - zl.x; sh.pts = remap(sh.pts, true); sh.door = { x: sh.door.x, y: zl.y + across(sh.door.y - zl.y, uc, kAt(sh.door.x - zl.x)) }; }
-        for (const it of C.items) it.pts = remap(it.pts, !!it.closed);
+        // (an item, or a lot, is planned as one: its band edges read at its middle, its way decided at its narrowest;
+        //  a line down the building is planned point by point)
+        const remap = (pts: Pt[], whole: boolean) => {
+          const uc = pts.reduce((s, p) => s + p.x, 0) / pts.length - zl.x; const kb = Math.min(...pts.map(p => kAt(p.x - zl.x)));
+          return pts.map(p => { const u = p.x - zl.x; return { x: p.x, y: zl.y + across(p.y - zl.y, whole ? uc : u, kAt(u), whole ? kb : kAt(u)) }; });
+        };
+        // (long edges along the building are cut into 6 m pieces first: the map is not straight along it)
+        const cut = (pts: Pt[], closed: boolean) => { const out: Pt[] = []; const n = pts.length; for (let i = 0; i < (closed ? n : n - 1); i++) { const a = pts[i], b = pts[(i + 1) % n]; const m = Math.max(1, Math.ceil(Math.abs(b.x - a.x) / 6)); for (let j = 0; j < m; j++) out.push({ x: a.x + ((b.x - a.x) * j) / m, y: a.y + ((b.y - a.y) * j) / m }); } if (!closed && n) out.push(pts[n - 1]); return out; };
+        for (const sh of C.shops) {
+          const uc = sh.pts.reduce((s, p) => s + p.x, 0) / sh.pts.length - zl.x; const kb = Math.min(...sh.pts.map(p => kAt(p.x - zl.x)));
+          sh.pts = remap(sh.pts, true); sh.door = { x: sh.door.x, y: zl.y + across(sh.door.y - zl.y, uc, kAt(sh.door.x - zl.x), kb) };
+        }
+        for (const it of C.items) {
+          const line = it.k === 'spine' || it.k === 'lane';
+          // (a holdroom's edge line is planned as its holdroom is: read at its middle, not at its ends, where the run ends)
+          if (it.closed || line) it.pts = remap(cut(it.pts, !!it.closed), !!it.closed || it.k === 'lane');
+          else it.pts = remap(it.pts, false);
+        }
       }
       // a lot keeps its four corners (the sim and the renderers count on them; a lot is short enough that its walls
       // can stay straight). Floors, and the long lines down the building, are cut into short pieces that follow a bend.
@@ -616,6 +635,7 @@ export function derive(source: World): Derived {
         sh.depth = dp; sh.frontage = fr; sh.area = fr * dp;
       }
       if (z.taper) C.shops = C.shops.filter(sh => sh.depth >= 1.5);   // (a lot squeezed out at a narrow end is no lot)
+      if (z.taper) { C.budget.commerce = C.shops.reduce((t, sh) => t + sh.area, 0); C.budget.lots = C.shops.length; C.budget.window = C.shops.filter(sh => sh.window).length; }
       for (const it of C.items) it.pts = it.closed || it.k === 'spine' || it.k === 'lane' ? bendPath(z, it.pts, !!it.closed) : it.pts.map(p => toWorld(z, p));
     } else C = carveConcourse(z, world, gates);
     shops.set(z.id, C.shops); budgets.set(z.id, C.budget); bandItems.set(z.id, C.items);
