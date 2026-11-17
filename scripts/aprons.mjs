@@ -11,6 +11,7 @@ import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
 import { regrip, gripsOf, toWorld } from './src/shapes';
 import { segsIntersect } from './src/geom';
+import { wayPts } from './src/ways';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
 const rep = (name, w) => {
@@ -373,6 +374,30 @@ for (const deg of [12, -20]) {
   const mid = q => q.reduce((a, p) => ({ x: a.x + p.x / q.length, y: a.y + p.y / q.length }), { x: 0, y: 0 });
   const far = Math.max(...holds.map(h => Math.min(...wc.map(c => Math.hypot(mid(h.pts).x - mid(c.pts).x, mid(h.pts).y - mid(c.pts).y)))));
   check('a large free area has restroom cores along its walls (' + wc.length + '), every holdroom within 130 m of one (' + Math.round(far) + ' m), each inside the area', wc.length >= 3 && far <= 130 && wc.every(c => c.pts.every(p => inPoly(p, pts) || Math.min(...pts.map((a, i) => { const b = pts[(i + 1) % pts.length]; const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); })) < 0.7))); }
+// v0.39: a road drawn by hand along a curved face
+{ const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.bend = -30;
+  const road = { id: w.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 3270, y: 2898 }, c: { x: 3050, y: 2835 }, cls: 0, lanes: 4 }; w.ways.push(road);
+  w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 2830, y: 3230 }, cls: 0, lanes: 4 }, { id: w.nextId++, kind: 'road', a: { x: 3270, y: 2898 }, b: { x: 3270, y: 3230 }, cls: 0, lanes: 4 });
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d;
+  const dep = d.zones.filter(z => z.auto?.deck === 'dep' && z.auto.road === road.id), arr = d.zones.filter(z => z.auto?.deck === 'arr' && z.auto.road === road.id);
+  const outline = zonePts(d.zones.find(z => z.type === 'checkin'));
+  const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+  const wallGap = z => Math.min(...zonePts(z).map(p => Math.min(...outline.map((a, i) => segD(p, a, outline[(i + 1) % outline.length])))));
+  const pl = wayPts(road); const onRoad = p => Math.min(...pl.slice(1).map((q, i) => segD(p, pl[i], q)));
+  check('a curved road drawn along the bent hall: no forecourt is laid (' + d.autoRoads.filter(r => r.fore).length + ' generated pieces)', !d.autoRoads.some(r => r.fore));
+  check('its curbs follow the wall a piece at a time on both levels (' + dep.length + ' and ' + arr.length + '), each against the wall', dep.length >= 6 && arr.length === dep.length && [...dep, ...arr].every(z => wallGap(z) < 1.5));
+  const dk = d.decks.filter(k => k.road === road.id);
+  check('one deck runs over the curved road and comes down along the curve at each end', dk.length === 1 && dk[0].zs[0] === 0 && dk[0].zs[dk[0].zs.length - 1] === 0 && dk[0].pts.slice(0, 3).concat(dk[0].pts.slice(-3)).every(p => onRoad(p) < 1));
+  check('Terminal 1 opens on the curved road (' + (d.terminals[0].problems.join('; ') || 'open') + ')', d.terminals[0].active);
+  let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
+  check('and flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
+{ const w = sampleWorld(); const road = { id: w.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 3270, y: 2898 }, c: { x: 3050, y: 2906 }, cls: 0, lanes: 4 }; w.ways.push(road);
+  w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 2830, y: 3230 }, cls: 0, lanes: 4 }, { id: w.nextId++, kind: 'road', a: { x: 3270, y: 2898 }, b: { x: 3270, y: 3230 }, cls: 0, lanes: 4 });
+  const d = derive(w);
+  check('a gently curved road along the upright hall is its frontage too: curbs on both levels and no forecourt', !d.autoRoads.some(r => r.fore) && d.zones.some(z => z.auto?.deck === 'dep' && z.auto.road === road.id) && d.zones.some(z => z.auto?.deck === 'arr' && z.auto.road === road.id));
+  road.c = { x: 3050, y: 2990 };
+  const d2 = derive(w);
+  check('one that swings away from the face grows no curb, and the hall lays its own forecourt', !d2.zones.some(z => z.auto?.road === road.id) && d2.autoRoads.some(r => r.fore === 'face')); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

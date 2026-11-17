@@ -503,6 +503,25 @@ export class UI {
     return { p: { x: snap(p.x, 10), y: snap(p.y, 10) }, snapped: false };
   }
 
+  /** v0.39: a road's bend handle, near a curved hall wall's frontage guide, snaps onto it, so the road bends to follow
+   *  the wall at the ideal distance (the guide is the wall's joints carried out along the wall's normal there). */
+  curveSnap(p: Pt): Pt {
+    const off = FRONTAGE.ideal + (this.opt.lanes >= 4 ? 8 : 4.5);
+    let best: { q: Pt; d: number } | null = null;
+    const chains = new Map<string, typeof this.sim.d.frontGuides>();
+    for (const gd of this.sim.d.frontGuides) if (gd.chain) chains.set(`${gd.zone.id}|${gd.chain}`, [...(chains.get(`${gd.zone.id}|${gd.chain}`) ?? []), gd]);
+    for (const gs of chains.values()) {
+      gs.sort((u, v) => u.k! - v.k!);
+      const at = (q: Pt, n: Pt) => ({ x: q.x + n.x * off, y: q.y + n.y * off });
+      const line = [at(gs[0].a, gs[0].out), ...gs.slice(1).map((g, i) => lerpPt(at(g.a, g.out), at(gs[i].b, gs[i].out), 0.5)), at(gs[gs.length - 1].b, gs[gs.length - 1].out)];
+      for (let i = 1; i < line.length; i++) {
+        const u = line[i - 1], v = line[i]; const d = sub(v, u); const t = clamp(dot(sub(p, u), d) / (dot(d, d) || 1), 0, 1);
+        const q = lerpPt(u, v, t); const e = dist(p, q); if (e < FRONTAGE.snap / 2 && (!best || e < best.d)) best = { q, d: e };
+      }
+    }
+    return best ? best.q : { x: snap(p.x, 1), y: snap(p.y, 1) };
+  }
+
   down(e: PointerEvent) {
     // in 3D the orbit controls own drags with Select; build tools still draw on the ground plane
     if (this.ren.mode3d && (this.tool === 'select' || e.button !== 0)) {
@@ -650,7 +669,7 @@ export class UI {
     }
     if (dr.mode === 'bend' && dr.way && dr.orig3) {
       const w = dr.way; const o = dr.orig3; let a = o.a, b = o.b, c = o.c;
-      if (dr.handle === 'm') c = bendThrough(a, b, { x: snap(p.x, 1), y: snap(p.y, 1) });
+      if (dr.handle === 'm') c = bendThrough(a, b, w.kind === 'road' ? this.curveSnap(p) : { x: snap(p.x, 1), y: snap(p.y, 1) });
       else { const q = this.snapFor(w.kind, p).p; if (dr.handle === 'a') a = q; else b = q; }
       const chk = canPlaceWay(this.world, w.kind, a, b, this.aprons, c);
       const cost = Math.max(0, (wayLen({ a, b, c }) - wayLen(o)) * wayCostPerM(w.kind, w.cls, w.lanes));

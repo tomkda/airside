@@ -1194,7 +1194,9 @@ export class Renderer {
       const a = add(gd.a, mul(gd.out, off)), b = add(gd.b, mul(gd.out, off));
       this.poly([add(gd.a, mul(gd.out, FRONTAGE.minGap)), add(gd.b, mul(gd.out, FRONTAGE.minGap)), add(gd.b, mul(gd.out, FRONTAGE.maxGap)), add(gd.a, mul(gd.out, FRONTAGE.maxGap))], 'rgba(47,93,124,0.06)');
       g.setLineDash([8, 6]); this.line(a, b, 0, PAL.select, 0, 'butt', 1.5); g.setLineDash([]);
-      if (z > 0.3) {
+      // (v0.39: a curved wall's guide is labelled once, on its middle piece)
+      const mid = gd.chain ? Math.floor(sim.d.frontGuides.filter(o => o.zone === gd.zone && o.chain === gd.chain).length / 2) : 0;
+      if (z > 0.3 && (!gd.chain || gd.k === mid)) {
         const rot = Math.atan2((b.y - a.y) * this.yScale, b.x - a.x); const up = Math.cos(rot) < 0;
         this.label('ROAD HERE → CURB', add(lerp2(a, b, 0.5), mul(gd.out, 12 / z)), 0, 9, PAL.select, { weight: 700, spacing: 1.2, rot: up ? rot + Math.PI : rot, bg: 'rgba(230,219,195,0.85)' });
       }
