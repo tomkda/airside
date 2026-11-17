@@ -1444,7 +1444,7 @@ export class Renderer {
   drawGrips(sim: Sim) {
     // v0.35: a selected cut-out: its outline, and a square grip on each corner
     if (this.selected?.kind === 'cut' && !this.mode3d) {
-      const k = sim.world.cuts?.find(q => q.id === this.selected!.id); if (!k) return;
+      const k = sim.world.cuts?.find(q => q.id === this.selected!.id); if (!k || this.lod === 'airfield' || (this.lod === 'terminal' && this.level !== k.level)) return;
       const g = this.ctx; const top = this.tilt > 0.02 ? LEVELS[k.level].z1 : 0;
       g.setLineDash([6, 4]); g.strokeStyle = PAL.select; g.lineWidth = 2; this.path(k.pts, top); g.stroke(); g.setLineDash([]);
       k.pts.forEach((p, i) => { const [x, y] = this.P(p.x, p.y, top); const r = this.gripHot === `v${i}` ? 7 : 5.5; g.fillStyle = this.gripHot === `v${i}` ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2; g.beginPath(); g.rect(x - r, y - r, 2 * r, 2 * r); g.fill(); g.stroke(); });

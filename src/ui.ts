@@ -397,8 +397,9 @@ export class UI {
     const L = lod === 'terminal' ? this.ren.level : 1;
     const zs = this.sim.d.zones;
     const site = (this.world.sites ?? []).find(s => inRect(p, s));
-    // v0.35: a cut-out is picked before the building or site it is cut from (click inside it to select it)
-    const k = lod !== 'airfield' && !sitesOnly ? (this.world.cuts ?? []).find(q => q.level === L && pointInPoly(p, q.pts)) : undefined;
+    // v0.35: a cut-out is picked where its floor is gone, before the building or site it is cut from (click inside it to
+    // select it), but never over anything still there: a gate, another module, a road
+    const k = lod !== 'airfield' && !sitesOnly ? this.cutAt(p, L) : undefined;
     if (k) return { kind: 'cut', cut: k };
     // away from the terminal level, a terminal reads as one thing: its site
     if (sitesOnly || (lod !== 'terminal' && site && !zs.some(z => !ZONES[z.type].terminal && inRect(p, z)))) {
@@ -408,7 +409,9 @@ export class UI {
       if (sitesOnly) return null;
     }
     const inFocus = (z: Zone) => lod !== 'terminal' || this.ren.focus === null || siteOf(this.world, z)?.id === this.ren.focus || this.sim.d.termOf.get(z.id)?.site?.id === this.ren.focus;
-    const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inZone(p, z) && inFocus(z));
+    // (v0.35: not a concourse where a cut-out has taken its floor away: a gate in a notch is picked as a gate)
+    const gone = (this.world.cuts ?? []).some(q => q.level === L && pointInPoly(p, q.pts)) && !this.sim.d.shells.some(sh => sh.level === L && sh.rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1);
+    const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inZone(p, z) && inFocus(z) && !(gone && z.type === 'concourse'));
     if (z1) {
       // inside a concourse, a click on a commercial lot picks that lot (its scores show in the inspector)
       // (v0.31: a food court's counters belong to one piece of the building, whichever piece is under the cursor)
@@ -428,6 +431,21 @@ export class UI {
     const rw = this.world.runways.find(r => segDistWay(p, r) < Math.max(30, 10 / this.ren.cam.zoom));
     if (rw) return { kind: 'runway', id: rw.id };
     return null;
+  }
+  /** v0.35: the cut-out under a point, if the floor there is gone and nothing else is there to click. */
+  cutAt(p: Pt, L: number): Cut | undefined {
+    const k = (this.world.cuts ?? []).find(q => q.level === L && pointInPoly(p, q.pts)); if (!k) return undefined;
+    if (this.sim.d.shells.some(sh => sh.level === L && sh.rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1)) return undefined;
+    if (slotAt(this.sim.d.gateSlots, p)) return undefined;
+    if (this.sim.d.zones.some(z => z.level === L && ZONES[z.type].terminal && z.type !== 'concourse' && inZone(p, z))) return undefined;
+    const tol = 8 / this.ren.cam.zoom;
+    if (this.world.ways.some(w => segDistWay(p, w) < Math.max(wayWidth(w.kind, w.cls, w.lanes) / 2, tol))) return undefined;
+    return k;
+  }
+  /** v0.35: is a selected cut-out's corner under the pointer (and its grips showing: landside or terminal detail, its level)? */
+  cutCorner(k: Cut, sx: number, sy: number): number {
+    if (this.ren.mode3d || this.ren.lod === 'airfield' || (this.ren.lod === 'terminal' && this.ren.level !== k.level)) return -1;
+    return k.pts.findIndex(q => { const [x, y] = this.ren.P(q.x, q.y, this.ren.tilt > 0.02 ? LEVELS[k.level].z1 : 0); return Math.hypot(x - sx, y - sy) < 12; });
   }
   hitToSel(h: Hit): Sel | null {
     return !h ? null : h.kind === 'zone' ? { kind: 'zone', id: h.zone.id, key: h.lot } : h.kind === 'runway' ? { kind: 'runway', id: h.id }
@@ -522,15 +540,15 @@ export class UI {
     if (t === 'select' && this.ren.selected?.kind === 'cut' && !this.ren.mode3d) {
       // v0.35: a corner of the selected cut-out
       const k = this.world.cuts?.find(q => q.id === this.ren.selected!.id);
-      const vi = k ? k.pts.findIndex(q => { const [x, y] = this.ren.P(q.x, q.y, this.ren.tilt > 0.02 ? LEVELS[k.level].z1 : 0); return Math.hypot(x - e.offsetX, y - e.offsetY) < 12; }) : -1;
-      if (k && vi >= 0) { this.beginLive([], [k]); this.drag = { mode: 'cutgrip', ...base, cut: k, vi, pts0: k.pts.map(q => ({ ...q })), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return; }
+      const vi = k ? this.cutCorner(k, e.offsetX, e.offsetY) : -1;
+      if (k && vi >= 0) { this.ren.gripHot = `v${vi}` as Grip; this.beginLive([], [k]); this.drag = { mode: 'cutgrip', ...base, cut: k, vi, pts0: k.pts.map(q => ({ ...q })), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return; }
     }
     if (t === 'satellite') { this.drag = { mode: 'zone', ...base, start: this.magnet(p, 1) }; return; }
     if (t === 'pier' && this.opt.pierPath && !this.ren.mode3d) { this.pathClick(p, e.offsetX, e.offsetY); return; }
     if ((t === 'area' || t === 'cut') && !this.ren.mode3d) {
       // (v0.32: with nothing drawn yet, a click inside a cut-out with the cut-out tool fills it back in)
       const k = t === 'cut' && !this.path ? (this.world.cuts ?? []).find(c => pointInPoly(p, c.pts)) : undefined;
-      if (k) { this.world.cuts = this.world.cuts!.filter(c => c !== k); this.changed(); this.toast('Cut-out filled back in'); return; }
+      if (k) { this.world.cuts = this.world.cuts!.filter(c => c !== k); if (this.ren.selected?.kind === 'cut' && this.ren.selected.id === k.id) this.ren.selected = null; if (this.ren.hover?.kind === 'cut') this.ren.hover = null; this.nextSound = 'demolish'; this.changed(); this.toast('Cut-out filled back in'); return; }
       this.pathClick(p, e.offsetX, e.offsetY); return;
     }
     if (t === 'pier' || t === 'hub') { this.drag = { mode: 'pier', ...base, start: { x: snap(p.x, 5), y: snap(p.y, 5) } }; return; }
@@ -592,6 +610,11 @@ export class UI {
         const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null;
         this.ren.gripHot = grip;
         if (z && grip) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; this.hint(this.gripHint(z, grip)); }
+      } else if (this.tool === 'select' && this.ren.selected?.kind === 'cut') {
+        // (v0.35: a corner of the selected cut-out)
+        const k = this.world.cuts?.find(q => q.id === this.ren.selected!.id); const vi = k ? this.cutCorner(k, e.offsetX, e.offsetY) : -1;
+        this.ren.gripHot = vi >= 0 ? (`v${vi}` as Grip) : null;
+        if (vi >= 0) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; this.hint('Drag this corner of the cut-out · the building follows · Esc puts it back'); }
       } else this.ren.gripHot = null;
       return;
     }
@@ -1522,7 +1545,7 @@ export class UI {
       this.world.rounds = (this.world.rounds ?? []).filter(q => q !== h.round);
     } else if (h.kind === 'cut') {
       // v0.35: a cut-out filled back in (the floor is rebuilt at no charge, and nothing is paid back)
-      this.world.cuts = (this.world.cuts ?? []).filter(q => q !== h.cut); this.ren.selected = null; this.changed(); this.toast('Cut-out filled back in'); return;
+      this.world.cuts = (this.world.cuts ?? []).filter(q => q !== h.cut); this.ren.selected = null; this.ren.hover = null; this.nextSound = 'demolish'; this.changed(); this.toast('Cut-out filled back in'); return;
     } else {
       const r = this.world.runways.find(q => q.id === h.id)!; refund = runwayCost(r.a, r.b) * 0.4; what = 'Runway';
       this.world.runways = this.world.runways.filter(q => q.id !== h.id);
