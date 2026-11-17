@@ -337,7 +337,7 @@ export const LOD = {
  *  range (8–15 m, see bands.ts). Along a wall without gates: one deep window lot (restaurants, lounges) of the same
  *  total depth. Lots are `module` m of frontage. Where the area is thin, the bands on facing walls stop short of each
  *  other to leave `aisle` m to walk down (ACRP Report 25 gives 9–14 m for a main circulation width). */
-export const FREE = { lot: 12, module: 14, aisle: 10 };
+export const FREE = { lot: 12, module: 14, aisle: 10, wc: 160 };   // (wc: a restroom core about every 160 m of wall, as in a concourse: no seat more than about 90 m from one)
 export const COMMERCE = {
   // v0.26: lots that front a junction space (a hall, food court or garden the building keeps where its pieces meet)
   plazaReach: 9,           // a lot this close to the space fronts it, m
