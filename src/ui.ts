@@ -14,7 +14,10 @@ import {
 import { rectsOverlap, rectSegDist, segsIntersect } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
 import { canPlacePier } from './world';
-import { simplePoly, polyBox } from './shapes';
+import { simplePoly, polyBox, polyCentre } from './shapes';
+import type { Cut } from './shell';
+/** v0.35: a cut-out as a shape, for overlap tests. */
+const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
 import { AREA } from './config';
 import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths } from './shapes';
 import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
@@ -26,7 +29,7 @@ import { Sound } from './sound';
 import { planTerminal, airsideOf, planCost, PlanPart, PLAN_MIN } from './terminalplan';
 
 export type Tool = 'select' | 'runway' | WayKind | ZoneType | 'demolish' | 'site' | 'round' | 'satellite' | 'pier' | 'hub' | 'area' | 'cut';
-type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | { kind: 'round'; round: Round } | null;
+type Hit = { kind: 'zone'; zone: Zone; lot?: string } | { kind: 'runway'; id: number } | { kind: 'way'; way: Way } | { kind: 'gate'; slot: GateSlot } | { kind: 'site'; site: Site } | { kind: 'round'; round: Round } | { kind: 'cut'; cut: Cut } | null;
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T;
 export const money = (n: number) => {
@@ -80,7 +83,9 @@ export class UI {
   tab: 'inspect' | 'ops' | 'report' = 'ops';
   opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 0, pierW: 50, hub: 32, pierPath: 0 };
   private drag: null | {
-    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip';
+    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip' | 'cutgrip' | 'cutmove';
+    /** v0.35: a cut-out being reshaped by a corner (`vi`) or moved, and its corners when the drag began */
+    cut?: Cut; vi?: number; pts0?: Pt[];
     /** v0.19: a grip on a built shape, the shape as it was when the drag began, and whether where it is now is allowed */
     grip?: Grip; z0?: Geom; liveOk?: boolean; reason?: string;
     pier?: { z: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; level: Level }; ok: boolean; cost: number; reason?: string };
@@ -98,7 +103,9 @@ export class UI {
   private path: Pt[] | null = null;
   private pathLast: Pt | null = null;   // where on screen the last corner was clicked
   /** v0.19: a live edit in progress: the layout as it was, the shapes as they were, and a zone that exists only while dragging. */
-  private live: null | { d0: Derived; saved: { z: Zone; g: Geom }[]; temp: Zone[]; dirty: boolean; touched: boolean } = null;
+  private live: null | { d0: Derived; saved: { z: Zone; g: Geom }[]; temp: Zone[]; dirty: boolean; touched: boolean;
+    /** v0.35: cut-outs changed during the edit, with their corners from before it; and those carried along by a moved building */
+    cuts: { k: Cut; pts: Pt[] }[]; carry?: { z: Zone; x: number; y: number; ks: { k: Cut; pts: Pt[] }[] } } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
   private liveStale = false;
 
@@ -390,6 +397,10 @@ export class UI {
     const L = lod === 'terminal' ? this.ren.level : 1;
     const zs = this.sim.d.zones;
     const site = (this.world.sites ?? []).find(s => inRect(p, s));
+    // v0.35: a cut-out is picked where its floor is gone, before the building or site it is cut from (click inside it to
+    // select it), but never over anything still there: a gate, another module, a road
+    const k = lod !== 'airfield' && !sitesOnly ? this.cutAt(p, L) : undefined;
+    if (k) return { kind: 'cut', cut: k };
     // away from the terminal level, a terminal reads as one thing: its site
     if (sitesOnly || (lod !== 'terminal' && site && !zs.some(z => !ZONES[z.type].terminal && inRect(p, z)))) {
       if (site) return { kind: 'site', site };
@@ -398,7 +409,9 @@ export class UI {
       if (sitesOnly) return null;
     }
     const inFocus = (z: Zone) => lod !== 'terminal' || this.ren.focus === null || siteOf(this.world, z)?.id === this.ren.focus || this.sim.d.termOf.get(z.id)?.site?.id === this.ren.focus;
-    const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inZone(p, z) && inFocus(z));
+    // (v0.35: not a concourse where a cut-out has taken its floor away: a gate in a notch is picked as a gate)
+    const gone = (this.world.cuts ?? []).some(q => q.level === L && pointInPoly(p, q.pts)) && !this.sim.d.shells.some(sh => sh.level === L && sh.rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1);
+    const z1 = [...zs].reverse().find(z => z.level === L && ZONES[z.type].terminal && inZone(p, z) && inFocus(z) && !(gone && z.type === 'concourse'));
     if (z1) {
       // inside a concourse, a click on a commercial lot picks that lot (its scores show in the inspector)
       // (v0.31: a food court's counters belong to one piece of the building, whichever piece is under the cursor)
@@ -419,9 +432,24 @@ export class UI {
     if (rw) return { kind: 'runway', id: rw.id };
     return null;
   }
+  /** v0.35: the cut-out under a point, if the floor there is gone and nothing else is there to click. */
+  cutAt(p: Pt, L: number): Cut | undefined {
+    const k = (this.world.cuts ?? []).find(q => q.level === L && pointInPoly(p, q.pts)); if (!k) return undefined;
+    if (this.sim.d.shells.some(sh => sh.level === L && sh.rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1)) return undefined;
+    if (slotAt(this.sim.d.gateSlots, p)) return undefined;
+    if (this.sim.d.zones.some(z => z.level === L && ZONES[z.type].terminal && z.type !== 'concourse' && inZone(p, z))) return undefined;
+    const tol = 8 / this.ren.cam.zoom;
+    if (this.world.ways.some(w => segDistWay(p, w) < Math.max(wayWidth(w.kind, w.cls, w.lanes) / 2, tol))) return undefined;
+    return k;
+  }
+  /** v0.35: is a selected cut-out's corner under the pointer (and its grips showing: landside or terminal detail, its level)? */
+  cutCorner(k: Cut, sx: number, sy: number): number {
+    if (this.ren.mode3d || this.ren.lod === 'airfield' || (this.ren.lod === 'terminal' && this.ren.level !== k.level)) return -1;
+    return k.pts.findIndex(q => { const [x, y] = this.ren.P(q.x, q.y, this.ren.tilt > 0.02 ? LEVELS[k.level].z1 : 0); return Math.hypot(x - sx, y - sy) < 12; });
+  }
   hitToSel(h: Hit): Sel | null {
     return !h ? null : h.kind === 'zone' ? { kind: 'zone', id: h.zone.id, key: h.lot } : h.kind === 'runway' ? { kind: 'runway', id: h.id }
-      : h.kind === 'gate' ? { kind: 'gate', id: h.slot.zone.id, key: h.slot.key } : h.kind === 'site' ? { kind: 'site', id: h.site.id } : h.kind === 'round' ? { kind: 'round', id: h.round.id } : { kind: 'way', id: h.way.id };
+      : h.kind === 'gate' ? { kind: 'gate', id: h.slot.zone.id, key: h.slot.key } : h.kind === 'site' ? { kind: 'site', id: h.site.id } : h.kind === 'round' ? { kind: 'round', id: h.round.id } : h.kind === 'cut' ? { kind: 'cut', id: h.cut.id } : { kind: 'way', id: h.way.id };
   }
 
   /** Snap a point for drawing: existing endpoints first, then runways, aprons, the highway, zone edges; else the grid. */
@@ -509,12 +537,18 @@ export class UI {
         this.drag = { mode: 'grip', ...base, zone: z, grip, z0: geomOf(z), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return;
       }
     }
+    if (t === 'select' && this.ren.selected?.kind === 'cut' && !this.ren.mode3d) {
+      // v0.35: a corner of the selected cut-out
+      const k = this.world.cuts?.find(q => q.id === this.ren.selected!.id);
+      const vi = k ? this.cutCorner(k, e.offsetX, e.offsetY) : -1;
+      if (k && vi >= 0) { this.ren.gripHot = `v${vi}` as Grip; this.beginLive([], [k]); this.drag = { mode: 'cutgrip', ...base, cut: k, vi, pts0: k.pts.map(q => ({ ...q })), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return; }
+    }
     if (t === 'satellite') { this.drag = { mode: 'zone', ...base, start: this.magnet(p, 1) }; return; }
     if (t === 'pier' && this.opt.pierPath && !this.ren.mode3d) { this.pathClick(p, e.offsetX, e.offsetY); return; }
     if ((t === 'area' || t === 'cut') && !this.ren.mode3d) {
       // (v0.32: with nothing drawn yet, a click inside a cut-out with the cut-out tool fills it back in)
       const k = t === 'cut' && !this.path ? (this.world.cuts ?? []).find(c => pointInPoly(p, c.pts)) : undefined;
-      if (k) { this.world.cuts = this.world.cuts!.filter(c => c !== k); this.changed(); this.toast('Cut-out filled back in'); return; }
+      if (k) { this.world.cuts = this.world.cuts!.filter(c => c !== k); if (this.ren.selected?.kind === 'cut' && this.ren.selected.id === k.id) this.ren.selected = null; if (this.ren.hover?.kind === 'cut') this.ren.hover = null; this.nextSound = 'demolish'; this.changed(); this.toast('Cut-out filled back in'); return; }
       this.pathClick(p, e.offsetX, e.offsetY); return;
     }
     if (t === 'pier' || t === 'hub') { this.drag = { mode: 'pier', ...base, start: { x: snap(p.x, 5), y: snap(p.y, 5) } }; return; }
@@ -531,7 +565,8 @@ export class UI {
     if (hit?.kind === 'zone' && !hit.zone.auto) {
       const z = hit.zone;
       this.drag = { mode: 'move', ...base, zone: z, off: sub(p, { x: z.x, y: z.y }), moved: false };
-    } else this.drag = { mode: 'pan', ...base, cam: { x: this.ren.cam.x, y: this.ren.cam.y } };
+    } else if (hit?.kind === 'cut' && !this.ren.mode3d) this.drag = { mode: 'cutmove', ...base, cut: hit.cut, pts0: hit.cut.pts.map(q => ({ ...q })), moved: false, liveOk: true };
+    else this.drag = { mode: 'pan', ...base, cam: { x: this.ren.cam.x, y: this.ren.cam.y } };
   }
 
   move(e: PointerEvent) {
@@ -575,7 +610,24 @@ export class UI {
         const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null;
         this.ren.gripHot = grip;
         if (z && grip) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; this.hint(this.gripHint(z, grip)); }
+      } else if (this.tool === 'select' && this.ren.selected?.kind === 'cut') {
+        // (v0.35: a corner of the selected cut-out)
+        const k = this.world.cuts?.find(q => q.id === this.ren.selected!.id); const vi = k ? this.cutCorner(k, e.offsetX, e.offsetY) : -1;
+        this.ren.gripHot = vi >= 0 ? (`v${vi}` as Grip) : null;
+        if (vi >= 0) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; this.hint('Drag this corner of the cut-out · the building follows · Esc puts it back'); }
       } else this.ren.gripHot = null;
+      return;
+    }
+    if ((dr.mode === 'cutgrip' || dr.mode === 'cutmove') && dr.cut && dr.pts0) {
+      // v0.35: reshape a cut-out by a corner, or move it; the building it is cut from follows as you drag
+      const k = dr.cut;
+      if (dr.mode === 'cutmove' && !dr.moved) { if (Math.hypot(e.offsetX - dr.sx, e.offsetY - dr.sy) < 5) return; dr.moved = true; this.beginLive([], [k]); }
+      const d = { x: snap(p.x - dr.start.x, 5), y: snap(p.y - dr.start.y, 5) };
+      const pts = dr.mode === 'cutgrip' ? dr.pts0.map((q, i) => (i === dr.vi ? { x: snap(p.x, 5), y: snap(p.y, 5) } : { ...q })) : dr.pts0.map(q => ({ x: q.x + d.x, y: q.y + d.y }));
+      const chk = this.cutCheck(pts, k);
+      dr.liveOk = chk.ok; dr.reason = chk.reason;
+      if (chk.ok) { k.pts = pts; if (this.live) this.live.dirty = true; this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: { ...polyBox(pts), poly: pts }, ok: false };
+      this.hint(chk.ok ? `Cut-out · ${n0(polyArea(pts))} m² · release to keep, Esc to put it back` : chk.reason!, !chk.ok);
       return;
     }
     if (dr.mode === 'grip' && dr.zone && dr.z0 && dr.grip) {
@@ -723,7 +775,13 @@ export class UI {
       const z = dr.zone;
       if (!dr.moved && Math.hypot(e.offsetX - dr.sx, e.offsetY - dr.sy) < 5) return;
       // v0.19: the building itself moves under the cursor, and everything that depends on it follows
-      if (!dr.moved) { dr.moved = true; dr.z0 = geomOf(z); const tw = this.twin(z); this.beginLive(tw ? [z, tw] : [z]); }
+      if (!dr.moved) {
+        dr.moved = true; dr.z0 = geomOf(z); const tw = this.twin(z);
+        // (v0.35: the cut-outs that take floor from this building alone go with it)
+        const own = z.type === 'concourse' ? (this.world.cuts ?? []).filter(k => k.level === z.level && zonesOverlap(cutShape(k), z) && !this.world.zones.some(o => o.id !== z.id && o.type === 'concourse' && o.level === k.level && zonesOverlap(cutShape(k), o))) : [];
+        this.beginLive(tw ? [z, tw] : [z], own);
+        if (this.live && own.length) this.live.carry = { z, x: z.x, y: z.y, ks: this.live.cuts };
+      }
       if (shaped(z)) {   // a pier or hub slides freely and keeps its angle
         const r0 = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5) };
         const r = { ...r0, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, poly: z.poly?.map(q => ({ x: q.x + r0.x - z.x, y: q.y + r0.y - z.y })) };
@@ -747,9 +805,9 @@ export class UI {
   //   so gates, aprons, taxilanes, shop lots, forecourts and people movers follow the cursor. The sim stands still
   //   meanwhile. Letting go either keeps the change (one undo step, through `changed()`) or puts everything back.
   //   Plan view only: the 3D model takes too long to rebuild every frame, so there it stays an outline.
-  beginLive(zs: Zone[]) {
+  beginLive(zs: Zone[], cuts: Cut[] = []) {
     if (this.live || this.ren.mode3d) return;
-    this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false };
+    this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })) };
     this.ctl.hold = true; holdScenery(this.world, this.sim.d);
   }
   /** Give a zone (and the baggage claim under a hall) a new shape for now. */
@@ -757,6 +815,8 @@ export class UI {
     if (!this.live) return;
     const tw = this.twin(z); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend });   // (v0.29: angle and all; v0.34: and its bend)
     setGeom(z, g); this.live.dirty = true;
+    // (v0.35: a building being moved takes its cut-outs with it)
+    const cr = this.live.carry; if (cr && cr.z === z) for (const c of cr.ks) c.k.pts = c.pts.map(p => ({ x: p.x + z.x - cr.x, y: p.y + z.y - cr.y }));
   }
   /** Aprons for placement checks: those from before a drag began, so a shape being drawn or dragged is never refused
    *  because of the apron it has just laid for itself. */
@@ -783,7 +843,7 @@ export class UI {
     const lv = this.live; if (!lv) return;
     this.live = null; this.ctl.hold = false; holdScenery(null);
     if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
-    if (!keep) for (const s of lv.saved) setGeom(s.z, s.g);
+    if (!keep) { for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; }
     this.sim.d = lv.d0;
     if (lv.touched) this.liveStale = true;
   }
@@ -813,7 +873,7 @@ export class UI {
     if (grip === 'r') return z.sides! >= 24 ? 'Drag to make the hub wider or narrower' : 'Drag a corner to resize and turn the hub';
     if (grip === 'a' || grip === 'b') return 'Drag this end to stretch and swing the pier · the other end stays where it is';
     if (grip === 'ta' || grip === 'tb') return 'Drag to make this end of the pier wider or narrower · the other end keeps its width, so the pier tapers';
-    if (grip === 'm') { const what = BENDS.has(z.type) ? 'hall' : 'pier'; return z.bend ? `Drag to bend the ${what} more or less · pull it back to the line between its ends to straighten it` : `Drag sideways to bend the ${what} into a curve · both ends stay where they are`; }
+    if (grip === 'm') { const what = z.type === 'checkin' || z.type === 'claim' ? 'hall' : BENDS.has(z.type) ? ZONES[z.type].short.toLowerCase() : 'pier'; return z.bend ? `Drag to bend the ${what} more or less · pull it back to the line between its ends to straighten it` : `Drag sideways to bend the ${what} into a curve · both ends stay where they are`; }
     return canTurn(z) ? 'Drag to make it wider or narrower' : `Drag this edge to resize the ${ZONES[z.type].short.toLowerCase()} · the opposite edge stays where it is`;
   }
   /** Can a built zone take this shape? */
@@ -921,6 +981,14 @@ export class UI {
   //   A free area is a concourse with an outline of its own (`poly`): open floor that merges with whatever building it
   //   overlaps, with stands round its walls and a hall, food court or garden inside. A cut-out is not a building: it is
   //   a polygon taken away from whatever building it is drawn over (a courtyard, a lightwell, a notch).
+  /** v0.35: can a cut-out take this outline? (the same rules as drawing one, without the cost) */
+  cutCheck(pts: Pt[], k?: Cut): { ok: boolean; reason?: string } {
+    if (!simplePoly(pts)) return { ok: false, reason: 'Its edges cross: an outline cannot cross itself' };
+    if (polyArea(pts) < AREA.minCut) return { ok: false, reason: `Too small: a cut-out needs ${n0(AREA.minCut)} m² at least` };
+    const sh = { ...polyBox(pts), poly: pts }; const lv = k?.level ?? 1;
+    if (!this.world.zones.some(z => z.type === 'concourse' && z.level === lv && zonesOverlap(sh, z))) return { ok: false, reason: 'A cut-out must take floor from a concourse, pier or free area' };
+    return { ok: true };
+  }
   polyZone(pts: Pt[]): Zone { return { id: this.world.nextId, type: 'concourse', level: 1, ...polyBox(pts), tier: 0, cls: this.opt.conc, poly: pts.map(q => ({ ...q })) }; }
   polyCheck(pts: Pt[]): { ok: boolean; reason?: string; cost: number } {
     const cut = this.tool === 'cut';
@@ -992,6 +1060,18 @@ export class UI {
     const dr = this.drag; this.drag = null;
     if (!dr) return;
     const g = this.ren.ghost; this.ren.ghost = null;
+    if ((dr.mode === 'cutgrip' || dr.mode === 'cutmove') && dr.cut && dr.pts0) {
+      const k = dr.cut; const moved = JSON.stringify(k.pts) !== JSON.stringify(dr.pts0);
+      // (growing a cut-out takes more floor away: that is charged as cutting it out was; shrinking it costs nothing)
+      const cost = Math.max(0, polyArea(k.pts) - polyArea(dr.pts0)) * ZONES.concourse.costPerM2 * AREA.cutCost;
+      const ok = moved && this.sim.canAfford(cost);
+      this.endLive(ok); this.ren.canvas.style.cursor = 'default';
+      if (ok) { this.sim.spend(cost); this.changed(); this.ren.selected = { kind: 'cut', id: k.id }; this.refresh(true); if (cost) this.ren.float(`− ${money(cost)}`, polyCentre(k.pts), PAL_BAD, LEVELS[k.level].z1); }
+      else if (moved) this.toast(`Not enough money: ${money(cost)}`, 'bad');
+      if (!dr.liveOk && dr.reason) this.toast(`${dr.reason}${moved ? ' · kept the last shape that fits' : ''}`, 'warn');
+      this.settle(); this.hint(this.toolHint());
+      return;
+    }
     if (dr.mode === 'grip' && dr.zone && dr.z0) {
       const z = dr.zone; const now = geomOf(z);
       const moved = JSON.stringify(now) !== JSON.stringify(dr.z0);
@@ -1095,6 +1175,7 @@ export class UI {
     if (s.kind === 'site') { const st = this.world.sites?.find(q => q.id === s.id); return st ? { kind: 'site', site: st } : null; }
     if (s.kind === 'way') { const w = this.world.ways.find(q => q.id === s.id); return w ? { kind: 'way', way: w } : null; }
     if (s.kind === 'round') { const r = this.world.rounds?.find(q => q.id === s.id); return r ? { kind: 'round', round: r } : null; }
+    if (s.kind === 'cut') { const k = this.world.cuts?.find(q => q.id === s.id); return k ? { kind: 'cut', cut: k } : null; }
     if (s.kind === 'gate') { const sl = this.sim.d.gateSlots.find(q => q.zone.id === s.id && q.key === s.key); return sl ? { kind: 'gate', slot: sl } : null; }
     return { kind: 'runway', id: s.id };
   }
@@ -1462,6 +1543,9 @@ export class UI {
     } else if (h.kind === 'round') {
       refund = roundDef(h.round).cost * 0.4; what = 'Roundabout';
       this.world.rounds = (this.world.rounds ?? []).filter(q => q !== h.round);
+    } else if (h.kind === 'cut') {
+      // v0.35: a cut-out filled back in (the floor is rebuilt at no charge, and nothing is paid back)
+      this.world.cuts = (this.world.cuts ?? []).filter(q => q !== h.cut); this.ren.selected = null; this.ren.hover = null; this.nextSound = 'demolish'; this.changed(); this.toast('Cut-out filled back in'); return;
     } else {
       const r = this.world.runways.find(q => q.id === h.id)!; refund = runwayCost(r.a, r.b) * 0.4; what = 'Runway';
       this.world.runways = this.world.runways.filter(q => q.id !== h.id);
@@ -1601,6 +1685,18 @@ export class UI {
         </dl>
         ${gate ? `<button class="btn danger" data-act="gateOff">Remove this gate</button><p class="muted small">The stand stays marked so you can add it back. Removing gates frees apron for something else.</p>`
           : `<button class="btn" data-act="gateOn">Add a gate here</button>`}`;
+    }
+    if (sel.kind === 'cut') {
+      // v0.35: a cut-out: how much floor it takes, and from which building
+      const k = s.world.cuts?.find(q => q.id === sel.id); if (!k) return '';
+      const sh = s.d.shells.find(q => q.cuts?.includes(k.id)); const letter = sh ? s.d.gateLetter.get(sh.ids[0]) : undefined;
+      const court = s.d.junctions.some(j => j.kind === 'court' && j.rings.some(r => r.some(p => pointInPoly(p, k.pts) || k.pts.some(q => Math.hypot(q.x - p.x, q.y - p.y) < 8))));
+      return `<h2>Cut-out <span class="lvl">${LEVELS[k.level as Level].name}</span></h2>
+        <dl class="kv"><dt>Area</dt><dd>${n0(polyArea(k.pts))} m² · ${k.pts.length} corners</dd>
+          <dt>Takes floor from</dt><dd class="${sh ? '' : 'bad'}">${sh ? `Concourse ${letter ?? ''}` : 'Nothing: it is not over a building'}</dd>
+          <dt>Makes</dt><dd>${!sh ? '—' : court ? 'A courtyard open to the sky' : 'A notch in the building\u2019s edge'}</dd></dl>
+        <p class="muted">Drag a corner to reshape it, or drag inside it to move it; the building follows as you drag. Growing it costs as cutting it out did. A cut-out moves with its building when the building is moved.</p>
+        <button class="btn danger" data-act="demolish">Fill it back in</button>`;
     }
     if (sel.kind === 'round') {
       const r = s.world.rounds?.find(q => q.id === sel.id); if (!r) return '';

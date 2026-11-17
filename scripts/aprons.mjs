@@ -305,6 +305,20 @@ for (const deg of [12, -20]) {
   check('a bent hall whose end grip is dropped where it was, then pulled straight, is the upright hall again', !g3.rot && !g3.bend && g3.x === z.x && g3.y === z.y && g3.w === z.w && g3.h === z.h);
   for (const b of [-30, -100]) { const t = gripsFor({ ...z, bend: b }).find(q => q.grip === 't'); const tb = gripsFor({ ...z, bend: b }).find(q => q.grip === 'b');
     check('the turn handle of a bent hall (' + b + ') stands off the end of its chord, clear of its end grip, and grabbing it turns nothing', !inZone(t.p, { ...z, bend: b }) && Math.hypot(t.p.x - tb.p.x, t.p.y - tb.p.y) >= 8 && !regrip({ ...z, bend: b }, 't', t.p, false, lim).rot); } }
+// v0.35: security bends too; bent so that it overlaps both the hall and the concourse, the terminal opens and flies
+{ const w = sampleWorld(); const sec = w.zones.find(z => z.type === 'security');
+  check('security has a bend grip', gripsFor(sec).some(g => g.grip === 'm'));
+  // (deepened to overlap both, then bent sideways through its grip as the editor does: its long axis is then its frame's x)
+  Object.assign(sec, { y: sec.y - 15, h: sec.h + 30 }); const sc = { x: sec.x + sec.w / 2, y: sec.y + sec.h / 2 };
+  const sg = regrip(sec, 'm', { x: sc.x + 20, y: sc.y }, false, { minLen: 60, minWide: 30, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 }); Object.assign(sec, sg);
+  check('bent sideways by its grip, its long axis is the frame it bends in (bend ' + sg.bend.toFixed(1) + ')', !!sg.bend && Math.abs(sg.w - 160) < 1e-6 && Math.abs(sg.h - 120) < 1e-6);
+  check('a bent security block may overlap the hall and the concourse', canPlaceTurned(w, { ...sec, level: 1 }, 'security', [sec.id]).ok);
+  const m = migrateWorld(JSON.parse(JSON.stringify(w)));
+  check('a saved world keeps security bent', m.zones.find(z => z.type === 'security').bend === sg.bend);
+  const sim = new Sim(w, 7); sim.relayout(); let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; };
+  check('Terminal 1 opens with security bent (' + (sim.d.terminals[0].problems.join('; ') || 'open') + ')', sim.d.terminals[0].active);
+  sim.startDay(); while (sim.day < 1) sim.step(0.25);
+  check('and flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
