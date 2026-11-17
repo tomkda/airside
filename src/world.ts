@@ -534,7 +534,11 @@ export function derive(source: World): Derived {
   for (const z of world.zones.filter(q => q.type === 'concourse')) {
     let C;
     // v0.32: a free-drawn area is open floor (the building's own space, planned in shell.ts): no bands, no lots of its own
-    if (z.poly) C = carveFree(z, shellOf.get(z.id)?.rings ?? [zonePts(z)], gates);   // (v0.33: holdrooms and lots round its walls, the hall in the middle)
+    if (z.poly) {
+      // (every part of the building it is in: a cut-out may have split it, and each part keeps its own plan)
+      const mineSh = shells.filter(sh => sh.ids.includes(z.id)); const rs = mineSh.length ? mineSh.flatMap(sh => sh.rings) : [zonePts(z)];
+      C = carveFree(z, rs, gates, world.zones.filter(o => o.id !== z.id && mineSh.some(sh => sh.ids.includes(o.id))));
+    }   // (v0.33: holdrooms and lots round its walls, the hall in the middle)
     else if (z.sides) C = carveHub(z, world, gates);   // a hall is carved where it stands: a ring of lots round an atrium
     else if (z.rot || z.bend || z.taper) {
       // an angled pier is laid out in its own upright frame, then every piece is turned into place
@@ -611,13 +615,22 @@ export function derive(source: World): Derived {
     const F = frameOf(owner); const priors = list.map(sh => sh.prior).sort((a, b) => a - b); const prior = priors.length ? priors[Math.floor(priors.length / 2)] : 0;
     // (never over a lot of the building's own plan that reaches the space's edge)
     const others = j.ids.flatMap(id => shops.get(id) ?? []).filter(sh => !sh.court);
-    const clash = (q: Pt[]) => others.some(sh => q.some(p => pointInPoly(p, sh.pts)) || sh.pts.some(p => pointInPoly(p, q)) || pointInPoly(polyCentre(q), sh.pts) || q.some((p, i) => sh.pts.some((r, k) => segsIntersect(p, q[(i + 1) % q.length], r, sh.pts[(k + 1) % sh.pts.length]))));
+    const bb = (q: Pt[]) => { const r = polyBox(q); return { x: r.x - 1, y: r.y - 1, w: r.w + 2, h: r.h + 2 }; }; const boxes = others.map(sh => bb(sh.pts));
+    const clash = (q: Pt[]) => { const b = bb(q); return others.some((sh, i) => rectsOverlap(b, boxes[i]) && (q.some(p => pointInPoly(p, sh.pts)) || sh.pts.some(p => pointInPoly(p, q)) || pointInPoly(polyCentre(q), sh.pts) || q.some((p, i) => sh.pts.some((r, k) => segsIntersect(p, q[(i + 1) % q.length], r, sh.pts[(k + 1) % sh.pts.length]))))); };
     // (and not against a wall with stands: a gate door wants its holdroom, not a kitchen)
     const doors = gates.filter(g => j.ids.includes(g.zone.id)).map(g => g.door);
     // (v0.33: nor in front of a free area's lots, which face the space across its edge: a counter would block their shopfront)
     const fronts = others.filter(sh => sh.zone.poly && sh.key.startsWith('F'));
-    const blocks = (q: Pt[]) => { const c = polyCentre(q); return fronts.some(sh => sh.pts.some((p, i) => segDist(c, p, sh.pts[(i + 1) % sh.pts.length]) < JUNCTION.counter.depth + 4)); };
-    counters(j, ends, doors).filter(c => !clash(c.pts) && !blocks(c.pts)).forEach(c => {
+    const blocks = (q: Pt[]) => {
+      const c = polyCentre(q);
+      return fronts.some(sh => {
+        // (in the strip straight out from its shopfront, `pts[3]`–`pts[2]`, as deep as a counter and a little more)
+        const a = sh.pts[3], b = sh.pts[2]; const L = dist(a, b) || 1; const t = ((c.x - a.x) * (b.x - a.x) + (c.y - a.y) * (b.y - a.y)) / (L * L);
+        const nx = (a.x - sh.pts[0].x), ny = (a.y - sh.pts[0].y); const nl = Math.hypot(nx, ny) || 1; const out = ((c.x - a.x) * nx + (c.y - a.y) * ny) / nl;
+        return t > -0.2 && t < 1.2 && out > -1 && out < JUNCTION.counter.depth + 4;
+      });
+    };
+    counters(j, ends, doors).filter(c => !blocks(c.pts) && !clash(c.pts)).forEach(c => {
       // (named by the pieces it is between and where it stands in its owner's frame, so the name holds while the
       //  building is unchanged, whatever else is built: a sitting tenant and the day's takings stay with it)
       const at = toLocal(owner, polyCentre(c.pts)); const u = B.horiz ? at.x - F.x : at.y - F.y; const key = `J${[...j.ids].sort((a, b) => a - b).join('-')}@${Math.round(at.x)},${Math.round(at.y)}`;

@@ -12,7 +12,7 @@
 // distance from the security exit, the gate cluster nearby. Who leases each lot is settled in commerce.ts (v0.7).
 // With walk-through duty free on, the stretch in front of the security exit becomes one store everyone crosses.
 import { Pt, clamp, rectsOverlap, Rect, dist } from './geom';
-import { centreOf, hallPts, inZone, toLocal, zonesOverlap, overlapOf, polyCentre } from './shapes';
+import { centreOf, hallPts, inZone, toLocal, zonesOverlap, overlapOf, polyCentre, frameOf } from './shapes';
 import { CLASSES, COMMERCE, FREE } from './config';
 import { pointInPoly } from './geom';
 import type { World, Zone, Gate, Shop } from './world';
@@ -359,101 +359,132 @@ export function carveHub(z: Zone, world: World, gates: Gate[]): Carved {
 export const freeRing = (cls: number) => holdDepth(cls) + FREE.lot;
 /**
  * A free area is planned from its walls inward, like a hall: wherever its outline is the building's outside wall
- * (`rings` are the building's, so where the area runs into a concourse there is no wall and nothing is carved), a
- * band `freeRing` deep. Behind each gate, the holdroom, with a row of lots behind it facing the hall and a way
- * through at the gate itself; along a wall with no gate, one deep window lot. What is left in the middle is the
- * building's hall (shell.ts `junctionsOf`, with the same depth).
+ * (`rings` are the building's, courtyards included, so where the area runs into a concourse there is no wall and
+ * nothing is carved), a band `freeRing` deep. It is laid wall by wall (a wall is a straight stretch): behind each
+ * gate, the holdroom, with a row of lots behind it facing the hall and a way through at the gate itself; along a
+ * wall with no gate, one deep window lot a module. Where walls meet, whatever was laid first keeps the corner, and
+ * nothing is laid in the other pieces of the building (`others`). What is left in the middle is the building's hall
+ * (shell.ts `junctionsOf`, with the same depth).
  */
-export function carveFree(z: Zone, rings: Pt[][], gates: Gate[]): Carved {
+export function carveFree(z: Zone, rings: Pt[][], gates: Gate[], others: Zone[] = []): Carved {
   const mine = gates.filter(g => g.zone.id === z.id); const SC = COMMERCE;
   const items: LItem[] = []; const shops: Shop[] = []; const kinds: Record<string, number> = {};
   let hold = 0, commerce = 0, seats = 0, windowLots = 0;
   const H = holdDepth(z.cls ?? 2), R = freeRing(z.cls ?? 2);
-  const inside = (p: Pt) => rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1 && pointInPoly(p, z.poly!);
-  const mid = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  const P = z.poly!; const o0 = P[0];
+  const horiz = z.w >= z.h, long = Math.max(z.w, z.h); const F = frameOf(z);
+  const inside = (p: Pt) => rings.reduce((n, r) => n + (pointInPoly(p, r) ? 1 : 0), 0) % 2 === 1 && pointInPoly(p, P);
+  const lerp = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
   const gateSeats = mine.reduce((s, g) => s + CLASSES[g.cls].seats, 0);
-  const near = (p: Pt) => mine.reduce<{ g: Gate; d: number } | null>((m, g) => { const d = dist(g.door, p); return d < CLASSES[g.cls].gateSpacing * 0.55 && (!m || d < m.d) ? { g, d } : m; }, null);
-  // the stretches of the building's wall that are this area's: walked in modules of about `FREE.module` m
-  const accepted: Pt[] = [];
+  // ---- the area's walls: each ring cut into ~2 m stations; a station is the area's own if it is on its outline
+  //      (not on the floor the building's rounded inside corners add, nor where a neighbour's wall runs on in line);
+  //      a wall is a run of own stations facing one way
+  type Wall = { a: Pt; b: Pt; t: Pt; n: Pt; L: number };
+  const walls: Wall[] = [];
   for (const ring of rings) {
-    const n = ring.length; if (n < 3) continue;
-    // (start the walk at a corner outside the area, so a stretch is never split where the ring happens to begin)
-    // (the shell's rounded inside corners add floor that is not the area's, so only its own wall counts)
-    const own = ring.map(p => inZone(p, z, 0.6)); let s0 = own.findIndex(v => !v); if (s0 < 0) s0 = 0;
-    type St = { p: Pt; nIn: Pt };
-    const runs: St[][] = []; let cur: St[] = [];
-    for (let k = 0; k <= n; k++) {
-      const i = (s0 + k) % n, a = ring[i], b = ring[(i + 1) % n];
-      if (!own[i] || !own[(i + 1) % n] || k === n) { if (cur.length > 1) runs.push(cur); cur = []; if (k === n) break; continue; }
-      const L = dist(a, b); if (L < 1e-6) continue;
-      const t = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; let nIn = { x: -t.y, y: t.x };
-      const m = mid(a, b, 0.5); if (!inside({ x: m.x + nIn.x * 1.5, y: m.y + nIn.y * 1.5 })) nIn = { x: -nIn.x, y: -nIn.y };
-      const steps = Math.max(1, Math.round(L / 2));
-      for (let j = cur.length ? 1 : 0; j <= steps; j++) cur.push({ p: mid(a, b, j / steps), nIn });
-    }
-    for (const run of runs) {
-      // fine stations every ~2 m along the wall; modules are runs of them
-      const cum = [0]; for (let i = 1; i < run.length; i++) cum.push(cum[i - 1] + dist(run[i - 1].p, run[i].p));
-      const total = cum[cum.length - 1]; if (total < FREE.module * 0.8) continue;
-      const nm = Math.max(1, Math.round(total / FREE.module));
-      const at = (s: number) => { let i = 1; while (i < run.length - 1 && cum[i] < s) i++; return run[Math.min(i, run.length - 1)]; };
-      // how deep the band can be here: never past the middle of the floor, less an aisle
-      const depthAt = (st: St) => { let d = 0; while (d < 2 * R + FREE.aisle && inside({ x: st.p.x + st.nIn.x * (d + 1), y: st.p.y + st.nIn.y * (d + 1) })) d += 1; return d >= 2 * R + FREE.aisle ? R : Math.max(0, Math.min(R, (d - FREE.aisle) / 2)); };
-      const mods = Array.from({ length: nm }, (_, k) => {
-        const sa = (total * k) / nm, sb = (total * (k + 1)) / nm; const sts = run.filter((_, i) => cum[i] >= sa - 1e-6 && cum[i] <= sb + 1e-6);
-        const c = at((sa + sb) / 2); const g = near(c.p);
-        return { sts: sts.length >= 2 ? sts : [at(sa), at(sb)], c, g: g?.g ?? null, door: !!g && g.d < FREE.module / 2, d: Math.min(...[at(sa), c, at(sb)].map(depthAt)) };
-      });
-      const off = (st: St, d: number): Pt => ({ x: st.p.x + st.nIn.x * d, y: st.p.y + st.nIn.y * d });
-      const band = (sts: St[], d0: number, d1: number): Pt[] => [...sts.map(st => off(st, d0)), ...[...sts].reverse().map(st => off(st, d1))];
-      // holdrooms: one band per gate, over the modules that gate has
-      for (let k = 0; k < nm;) {
-        const g = mods[k].g; let e = k; while (e + 1 < nm && mods[e + 1].g === g) e++;
-        if (g) {
-          const sts = mods.slice(k, e + 1).flatMap((m, i) => (i ? m.sts.slice(1) : m.sts)); const hd = Math.min(H, ...mods.slice(k, e + 1).map(m => m.d));
-          // (in straight pieces: a band folded round a corner of the wall would cross itself; straight ones overlap there)
-          const pieces: St[][] = [[sts[0]]];
-          for (let i = 1; i < sts.length; i++) { const last = pieces[pieces.length - 1]; if (last.length > 1 && last[0].nIn.x * sts[i].nIn.x + last[0].nIn.y * sts[i].nIn.y < 0.97) pieces.push([sts[i - 1]]); pieces[pieces.length - 1].push(sts[i]); }
-          if (hd >= 6 && pieces.every(q => band(q, 0, hd).every(v => inZone(v, z, 0.6)))) {
-            for (const q of pieces) if (q.length > 1) items.unshift({ k: 'hold', pts: band(q, 0, hd), closed: true });
-            hold += dist(sts[0].p, sts[sts.length - 1].p) * hd;
-            const a = sts[Math.floor(sts.length * 0.1)], b = sts[Math.ceil(sts.length * 0.9) - 1];
-            for (let v = 2.8; v < hd - 1.4; v += 2.4) { items.push({ k: 'seat', pts: [off(a, v), off(b, v)] }); seats += Math.floor((dist(a.p, b.p)) / 0.6); }
-          }
+    const st: { p: Pt; e: number; own: boolean }[] = [];
+    ring.forEach((a, i) => { const b = ring[(i + 1) % ring.length]; const k = Math.max(1, Math.round(dist(a, b) / 2)); for (let j = 0; j < k; j++) { const p = lerp(a, b, j / k); st.push({ p, e: i, own: inZone(p, z, 0.6) && !others.some(o => inZone(p, o, -0.6)) }); } });
+    const n = st.length; if (n < 2) continue;
+    const dirOf = (i: number) => { const a = ring[st[i].e], b = ring[(st[i].e + 1) % ring.length]; const L = dist(a, b) || 1; return { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; };
+    // start where a wall breaks, so no wall is cut in two where the ring happens to begin
+    let s0 = st.findIndex((q, i) => !q.own || dirOf(i).x * dirOf((i + n - 1) % n).x + dirOf(i).y * dirOf((i + n - 1) % n).y < 0.97); if (s0 < 0) s0 = 0;
+    let run: number[] = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        const a = st[run[0]].p, b = st[(run[run.length - 1] + 1) % n].own ? st[(run[run.length - 1] + 1) % n].p : st[run[run.length - 1]].p;
+        const L = dist(a, b); if (L >= FREE.module * 0.6) {
+          const t = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; let nIn = { x: -t.y, y: t.x };
+          const m = lerp(a, b, 0.5); if (!inside({ x: m.x + nIn.x * 1.5, y: m.y + nIn.y * 1.5 })) nIn = { x: -nIn.x, y: -nIn.y };
+          walls.push({ a, b, t, n: nIn, L });
         }
-        k = e + 1;
       }
-      // lots: behind a holdroom, facing the hall (none at the gate itself: that is the way through); or one deep
-      // window lot where there is no gate
-      mods.forEach((m, k) => {
-        const hd = m.g ? Math.min(H, m.d) : 0; const d0 = m.g ? hd + 0.5 : 0.5, d1 = m.d - 0.5;
-        if (m.door || d1 - d0 < 4) return;
-        const sts = m.sts; const a = sts[0], b = sts[sts.length - 1];
-        // (four corners, as every lot has: the sim stands a shopper half way across its diagonal)
-        const pts = [off(a, d0), off(b, d0), off(b, d1), off(a, d1)];
-        const c = polyCentre(pts); if (!inside(c) || pts.some(q => !inZone(q, z, 0.6)) || accepted.some(q => dist(q, c) < FREE.module * 0.6)) return;
-        if (pts.some((p, i) => { const q = pts[(i + 1) % pts.length]; return pts.some((r, j) => j !== i && Math.abs(j - i) > 1 && !(i === 0 && j === pts.length - 1) && !(j === 0 && i === pts.length - 1) && segX(p, q, r, pts[(j + 1) % pts.length])); })) return;
-        accepted.push(c);
-        const door = off(m.c, d1 + 1.4); const fw = dist(off(a, d1), off(b, d1));
-        const area = Math.abs(polyArea2(pts)); const win = !m.g; const key = `F${Math.round(m.c.p.x)},${Math.round(m.c.p.y)}`;
-        const xs = pts.map(q => toLocal(z, q).x - z.x);
-        shops.push({
-          zone: z, i: shops.length, key, id: `${z.id}:${key}`, pts, door, type: 'shop', kind: '', tenant: 'retail',
-          area, cap: 4, window: win, rank: 0, side: 'A', u0: Math.min(...xs), u1: Math.max(...xs), depth: d1 - d0, frontage: fw,
-          // every front faces the hall, which sees it across its width
-          vis: clamp(SC.straightScore + SC.hubBonus * 0.5, 0, 1), near: 0.5, far: 0.5,
-          gates: gateSeats * 0.6, gateScore: 0, prior: gateSeats * 0.8 * 2.4 * 0.5 + 400,
-          foot: 0, dwell: 0, measured: false, footScore: 0, dwellScore: 0, bids: {}, bid: 0, rent: 0,
-        });
-        commerce += area; if (win) windowLots++;
-      });
+      run = [];
+    };
+    for (let k = 0; k < n; k++) {
+      const i = (s0 + k) % n;
+      if (!st[i].own) { flush(); continue; }
+      if (run.length) { const d0 = dirOf(run[0]), d1 = dirOf(i); if (d0.x * d1.x + d0.y * d1.y < 0.97) flush(); }
+      run.push(i);
     }
+    flush();
   }
-  const horiz = z.w >= z.h, long = Math.max(z.w, z.h);
+  // ---- how deep the band can be: never past the middle of the floor, less an aisle (probed in 2 m steps)
+  const depthAt = (p: Pt, nIn: Pt) => { let d = 0; while (d < 2 * R + FREE.aisle && inside({ x: p.x + nIn.x * (d + 2), y: p.y + nIn.y * (d + 2) })) d += 2; return d >= 2 * R + FREE.aisle ? R : Math.max(0, Math.min(R, (d - FREE.aisle) / 2)); };
+  // ---- what has been laid so far, and whether a new piece clashes with it (pieces are convex quads)
+  const laid: Pt[][] = [];
+  const sep = (A: Pt[], B: Pt[]) => [A, B].some(Q => Q.some((p, i) => {
+    const q = Q[(i + 1) % Q.length]; const nx = -(q.y - p.y), ny = q.x - p.x; const l = Math.hypot(nx, ny) || 1;
+    const pr = (V: Pt[]) => V.map(v => (v.x * nx + v.y * ny) / l); const a = pr(A), b = pr(B);
+    return Math.max(...a) <= Math.min(...b) + 0.05 || Math.max(...b) <= Math.min(...a) + 0.05;
+  }));
+  const clear = (q: Pt[]) => q.every(v => inZone(v, z, 0.6)) && inside(polyCentre(q)) && !others.some(o => q.some(v => inZone(v, o, -0.6)) || inZone(polyCentre(q), o)) && laid.every(o => sep(q, o));
+  const quad = (w: Wall, s0: number, s1: number, d0: number, d1: number): Pt[] => { const a = { x: w.a.x + w.t.x * s0, y: w.a.y + w.t.y * s0 }, b = { x: w.a.x + w.t.x * s1, y: w.a.y + w.t.y * s1 }; return [{ x: a.x + w.n.x * d0, y: a.y + w.n.y * d0 }, { x: b.x + w.n.x * d0, y: b.y + w.n.y * d0 }, { x: b.x + w.n.x * d1, y: b.y + w.n.y * d1 }, { x: a.x + w.n.x * d1, y: a.y + w.n.y * d1 }]; };
+  // a piece that clashes at a corner gives way: it is cut back from either end, 2 m at a time, to half its length
+  const fit = (w: Wall, s0: number, s1: number, d0: number, d1: number): Pt[] | null => {
+    for (let cut = 0; cut <= (s1 - s0) / 2; cut += 2) for (const [a, b] of cut ? [[s0 + cut, s1], [s0, s1 - cut], [s0 + cut / 2, s1 - cut / 2]] : [[s0, s1]]) { const q = quad(w, a, b, d0, d1); if (clear(q)) return q; }
+    return null;
+  };
+  // (a lot is named by where its middle stands from the area's first corner, so it keeps its name, and its tenant,
+  //  when the area is moved, and when a corner far from it is)
+  //  (by the middle of its module on the wall and which way the wall faces, so a lot that becomes deeper or shallower
+  //  when a gate comes or goes keeps its name too)
+  const keyOf = (c: Pt, n: Pt) => `F${Math.round(c.x - o0.x)},${Math.round(c.y - o0.y)}@${(Math.round(Math.atan2(n.y, n.x) / (Math.PI / 8)) + 16) % 16}`;
+  const keys = new Set<string>();
+  // ---- the modules of each wall, and which gate each one is behind
+  // (module lines are hung on a grid measured from the area's first corner, not from the wall's ends, so when a wall
+  //  grows or shrinks only the modules at its ends change, and the others keep their names and tenants)
+  const plan = walls.map(w => {
+    const ref = (o0.x - w.a.x) * w.t.x + (o0.y - w.a.y) * w.t.y; const M = FREE.module;
+    const cuts = [0]; for (let s = ref - Math.floor(ref / M) * M; s < w.L; s += M) if (s > 0.01) cuts.push(s); cuts.push(w.L);
+    // (a sliver at either end joins the module beside it)
+    if (cuts.length > 2 && cuts[1] - cuts[0] < 0.6 * M) cuts.splice(1, 1);
+    if (cuts.length > 2 && cuts[cuts.length - 1] - cuts[cuts.length - 2] < 0.6 * M) cuts.splice(cuts.length - 2, 1);
+    return cuts.slice(0, -1).map((s0, k) => {
+      const s1 = cuts[k + 1]; const c = { x: w.a.x + w.t.x * (s0 + s1) / 2, y: w.a.y + w.t.y * (s0 + s1) / 2 };
+      const g = mine.reduce<{ g: Gate; d: number } | null>((m, q) => { const d = dist(q.door, c); return d < CLASSES[q.cls].gateSpacing * 0.55 && (!m || d < m.d) ? { g: q, d } : m; }, null);
+      const d = Math.min(...[s0 + 1, (s0 + s1) / 2, s1 - 1].map(s => depthAt({ x: w.a.x + w.t.x * s, y: w.a.y + w.t.y * s }, w.n)));
+      return { s0, s1, c, g: g?.g ?? null, door: !!g && g.d < FREE.module / 2, d };
+    });
+  });
+  // ---- holdrooms first (a gate wants its holdroom more than a shop wants a corner): one per gate per wall
+  walls.forEach((w, wi) => {
+    const mods = plan[wi];
+    for (let k = 0; k < mods.length;) {
+      const g = mods[k].g; let e = k; while (e + 1 < mods.length && mods[e + 1].g === g) e++;
+      if (g) {
+        const hd = Math.min(H, ...mods.slice(k, e + 1).map(m => m.d));
+        const q = hd >= 4 ? fit(w, mods[k].s0, mods[e].s1, 0, hd) : null;
+        if (q) {
+          laid.push(q); items.unshift({ k: 'hold', pts: q, closed: true }); const len = dist(q[0], q[1]); hold += len * hd;
+          for (let v = 2.8; v < hd - 1.4; v += 2.4) { items.push({ k: 'seat', pts: [lerp(q[0], q[3], v / hd), lerp(q[1], q[2], v / hd)].map((p, i, arr) => lerp(p, arr[1 - i], 0.1)) }); seats += Math.floor((len * 0.8) / 0.6); }
+        } else for (let j = k; j <= e; j++) mods[j].g = null;   // (no room for a holdroom: the wall is planned as if it had no gate)
+      }
+      k = e + 1;
+    }
+  });
+  // ---- then the lots: behind a holdroom, facing the hall (none at the gate itself: that is the way through); or one
+  //      deep window lot where there is no gate
+  walls.forEach((w, wi) => plan[wi].forEach(m => {
+    const hd = m.g ? Math.min(H, m.d) : 0; const d0 = m.g ? hd + 0.5 : 0.5, d1 = m.d - 0.5;
+    if (m.door || d1 - d0 < 4) return;
+    const pts = fit(w, m.s0, m.s1, d0, d1); if (!pts) return;
+    const key = keyOf(m.c, w.n); if (keys.has(key)) return; keys.add(key); laid.push(pts);
+    const fw = dist(pts[2], pts[3]); const door = { x: (pts[2].x + pts[3].x) / 2 + w.n.x * 1.4, y: (pts[2].y + pts[3].y) / 2 + w.n.y * 1.4 };
+    const area = fw * (d1 - d0); const win = !m.g;
+    const us = pts.map(q => { const l = toLocal(z, q); return horiz ? l.x - F.x : l.y - F.y; });
+    shops.push({
+      zone: z, i: shops.length, key, id: `${z.id}:${key}`, pts, door, type: 'shop', kind: '', tenant: 'retail',
+      // (side `E`: its neighbours are the lots beside it on its own wall, found by where they stand along the area)
+      area, cap: 4, window: win, rank: 0, side: 'E', u0: Math.min(...us), u1: Math.max(...us), depth: d1 - d0, frontage: fw,
+      // every front faces the hall, which sees it across its width
+      vis: clamp(SC.straightScore + SC.hubBonus * 0.5, 0, 1), near: 0.5, far: 0.5,
+      gates: gateSeats * 0.6, gateScore: 0, prior: gateSeats * 0.8 * 2.4 * 0.5 + 400,
+      foot: 0, dwell: 0, measured: false, footScore: 0, dwellScore: 0, bids: {}, bid: 0, rent: 0,
+    });
+    commerce += area; if (win) windowLots++;
+  }));
   return {
     shops, items,
     budget: { hold, spine: 0, commerce, seats, spineW: 0, walkways: false, long, width: Math.min(z.w, z.h), lots: shops.length, window: windowLots, kinds, depthA: R, depthB: R, horiz, entryU: 0, entrySide: 'E', uA: 0, uZ: long, dutyFreeOK: false, gates: mine.length },
   };
 }
-function segX(a: Pt, b: Pt, c: Pt, d: Pt) { const o = (p: Pt, q: Pt, r: Pt) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x); return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0; }
-function polyArea2(pts: Pt[]) { let s = 0; for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; s += p.x * q.y - q.x * p.y; } return s / 2; }
