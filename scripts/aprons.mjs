@@ -13,6 +13,7 @@ import { regrip, gripsOf, toWorld } from './src/shapes';
 import { segsIntersect } from './src/geom';
 import { wayPts } from './src/ways';
 import { holdArea } from './src/bands';
+import { maxTwist } from './src/shapes';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
 const rep = (name, w) => {
@@ -205,7 +206,7 @@ for (const deg of [12, -20]) {
   const lim = { minLen: 60, minWide: 24, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 }; const at = deg => ({ x: c.x + 200 * Math.cos(deg * Math.PI / 180), y: c.y + 200 * Math.sin(deg * Math.PI / 180) });
   const t12 = regrip(hall, 't', at(12), false, lim), t0 = regrip({ ...hall, ...t12 }, 't', at(1), false, lim), t90 = regrip(hall, 't', at(91), false, lim);
   check('the turn handle turns a hall about its centre in 5° steps, and square again it is upright, not nearly so', Math.abs(t12.rot * 180 / Math.PI - 10) < 1e-6 && Math.abs(t12.x + t12.w / 2 - c.x) < 1e-6 && t0.rot === undefined && t0.w === hall.w && t90.rot === undefined && t90.w === hall.h && t90.h === hall.w);
-  check('a hall keeps its four edge grips and has a turn handle (and, since v0.34, a bend grip)', gripsFor(hall).map(g => g.grip).sort().join('') === 'emnstw');
+  check('a hall keeps its four edge grips and has a turn handle (and, since v0.34, a bend grip; since v0.41, an S grip)', gripsFor(hall).map(g => g.grip).sort().join('') === 'ekmnstw');
   const deep = regrip(hall, 's', { x: c.x, y: hall.y + 150 }, false, lim);
   check('an upright hall keeps its own edge limits (150 m deep is allowed)', deep.h === 150);
   const w2 = sampleWorld(); w2.ways.push({ id: w2.nextId++, kind: 'taxi', a: { x: 2900, y: 2500 }, b: { x: 2900, y: 3100 }, cls: 2, lanes: 0 });
@@ -275,7 +276,7 @@ for (const deg of [12, -20]) {
   check('an upright hall has a bend grip in its middle', gripsFor(hall).some(g => g.grip === 'm'));
   const bent = regrip(hall, 'm', { x: c.x, y: c.y - 30 }, false, lim), back = regrip({ ...hall, ...bent }, 'm', { x: c.x, y: c.y + 1 }, false, lim);
   check('the bend grip bends it, and pulled straight it is an upright rectangle again', bent.bend === -30 && back.bend === undefined && !back.rot && back.w === hall.w && back.h === hall.h && back.x === hall.x && back.y === hall.y);
-  check('a bent hall has its ends, long walls, middle and turn handle as grips, and never tapers', gripsFor({ ...hall, bend: -30 }).map(g => g.grip).sort().join('') === 'abmnst');
+  check('a bent hall has its ends, long walls, middle, S grip (since v0.41) and turn handle as grips, and never tapers', gripsFor({ ...hall, bend: -30 }).map(g => g.grip).sort().join('') === 'abkmnst');
   for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.bend = -30;
   check('a bent hall may overlap security (it joins it there)', canPlaceTurned(w, { ...hall, bend: -30, level: 1 }, 'checkin', w.zones.filter(z => z.type === 'checkin' || z.type === 'claim').map(z => z.id)).ok);
   const sim = new Sim(w, 7); sim.relayout(); const d = sim.d;
@@ -436,6 +437,30 @@ for (const deg of [12, -20]) {
     const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
     const front = df && sh.filter(q => q.court).filter(q => Math.min(...q.pts.map(p => near(p, df.door))) < 6);
     check('with security against its wall, the store stands inside the band and no counter stands at its way out (' + (front ? front.length : 'no store') + ')', !!df && front.length === 0 && df.pts.every(p => p.y >= 2659)); } }
+// v0.41: a hall twisted into an S
+{ const lim = { minLen: 60, minWide: 30, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 };
+  const w0 = sampleWorld(); const hall = w0.zones.find(z => z.type === 'checkin'); const k = gripsFor(hall).find(g => g.grip === 'k');
+  const g1 = regrip(hall, 'k', { x: k.p.x, y: k.p.y - 15 }, false, lim), g2 = regrip({ ...hall, ...g1 }, 'k', k.p, false, lim);
+  const F1 = frameOf({ ...hall, ...g1 }); const q1 = toWorld({ ...hall, ...g1 }, { x: F1.x + F1.w / 4, y: F1.y + F1.h / 2 });
+  check('a hall has an S grip a quarter of the way along; dragged 15 m it twists the hall until its centreline passes the cursor (' + g1.twist + ')', !!k && !!g1.twist && Math.abs(q1.y - (k.p.y - 15)) < 0.6 && Math.abs(q1.x - k.p.x) < 6);
+  check('dragged back, it is the upright hall again', !g2.twist && !g2.bend && !g2.rot && g2.x === hall.x && g2.y === hall.y && g2.w === hall.w && g2.h === hall.h);
+  check('a twisted hall has its ends, long walls, middle, S grip and turn handle as grips', gripsFor({ ...hall, ...g1 }).map(g => g.grip).sort().join('') === 'abkmnst');
+  for (const [tw, bd] of [[0.25, 0], [-0.25, 0], [0.2, -20]]) {
+    const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') { z.twist = tw; if (bd) z.bend = bd; }
+    const sim = new Sim(w, 7); sim.relayout(); const d = sim.d; const what = 'twisted ' + tw + (bd ? ' and bent ' + bd : '');
+    const dep = d.zones.filter(z => z.auto?.deck === 'dep'), arr = d.zones.filter(z => z.auto?.deck === 'arr');
+    const outline = zonePts(d.zones.find(z => z.type === 'checkin'));
+    const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+    const wallGap = z => Math.min(...zonePts(z).map(p => Math.min(...outline.map((a, i) => segD(p, a, outline[(i + 1) % outline.length])))));
+    check('the hall ' + what + ' opens Terminal 1 (' + (d.terminals[0].problems.join('; ') || 'open') + ')', d.terminals[0].active);
+    check('its curbs follow the S a piece at a time on both levels (' + dep.length + ', ' + arr.length + '), each against the wall, along a frontage road of chords with one deck and a ramp at each end', dep.length >= 6 && arr.length === dep.length && [...dep, ...arr].every(z => wallGap(z) < 1.5) && d.autoRoads.filter(r => r.fore === 'face').length >= 6 && d.decks.length === 1 && d.autoRoads.filter(r => r.rg).length === 2);
+    let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
+    check('and flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0);
+  }
+  const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.twist = 0.3; w.zones.find(z => z.type === 'concourse').twist = 0.3; w.zones.find(z => z.type === 'security').twist = 5;
+  const m = migrateWorld(JSON.parse(JSON.stringify(w)));
+  const w2 = sampleWorld(); for (const z of w2.zones) if (z.type === 'checkin' || z.type === 'claim') z.twist = 5; const m2 = migrateWorld(JSON.parse(JSON.stringify(w2))); const h2 = m2.zones.find(z => z.type === 'checkin');
+  check('a saved world keeps the S, drops a twist on a concourse or on a module standing on end, and keeps one too tight within what the width allows', m.zones.filter(z => z.type === 'checkin' || z.type === 'claim').every(z => z.twist === 0.3) && m.zones.find(z => z.type === 'concourse').twist === undefined && m.zones.find(z => z.type === 'security').twist === undefined && Math.abs(h2.twist - maxTwist(h2.w, h2.h)) < 1e-9); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

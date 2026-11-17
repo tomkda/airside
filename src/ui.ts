@@ -19,7 +19,7 @@ import type { Cut } from './shell';
 /** v0.35: a cut-out as a shape, for overlap tests. */
 const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
 import { AREA } from './config';
-import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths } from './shapes';
+import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
@@ -75,7 +75,7 @@ const isWay = (t: Tool): t is WayKind => t === 'taxi' || t === 'road' || t === '
 export interface Controls { speed: number; paused: boolean; hold?: boolean; save(): void; loadSample(): void; clearSite(): void }
 /** How far a grip can take a shape. */
 /** The floor a zone was paid for: a bent pier's or a hub's true outline, not its box. */
-const floorArea = (z: Zone) => (z.bend || z.sides || z.taper || z.poly ? polyArea(zonePts(z)) : z.w * z.h);
+const floorArea = (z: Zone) => (z.bend || z.sides || z.taper || z.poly || z.twist ? polyArea(zonePts(z)) : z.w * z.h);
 const GRIP: GripLimits = { minLen: PIER.minLen, minWide: 30, maxWide: 120, minDia: HALL.minDia, maxDia: HALL.maxDia, snapDeg: PIER.snapDeg };
 
 export class UI {
@@ -656,7 +656,7 @@ export class UI {
     }
     if (dr.mode === 'grip' && dr.zone && dr.z0 && dr.grip) {
       // v0.19: reshape what is built. The shape itself changes as you drag, and its gates, aprons, lots and roads with it.
-      const z = dr.zone; const z0 = dr.z0; const swing = dr.grip === 'a' || dr.grip === 'b' || dr.grip === 'r' || dr.grip === 'm' || dr.grip === 'ta' || dr.grip === 'tb' || dr.grip === 't' || !!z0.bend || !!z0.taper;
+      const z = dr.zone; const z0 = dr.z0; const swing = dr.grip === 'a' || dr.grip === 'b' || dr.grip === 'r' || dr.grip === 'm' || dr.grip === 'ta' || dr.grip === 'tb' || dr.grip === 't' || dr.grip === 'k' || !!z0.bend || !!z0.taper || !!z0.twist;
       const q = swing || z0.rot ? p : this.magnet(p, z.level, z.id);
       const g = regrip(z0, dr.grip, q, canTurn(z), GRIP);
       const chk = this.placeGeom(z, g); const cost = this.geomCost(z, g) - this.geomCost(z, z0);
@@ -666,7 +666,7 @@ export class UI {
       const u = this.sim.d.units.get(z.id); const deg = Math.round(((g.rot ?? 0) * 180) / Math.PI);
       const arc = arcOf(g);
       const ends = g.taper ? ` · ${n0(endWidths(g)[0])} m wide at one end, ${n0(endWidths(g)[1])} m at the other` : '';
-      const size0 = g.poly ? `${n0(polyArea(g.poly))} m², ${g.poly.length} corners` : g.sides ? `${n0(g.w)} m across` : arc ? `${n0(arc.La)} m round the bend × ${n0(g.h)} m · centreline radius ${n0(arc.R)} m` : `${n0(g.w)} × ${n0(g.h)} m${g.rot && Math.abs(g.rot) > 1e-3 ? ` at ${deg}°` : ''}`;
+      const size0 = g.poly ? `${n0(polyArea(g.poly))} m², ${g.poly.length} corners` : g.sides ? `${n0(g.w)} m across` : arc ? `${n0(arc.La)} m round the bend × ${n0(g.h)} m · centreline radius ${n0(arc.R)} m` : g.twist ? `${n0(frameOf(g).w)} m along its S × ${n0(g.h)} m · crossing its middle at ${Math.round(Math.abs(g.twist) * 180 / Math.PI)}°` : `${n0(g.w)} × ${n0(g.h)} m${g.rot && Math.abs(g.rot) > 1e-3 ? ` at ${deg}°` : ''}`;
       const size = size0 + ends;
       const count = z.type === 'concourse' ? ` · ${u?.count ?? 0} gates` : u ? ` · ${u.max} ${ZONES[z.type].unit}` : '';
       this.hint(ok ? `${size}${count}${cost > 0 ? ` · ${money(cost)}` : cost < 0 ? ` · ${money(-cost * 0.4)} back` : ''} · release to keep, Esc to put it back` : dr.reason!, !ok);
@@ -808,7 +808,7 @@ export class UI {
       }
       if (shaped(z)) {   // a pier or hub slides freely and keeps its angle
         const r0 = { x: snap(p.x - dr.off!.x, 5), y: snap(p.y - dr.off!.y, 5) };
-        const r = { ...r0, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, poly: z.poly?.map(q => ({ x: q.x + r0.x - z.x, y: q.y + r0.y - z.y })) };
+        const r = { ...r0, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, twist: z.twist, poly: z.poly?.map(q => ({ x: q.x + r0.x - z.x, y: q.y + r0.y - z.y })) };
         const chk = TURNABLE.has(z.type) ? this.placeGeom(z, { ...geomOf(z), x: r.x, y: r.y }) : canPlacePier(this.world, { ...r, level: z.level }, z.id);
         dr.liveOk = chk.ok; dr.reason = chk.reason;
         if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
@@ -837,7 +837,7 @@ export class UI {
   /** Give a zone (and the baggage claim under a hall) a new shape for now. */
   liveSet(z: Zone, g: Geom) {
     if (!this.live) return;
-    const tw = this.twin(z); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend });   // (v0.29: angle and all; v0.34: and its bend)
+    const tw = this.twin(z); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, twist: g.twist });   // (v0.41: and its twist)   // (v0.29: angle and all; v0.34: and its bend)
     setGeom(z, g); this.live.dirty = true;
     // (v0.35: a building being moved takes its cut-outs with it)
     const cr = this.live.carry; if (cr && cr.z === z) for (const c of cr.ks) c.k.pts = c.pts.map(p => ({ x: p.x + z.x - cr.x, y: p.y + z.y - cr.y }));
@@ -897,6 +897,7 @@ export class UI {
     if (grip === 'r') return z.sides! >= 24 ? 'Drag to make the hub wider or narrower' : 'Drag a corner to resize and turn the hub';
     if (grip === 'a' || grip === 'b') return 'Drag this end to stretch and swing the pier · the other end stays where it is';
     if (grip === 'ta' || grip === 'tb') return 'Drag to make this end of the pier wider or narrower · the other end keeps its width, so the pier tapers';
+    if (grip === 'k') { const what = z.type === 'checkin' || z.type === 'claim' ? 'hall' : ZONES[z.type].short.toLowerCase(); return z.twist ? `Drag sideways to twist the ${what} more or less · pull it back to its line to take the S out` : `Drag sideways to twist the ${what} into an S · both ends and the middle stay where they are`; }
     if (grip === 'm') { const what = z.type === 'checkin' || z.type === 'claim' ? 'hall' : BENDS.has(z.type) ? ZONES[z.type].short.toLowerCase() : 'pier'; return z.bend ? `Drag to bend the ${what} more or less · pull it back to the line between its ends to straighten it` : `Drag sideways to bend the ${what} into a curve · both ends stay where they are`; }
     return canTurn(z) ? 'Drag to make it wider or narrower' : `Drag this edge to resize the ${ZONES[z.type].short.toLowerCase()} · the opposite edge stays where it is`;
   }
@@ -904,17 +905,17 @@ export class UI {
   placeGeom(z: Zone, g: Geom) {
     // v0.29: a turned hall, security or passport control (and the claim under a hall)
     // (v0.34: or a bent hall)
-    if ((g.rot || g.bend) && TURNABLE.has(z.type)) {
+    if ((g.rot || g.bend || g.twist) && TURNABLE.has(z.type)) {
       const tw = this.twin(z); const ids = [z.id, ...(tw ? [tw.id] : [])];
-      const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, level: z.level }, z.type, ids, this.aprons);
-      const chk2 = chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, level: tw.level }, tw.type, ids, this.aprons) : chk;
-      if (chk2.ok && g.bend && BENDS.has(z.type)) {
+      const chk = canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, twist: g.twist, level: z.level }, z.type, ids, this.aprons);
+      const chk2 = chk.ok && tw ? canPlaceTurned(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, twist: g.twist, level: tw.level }, tw.type, ids, this.aprons) : chk;
+      if (chk2.ok && (g.bend || g.twist) && BENDS.has(z.type)) {
         // (v0.34: a bent hall joins by overlap; a bend or reshape that pulls it off a module it was joined to is refused)
-        const base = this.drag?.z0 ?? geomOf(z); const grown = (q: Geom): Geom => (q.rot || q.bend ? q : { ...q, x: q.x - 1, y: q.y - 1, w: q.w + 2, h: q.h + 2 });
+        const base = this.drag?.z0 ?? geomOf(z); const grown = (q: Geom): Geom => (q.rot || q.bend || q.twist ? q : { ...q, x: q.x - 1, y: q.y - 1, w: q.w + 2, h: q.h + 2 });
         const lost = this.world.zones.find(o => !ids.includes(o.id) && !o.auto && o.level === z.level && ZONES[o.type].terminal && zonesOverlap(grown(base), o) && !zonesOverlap(g, o, 4));
         if (lost) return { ok: false, reason: `Bent this way it pulls away from ${ZONES[lost.type].short.toLowerCase()}: bend it the other way, into it, or move ${ZONES[lost.type].short.toLowerCase()} to meet it` };
       }
-      return chk2.ok ? this.siteRules(zoneBox({ ...g, rot: g.rot, bend: g.bend }), z.id) : chk2;   // and the same site rules as an upright one
+      return chk2.ok ? this.siteRules(zoneBox({ ...g, rot: g.rot, bend: g.bend, twist: g.twist }), z.id) : chk2;   // and the same site rules as an upright one
     }
     if (g.poly) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, poly: g.poly, level: z.level }, z.id);   // (v0.32: a free area)
     if (g.sides || g.rot || g.bend || g.taper) return canPlacePier(this.world, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, sides: g.sides, bend: g.bend, taper: g.taper, level: z.level }, z.id);
@@ -926,7 +927,7 @@ export class UI {
     // every square metre carries what was paid for it: the fit-out tier, a mezzanine, garage decks
     const rate = (q: Zone) => ZONES[q.type].costPerM2 + (q.tier ? ZONES[q.type].tierCostPerM2 : 0) + (q.mezz ? GROWTH.mezzCostPerM2 * 0.3 : 0) + Math.max(0, (q.floors ?? 1) - 1) * GROWTH.deckCostPerM2;
     const tw = this.twin(z);
-    return (g.sides || g.bend || g.taper || g.poly ? polyArea(zonePts(g)) : g.w * g.h) * (rate(z) + (tw ? rate(tw) : 0));
+    return (g.sides || g.bend || g.taper || g.poly || g.twist ? polyArea(zonePts(g)) : g.w * g.h) * (rate(z) + (tw ? rate(tw) : 0));
   }
   // ------------------------------------------------------------ a path of piers (v0.22)
   //
@@ -1851,7 +1852,7 @@ export class UI {
       <p class="muted">${def.blurb}</p>
       <dl class="kv">
         ${z.taper ? `<dt>Taper</dt><dd>${n0(endWidths(z)[0])} m wide at its west end, ${n0(endWidths(z)[1])} m at its east end (of its own frame)</dd>` : ''}
-        <dt>Size</dt><dd>${arcOf(z) ? `${n0(arcOf(z)!.La)} m round the bend × ${n0(z.h)} m · radius ${n0(arcOf(z)!.R)} m · ${n0(polyArea(zonePts(z)))} m²` : z.poly ? `${n0(floorArea(z))} m² · ${z.poly.length} corners` : `${n0(z.w)} × ${n0(z.h)} m · ${n0(floorArea(z))} m²`}</dd>
+        <dt>Size</dt><dd>${arcOf(z) ? `${n0(arcOf(z)!.La)} m round the bend × ${n0(z.h)} m · radius ${n0(arcOf(z)!.R)} m · ${n0(polyArea(zonePts(z)))} m²` : z.twist ? `${n0(frameOf(z).w)} m along its S × ${n0(z.h)} m · ${n0(polyArea(zonePts(z)))} m²` : z.poly ? `${n0(floorArea(z))} m² · ${z.poly.length} corners` : `${n0(z.w)} × ${n0(z.h)} m · ${n0(floorArea(z))} m²`}</dd>
         ${(() => { const T = s.d.termOf.get(z.id); return T ? `<dt>Terminal</dt><dd class="${T.active ? '' : 'bad'}">${T.name} · ${T.active ? 'open' : 'closed'}</dd>` : ''; })()}
         ${z.type === 'concourse' ? this.gateSidesHTML(z) : ''}
         ${u.max && z.type !== 'concourse' && !z.auto ? `<dt>${z.type === 'claim' ? 'Carousels built' : def.unit[0].toUpperCase() + def.unit.slice(1)}</dt><dd>

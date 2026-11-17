@@ -10,7 +10,7 @@ import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
 export type { Round, Piece } from './ways';
-import { gripsOf, Grip, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
+import { gripsOf, Grip, maxTwist, curved, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
 import { layoutZone, LItem } from './layout';
 import { carveConcourse, carveHub, carveFree, freeRing, Budget } from './bands';
@@ -33,6 +33,8 @@ export interface Zone {
   rot?: number;
   /** v0.20: the bar is bent into an arc: its ends stay, its middle moves this far to its own south (north if negative). See shapes.ts. */
   bend?: number;
+  /** v0.41: a hall, security or passport module twisted into an S (shapes.ts `halvesOf`): the angle, radians, its centreline crosses its middle at. */
+  twist?: number;
   /** v0.21: the bar tapers: its east end is this much wider than its west end; `h` is the width half way along. See shapes.ts. */
   taper?: number;
   /** v0.18: a round or polygonal hall: a regular polygon of this many sides in the circle that fits the box (24+ is round). */
@@ -96,6 +98,10 @@ export function migrateWorld(w: World): World {
   for (const z of w.zones) if (z.bend !== undefined) {   // v0.20: or bend, and only as far as their width allows
     if (!(z.type === 'concourse' || BENDS.has(z.type)) || z.sides || !isFinite(z.bend)) { delete z.bend; continue; }   // (v0.34: halls bend too)
     const m = maxBend(z.w, z.h + Math.abs(z.taper ?? 0) / 2); z.bend = Math.max(-m, Math.min(m, z.bend)); if (Math.abs(z.bend) < 4) delete z.bend;
+  }
+  for (const z of w.zones) if (z.twist !== undefined) {   // v0.41: halls, security and passport control twist into an S, as far as they can
+    if (!BENDS.has(z.type) || z.sides || z.taper || z.poly || !isFinite(z.twist) || (!z.rot && !z.bend && z.h > z.w)) { delete z.twist; continue; }   // (and along its length: one standing on end is turned first)
+    const m = maxTwist(z.w, z.h, z.bend); z.twist = Math.max(-m, Math.min(m, z.twist)); if (Math.abs(z.twist) < 0.03) delete z.twist;
   }
 
   for (const z of w.zones) if (z.pair !== undefined && !w.zones.some(q => q.id === z.pair && q.pair === z.id)) delete z.pair;
@@ -401,7 +407,7 @@ export function canPlacePier(world: World, z: { x: number; y: number; w: number;
 }
 /** Does a segment pass through a turned zone (2 m inside its outline)? */
 function segInZone(z: Zone, a: Pt, b: Pt): boolean {
-  if (z.sides || z.bend || z.taper || z.poly) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
+  if (z.sides || z.bend || z.taper || z.poly || z.twist) { const pts = zonePts(z); return inZone(a, z, -2) || inZone(b, z, -2) || pts.some((p, i) => segsIntersect(a, b, p, pts[(i + 1) % pts.length])); }
   const la = toLocal(z, a), lb = toLocal(z, b);
   return rectSegDist(inset(z, 2), la, lb) === 0;
 }
@@ -451,18 +457,21 @@ export const gripsFor = (z: Zone): { grip: Grip; p: Pt }[] => {
   if (!TURNABLE.has(z.type)) return gripsOf(z, canTurn(z));
   const c = centreOf(z); const ax = z.w >= z.h; const off = 16;
   // (off the end of a bent hall's chord, where the turn measures its angle from: not a point on its arc)
-  const turn = { grip: 't' as Grip, p: z.bend ? { x: c.x + Math.cos(z.rot ?? 0) * (z.w / 2 + off), y: c.y + Math.sin(z.rot ?? 0) * (z.w / 2 + off) } : toWorld(z, ax ? { x: z.x + z.w + off, y: c.y } : { x: c.x, y: z.y + z.h + off }) };
+  const turn = { grip: 't' as Grip, p: z.bend || z.twist ? { x: c.x + Math.cos(z.rot ?? 0) * (z.w / 2 + off), y: c.y + Math.sin(z.rot ?? 0) * (z.w / 2 + off) } : toWorld(z, ax ? { x: z.x + z.w + off, y: c.y } : { x: c.x, y: z.y + z.h + off }) };
   // v0.34: a hall (check-in over claim) also bends, by a grip in its middle, as a pier does; bent, it has a pier's
   // grips (its ends, its two long walls and its middle) but never tapers
   if (!BENDS.has(z.type)) return [...gripsOf(z, false), turn];
-  if (z.bend) return [...gripsOf(z, true).filter(g => g.grip !== 'ta' && g.grip !== 'tb'), turn];
-  return [...gripsOf(z, false), { grip: 'm', p: c }, turn];
+  // v0.41: and twists into an S, by a grip on its centreline a quarter of the way along
+  const F = frameOf(z); const kq = curved(z) ? toWorld(z, { x: F.x + F.w / 4, y: F.y + F.h / 2 }) : z.rot ? toWorld(z, { x: z.x + z.w / 4, y: c.y }) : ax ? { x: z.x + z.w / 4, y: c.y } : { x: c.x, y: z.y + z.h / 4 };
+  const k = { grip: 'k' as Grip, p: kq };
+  if (z.bend || z.twist) return [...gripsOf(z, true).filter(g => g.grip !== 'ta' && g.grip !== 'tb'), k, turn];
+  return [...gripsOf(z, false), { grip: 'm', p: c }, k, turn];
 };
 /** v0.34: the landside modules that bend: a hall, check-in over claim; v0.35: security and passport control too. */
 export const BENDS = new Set<ZoneType>(['checkin', 'claim', 'security', 'passport']);
 /** v0.29: can a turned hall, security or passport module take this shape? Like a pier, it may overlap the other
  *  terminal modules on its level (it joins them where they overlap), but not a road, a curb, a lot or another hall. */
-export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; bend?: number; level: Level }, type: ZoneType, ignore: number[] = [], aprons: Apron[] = []): PlaceCheck {
+export function canPlaceTurned(world: World, z: { x: number; y: number; w: number; h: number; rot?: number; bend?: number; twist?: number; level: Level }, type: ZoneType, ignore: number[] = [], aprons: Apron[] = []): PlaceCheck {
   const def = ZONES[type];
   if (z.w < def.minW && z.h < def.minW) return { ok: false, reason: `Too small: at least ${def.minW} m on one side` };
   if (Math.min(z.w, z.h) < def.minH) return { ok: false, reason: `Too narrow: at least ${def.minH} m deep` };
@@ -882,7 +891,7 @@ export function derive(source: World): Derived {
   };
   // v0.20: inside a bent pier a straight line from one point to another can leave the building. Wherever two
   // points of a route in a row are in the same bent pier, the walk between them is laid along its centreline.
-  const bent = zs.filter(z => arcOf(z));
+  const bent = zs.filter(z => curved(z));   // (v0.41: and an S)
   const thread = (from: Pt, lv0: Level, r: Route): Route => {
     if (!bent.length) return r;
     const pts: Pt[] = [], lvs: Level[] = []; let a = from, la = lv0; let extra = 0;
