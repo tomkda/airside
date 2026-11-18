@@ -247,7 +247,8 @@ export class Renderer3D {
 
     // ---- pavements
     for (const r of d.runways) strips.push({ a: sub(r.rw.a, mul(r.dir, 60)), b: add(r.rw.b, mul(r.dir, 60)), w: r.width + 8, z: 0.13, c: '#B7AC95' }, { a: r.rw.a, b: r.rw.b, w: r.width, z: 0.15, c: '#3A3631' });
-    for (const w of [...sim.world.ways, ...d.autoWalks]) if (w.kind !== 'road') strips.push({ a: w.a, b: w.b, w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : '#EFE8DA' });
+    // (v0.46: a chord of a curve runs on half a metre past each end, so the joints have no notches)
+    for (const w of [...d.wayPieces, ...d.autoWalks]) if (w.kind !== 'road') { const e = w.chord ? mul(norm(sub(w.b, w.a)), 0.6) : { x: 0, y: 0 }; strips.push({ a: sub(w.a, e), b: add(w.b, e), w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : '#EFE8DA' }); }
     for (const x of d.airExtra) strips.push({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0), z: 0.1, c: '#BDB29C' });
     // roads (roads.ts): each one a smooth path, with junction curves and highway slip ramps so every corner has a curved kerb
     const RP = roadPlan(d);
@@ -296,7 +297,7 @@ export class Renderer3D {
       }
     }
     const taxiLines = (a: Pt, b: Pt, w: number) => { m(a, b, 0.35, YELLOW); const n = perp(a, b); for (const s of [-1, 1]) m(add(a, mul(n, s * (w / 2 - 0.7))), add(b, mul(n, s * (w / 2 - 0.7))), 0.25, YELLOW); };
-    for (const w of sim.world.ways) if (w.kind === 'taxi') taxiLines(w.a, w.b, wayWidth('taxi', w.cls, 0));
+    for (const w of d.wayPieces) if (w.kind === 'taxi') taxiLines(w.a, w.b, wayWidth('taxi', w.cls, 0));
     for (const x of d.airExtra) m(x.a, x.b, 0.35, YELLOW);
     for (const g of d.gates) {
       const L = CLASSES[g.cls].length; const dv = norm(sub(g.door, g.stand)); const nose = add(g.stand, mul(dv, L / 2));
@@ -585,7 +586,7 @@ export class Renderer3D {
     // airfield lights: runway edges every 60 m, taxiway centrelines every 30 m
     const rl: number[] = [], tl: number[] = [];
     for (const r of d.runways) for (let s = 0; s <= r.length; s += 60) for (const k of [-1, 1]) { const p = add(add(r.rw.a, mul(r.dir, s)), mul(r.normal, k * (r.width / 2 + 2))); rl.push(p.x, 0.6, p.y); }
-    for (const w of [...sim.world.ways.filter(x => x.kind === 'taxi'), ...d.airExtra]) { const L = dist(w.a, w.b); const dv = norm(sub(w.b, w.a)); for (let s = 0; s <= L; s += 30) { const p = add(w.a, mul(dv, s)); tl.push(p.x, 0.5, p.y); } }
+    for (const w of [...d.wayPieces.filter(x => x.kind === 'taxi'), ...d.airExtra]) { const L = dist(w.a, w.b); const dv = norm(sub(w.b, w.a)); for (let s = 0; s <= L; s += 30) { const p = add(w.a, mul(dv, s)); tl.push(p.x, 0.5, p.y); } }
     add3(this.lightPoints(rl, '#FFF1C8', 9)); add3(this.lightPoints(tl, '#9BE07C', 6));
   }
 

@@ -362,12 +362,6 @@ export class Renderer {
     this.label('STATE ROUTE 12', { x: 1500, y: HY + 48 }, 0, clamp(60 * z, 8, 11), PAL.ink3, { spacing: 3 });
     this.label('TO LAKESHORE →', { x: SITE.cityX - 500, y: HY + 48 }, 0, clamp(60 * z, 8, 11), PAL.ink3, { spacing: 3 });
     for (const r of sim.world.ways) if (r.kind === 'road') this.wayHighlight(r.id, r.a, r.b, wayWidth('road', 0, r.lanes), wayPts(r));
-    const sw = this.selected?.kind === 'way' ? sim.world.ways.find(q => q.id === this.selected!.id && q.kind !== 'taxi') : undefined;
-    if (sw && !this.ghost) for (const [p, mid] of [[sw.a, false], [sw.b, false], ...(sw.kind === 'road' ? [[wayMid(sw), true] as const] : [])] as const) {
-      const [x, y] = this.P(p.x, p.y);
-      g.fillStyle = mid ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2;
-      g.beginPath(); g.arc(x, y, mid ? 6 : 5, 0, Math.PI * 2); g.fill(); g.stroke();
-    }
     for (const r of RP.rounds) {
       const sel = this.selected?.kind === 'round' && this.selected.id === r.id, hov = this.hover?.kind === 'round' && this.hover.id === r.id;
       if (sel || hov) this.ring(r.c, ringOut(r) + 3, 3, sel ? 'rgba(47,93,124,0.45)' : 'rgba(47,93,124,0.25)');
@@ -387,7 +381,7 @@ export class Renderer {
   // ------------------------------------------------------------ sidewalks (people): pale paving with fine edges
   drawWalks(sim: Sim) {
     const g = this.ctx; const z = this.cam.zoom;
-    const walks = [...sim.world.ways.filter(w => w.kind === 'walk'), ...sim.d.autoWalks];
+    const walks = [...sim.d.wayPieces.filter(w => w.kind === 'walk'), ...sim.d.autoWalks];   // (v0.46: a curved one as its chords)
     if (z < 0.3) {
       g.setLineDash([2, 2]);
       for (const w of walks) this.line(w.a, w.b, 0, PAL.walkEdge, 0, 'butt', 1.2);
@@ -410,7 +404,8 @@ export class Renderer {
         this.line(add(m, mul(road, -2)), add(m, mul(road, 2)), 0.75, PAL.roadLine, 0, 'butt', 0.6);
       }
     }
-    for (const w of walks) this.wayHighlight(w.id, w.a, w.b, 4);
+    // (v0.46: highlighted along the whole curve, not chord by chord)
+    for (const w of [...sim.world.ways.filter(q => q.kind === 'walk'), ...sim.d.autoWalks]) this.wayHighlight(w.id, w.a, w.b, 4, wayPts(w));
     void g;
   }
 
@@ -444,7 +439,7 @@ export class Renderer {
     for (const p of d.pads) this.poly(p, PAL.pave);
     // Taxiways (player) plus generated stubs into aprons and onto runways
     g.lineJoin = 'round';
-    const taxis = sim.world.ways.filter(w => w.kind === 'taxi');
+    const taxis = sim.d.wayPieces.filter(w => w.kind === 'taxi');   // (v0.46: a curved one as its chords)
     for (const t of taxis) this.line(t.a, t.b, wayWidth('taxi', t.cls, 0), PAL.pave, 0, 'round', 1.2);
     for (const t of d.airExtra) this.line(t.a, t.b, wayWidth('taxi', t.cls, 0), PAL.pave, 0, 'round', 1.2);
     this.drawFillets(sim);
@@ -456,7 +451,7 @@ export class Renderer {
         for (const s of [-k, k]) this.line(add(t.a, mul(n, s)), add(t.b, mul(n, s)), 0.3, PAL.paveLine, 0, 'butt', 0.5);
       }
     }
-    for (const t of taxis) this.wayHighlight(t.id, t.a, t.b, wayWidth('taxi', t.cls, 0));
+    for (const t of sim.world.ways) if (t.kind === 'taxi') this.wayHighlight(t.id, t.a, t.b, wayWidth('taxi', t.cls, 0), wayPts(t));
     // Runways: shoulders, pavement, designators
     for (const r of d.runways) {
       const ext = mul(r.dir, 70);
@@ -1434,7 +1429,7 @@ export class Renderer {
       }
     }
     g.fillStyle = '#B9D3A8';
-    for (const t of sim.world.ways) if (t.kind === 'taxi') {
+    for (const t of sim.d.wayPieces) if (t.kind === 'taxi') {
       const L = dist(t.a, t.b); const step = z > 0.4 ? 50 : 150; const d = norm(sub(t.b, t.a));
       for (let s = 0; s <= L; s += step) { const p = add(t.a, mul(d, s)); const [x, y] = this.P(p.x, p.y); g.fillRect(x - 0.7, y - 0.7, 1.4, 1.4); }
     }
@@ -1451,6 +1446,14 @@ export class Renderer {
 
   /** v0.19: the grips of the selected shape: square on an edge, round where an end swings or a hub turns. */
   drawGrips(sim: Sim) {
+    // v0.46: a selected way's handles, drawn last so the airfield does not cover them: a taxiway's ends stay put, but
+    // it and a sidewalk bend by their middle as a road does
+    const sw = this.selected?.kind === 'way' && !this.mode3d ? sim.world.ways.find(q => q.id === this.selected!.id) : undefined;
+    if (sw && !this.ghost) for (const [p, mid] of [...(sw.kind !== 'taxi' ? [[sw.a, false], [sw.b, false]] as const : []), [wayMid(sw), true] as const] as const) {
+      const g = this.ctx; const [x, y] = this.P(p.x, p.y);
+      g.fillStyle = mid ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2;
+      g.beginPath(); g.arc(x, y, mid ? 6 : 5, 0, Math.PI * 2); g.fill(); g.stroke();
+    }
     // v0.35: a selected cut-out: its outline, and a square grip on each corner
     if (this.selected?.kind === 'cut' && !this.mode3d) {
       const k = sim.world.cuts?.find(q => q.id === this.selected!.id); if (!k || this.lod === 'airfield' || (this.lod === 'terminal' && this.level !== k.level)) return;

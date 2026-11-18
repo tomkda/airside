@@ -55,7 +55,13 @@ export function bendThrough(a: Pt, b: Pt, m: Pt): Pt | undefined {
   return segDist(c, a, b) < ROADS.straighten ? undefined : c;
 }
 /** Is the curve gentle enough to drive? */
-export const curveOK = (w: Curved) => !w.c || bezMinRadius(w.a, w.c, w.b) >= ROADS.minRadius;
+export const curveOK = (w: Curved, minR: number = ROADS.minRadius) => !w.c || bezMinRadius(w.a, w.c, w.b) >= minR;
+/** v0.46: a curved taxiway or sidewalk as the straight chords it is drawn and used as (same id and class; no curve):
+ *  everything that reads taxiways and sidewalks as segments (the networks, gates, aprons, clearances, drawing) takes
+ *  these. Roads keep their curves: `roadPieces` cuts them up itself. */
+export function chordWays<T extends Curved & { kind: string }>(ws: T[]): T[] {
+  return ws.flatMap(w => (w.c && w.kind !== 'road' ? waySegs(w).map(([a, b]) => { const q = { ...w, a, b, chord: true }; delete q.c; return q; }) : [w]));
+}
 
 /**
  * Every road as straight pieces: curves in chords, straight roads split at `cuts` (where curbs begin and end),

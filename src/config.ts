@@ -178,6 +178,10 @@ export const ROUNDS = [
 // Curves: a 14 m centreline radius is a tight low-speed turn that a bus can still make (AASHTO Green Book,
 // minimum turning radii: about 7 m for a car, 12–13 m for a city bus). Chords stay longer than the network's
 // 4 m joining tolerance.
+/** v0.46: the tightest a drawn taxiway's centreline may curve, m, by its class: of the order of the FAA's taxiway
+ *  turn radii (AC 150/5300-13, taxiway design groups 3 and 7, from memory of the tables, not checked against them);
+ *  a sidewalk may turn as tight as it likes. */
+export const CURVE_MIN = { taxi: { 2: 45, 3: 60 } as Record<number, number>, walk: 3 };
 export const ROADS = { minRadius: 14, minChord: 5.5, straighten: 3, onewayCost: 0.8, ringSpeed: 0.7, junctionDelay: 0.75 };
 
 const GROWTH_INTL = 0.16;
