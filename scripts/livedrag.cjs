@@ -65,9 +65,35 @@ const path = require('path');
   await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(200);
   const s6 = await state();
   check('Esc leaves no taxiway behind', !s6.live && s6.taxis === s4.taxis && s6.sig === s4.sig);
+  // v0.50: a runway's end stretches live, with the taxiways that follow it
+  const rr = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); const rw = g.sim.world.runways[0];
+    g.ren.selected = { kind: 'runway', id: rw.id }; g.ren.cam.x = rw.b.x - 200; g.ren.cam.y = rw.b.y; g.ren.cam.zoom = 0.6;
+    const L = Math.hypot(rw.b.x - rw.a.x, rw.b.y - rw.a.y), u = { x: (rw.b.x - rw.a.x) / L, y: (rw.b.y - rw.a.y) / L };
+    const [sx, sy] = g.ren.P(rw.b.x, rw.b.y); const [tx, ty] = g.ren.P(rw.b.x + u.x * 300, rw.b.y + u.y * 300);
+    return { sx, sy, tx, ty, L: Math.round(L) }; });
+  await p.waitForTimeout(300);
+  const rwState = () => p.evaluate(() => { const g = window.__game; const r = g.sim.d.runways[0]; const w = g.sim.world;
+    return { len: Math.round(r.length), world: Math.round(Math.hypot(w.runways[0].b.x - w.runways[0].a.x, w.runways[0].b.y - w.runways[0].a.y)), live: !!g.ui.live,
+      taxi: JSON.stringify(w.ways.filter(q => q.kind === 'taxi').map(q => [q.a, q.b])), n: w.ways.length }; });
+  const r0 = await rwState();
+  const pull = async () => { await p.mouse.move(rr.sx, rr.sy); await p.mouse.down();
+    for (let k = 1; k <= 10; k++) { await p.mouse.move(rr.sx + (rr.tx - rr.sx) * k / 10, rr.sy + (rr.ty - rr.sy) * k / 10); await p.waitForTimeout(40); } await p.waitForTimeout(200); };
+  await pull();
+  const r1 = await rwState();
+  console.log('runway', r0.len, 'm → while dragging its end', r1.len, 'm');
+  check('the runway is longer in the layout before the mouse is let go', r1.live && r1.len > r0.len + 200);
+  check('the taxiways that follow its end follow it while dragging', r1.taxi !== r0.taxi);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(250);
+  const r2 = await rwState();
+  check('Esc puts the runway and its taxiways back', !r2.live && r2.len === r0.len && r2.world === r0.world && r2.taxi === r0.taxi && r2.n === r0.n);
+  await pull(); const r3a = await rwState(); await p.mouse.up(); await p.waitForTimeout(300);
+  const r3 = await rwState();
+  check('letting go keeps the runway as shown', !r3.live && r3.len === r3a.len && r3.taxi === r3a.taxi && r3.n === r3a.n);
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
   // v0.49: in 3D, the selected building is grabbed by its roof and moved whole, with everything following
-  const m = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); g.ui.set3d(true);
-    const z = g.sim.world.zones.find(q => q.type === 'concourse'); g.ren.selected = { kind: 'zone', id: z.id };
+  const m = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select');
+    const z = g.sim.world.zones.find(q => q.type === 'concourse'); g.ren.cam.x = z.x + z.w / 2; g.ren.cam.y = z.y + z.h / 2 + 60; g.ren.cam.zoom = 0.8;
+    g.ui.set3d(true); g.ren.selected = { kind: 'zone', id: z.id };
     return { id: z.id, x: z.x, y: z.y }; });
   await p.waitForTimeout(1500);
   const roof = await p.evaluate(id => { const g = window.__game; const z = g.sim.world.zones.find(q => q.id === id);

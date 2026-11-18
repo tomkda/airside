@@ -107,7 +107,9 @@ export class UI {
     /** v0.35: cut-outs changed during the edit, with their corners from before it; and those carried along by a moved building */
     cuts: { k: Cut; pts: Pt[] }[]; carry?: { z: Zone; x: number; y: number; ks: { k: Cut; pts: Pt[] }[] };
     /** v0.48: ways changed during the edit, with their line from before it; and ways that exist only while drawing */
-    ways: { w: Way; a: Pt; b: Pt; c?: Pt }[]; tempWays: Way[] } = null;
+    ways: { w: Way; a: Pt; b: Pt; c?: Pt }[]; tempWays: Way[];
+    /** v0.50: a runway whose end is being dragged, with its ends from before */
+    rws?: { rw: Runway; a: Pt; b: Pt }[] } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
   private liveStale = false;
   /** v0.49: a hint shown for a grip or roof under the pointer in 3D, to be put back when it leaves */
@@ -120,11 +122,12 @@ export class UI {
     // offer answered); the drafts are lifted out for the moment of the save.
     const save0 = ctl.save.bind(ctl);
     ctl.save = () => {
-      const lv = this.live; if (!lv?.temp.length && !lv?.tempWays.length && !lv?.ways.length) { save0(); return; }
+      const lv = this.live; if (!lv?.temp.length && !lv?.tempWays.length && !lv?.ways.length && !lv?.rws?.length) { save0(); return; }
+      const rnow = (lv.rws ?? []).map(r => ({ r, a: r.rw.a, b: r.rw.b })); for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; }   // (v0.50: and a runway on its ends from before)
       // (v0.48: nor a way being drawn, and a way being bent is saved on its line from before the drag)
       const W = this.sim.world, all = W.zones, allW = W.ways, now = lv.ways.map(s0 => ({ w: s0.w, a: s0.w.a, b: s0.w.b, c: s0.w.c }));
       W.zones = all.filter(z => !lv.temp.includes(z)); W.ways = allW.filter(w => !lv.tempWays.includes(w)); this.liveWaysBack();
-      try { save0(); } finally { W.zones = all; W.ways = allW; for (const n of now) { n.w.a = n.a; n.w.b = n.b; if (n.c) n.w.c = n.c; else delete n.w.c; } }
+      try { save0(); } finally { W.zones = all; W.ways = allW; for (const n of now) { n.w.a = n.a; n.w.b = n.b; if (n.c) n.w.c = n.c; else delete n.w.c; } for (const x of rnow) { x.r.rw.a = x.a; x.r.rw.b = x.b; } }
     };
     this.buildChrome();
     this.bindInput();
@@ -777,6 +780,10 @@ export class UI {
       return;
     }
     if (dr.mode === 'extend' && dr.rw && dr.orig && dr.end) {
+      // v0.50: the runway stretches under the cursor, with the taxiways that follow its end and the links it adds, and
+      // everything that hangs off them (exits, gates reaching it, the flight plan's limits) follows as it does
+      if (!this.live) this.beginLive([], [], this.world.ways.filter(q => q.kind === 'taxi'), [dr.rw]);
+      this.liftDraftWays(); this.liveWaysBack(); dr.rw.a = { ...dr.orig.a }; dr.rw.b = { ...dr.orig.b };   // (checked against the world as it was)
       const fixed = dr.end === 'a' ? dr.orig.b : dr.orig.a, moving = dr.end === 'a' ? dr.orig.a : dr.orig.b;
       const dir = norm(sub(moving, fixed));
       const s2 = Math.max(TUNE.minRunway, snap(dot(sub(p, fixed), dir), 50));
@@ -788,6 +795,12 @@ export class UI {
       const cost = Math.max(0, delta) + (follow?.cost ?? 0);
       const ok = chk.ok && this.sim.canAfford(cost);
       dr.pend = { a, b, ok, cost, delta, follow };
+      if (this.live) {
+        if (ok) { dr.rw.a = a; dr.rw.b = b; for (const m of follow?.moves ?? []) m.way[m.end] = m.to; }
+        const id0 = this.world.nextId;
+        this.liveDraftWays(ok ? (follow?.adds ?? []).map((x, i) => ({ id: id0 + i, kind: 'taxi' as WayKind, a: x.a, b: x.b, cls: x.cls, lanes: 0 })) : []);
+        this.live.dirty = true;
+      }
       const extras = [...(follow?.moves.map(m => ({ a: m.end === 'a' ? m.way.b : m.way.a, b: m.to, cls: m.way.cls })) ?? []), ...(follow?.adds ?? [])];
       this.ren.ghost = { kind: 'runway', a, b, ok, extras };
       const len = dist(a, b), was = dist(dr.orig.a, dr.orig.b);
@@ -885,11 +898,12 @@ export class UI {
   //   meanwhile. Letting go either keeps the change (one undo step, through `changed()`) or puts everything back.
   //   v0.43: in 3D too, for a grip of the selected building: its outline follows at once, and the model itself is
   //   rebuilt at most every `LIVE_3D_MS` (render3d.ts), since building it takes some tens of milliseconds.
-  beginLive(zs: Zone[], cuts: Cut[] = [], ways: Way[] = []) {
+  beginLive(zs: Zone[], cuts: Cut[] = [], ways: Way[] = [], rws: Runway[] = []) {
     if (this.live) return;   // (v0.43: in 3D too, for a grip: the model is rebuilt a few times a second meanwhile)
     this.ren.liveEdit = true;
     this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })),
-      ways: ways.map(w => ({ w, a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined })), tempWays: [] };
+      ways: ways.map(w => ({ w, a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined })), tempWays: [],
+      rws: rws.map(rw => ({ rw, a: { ...rw.a }, b: { ...rw.b } })) };
     this.ctl.hold = true; holdScenery(this.world, this.sim.d);
   }
   /** Give a zone (and the baggage claim under a hall) a new shape for now. */
@@ -940,7 +954,7 @@ export class UI {
     this.live = null; this.ctl.hold = false; holdScenery(null); this.ren.liveEdit = false;
     if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
     if (lv.tempWays.length) this.world.ways = this.world.ways.filter(w => !lv.tempWays.includes(w));
-    if (!keep) { for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
+    if (!keep) { for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; } for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
     this.sim.d = lv.d0;
     if (lv.touched) this.liveStale = true;
   }
