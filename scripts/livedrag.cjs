@@ -55,6 +55,10 @@ const path = require('path');
   for (let k = 1; k <= 10; k++) { await p.mouse.move(e.ax + (e.bx - e.ax) * k / 10, e.ay + (e.by - e.ay) * k / 10); await p.waitForTimeout(40); }
   await p.waitForTimeout(200);
   const s5 = await state();
+  // a save taken while drawing keeps nothing of the draft
+  const sv = await p.evaluate(() => { const g = window.__game; g.ctl.save(); const k = Object.keys(localStorage).find(q => q.startsWith('airport-builder')); const j = JSON.parse(localStorage.getItem(k)); const w = j.world ?? j; return { n: w.ways.length, ids: w.ways.map(q => q.id), next: w.nextId, live: g.sim.world.ways.length }; });
+  console.log('saved', sv.n, 'ways of', sv.live, 'in the world mid-draw, next id', sv.next);
+  check('a save while drawing leaves the draft out', sv.n < sv.live && sv.ids.every(i => i < sv.next));
   console.log('drawing a taxiway along the east end:', s4.drawn, '→', s5.drawn, 'drawn aprons,', s4.taxis, '→', s5.taxis, 'taxiways in the world');
   check('a taxiway being drawn takes over a side before the mouse is let go', s5.live && s5.drawn > s4.drawn);
   await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(200);

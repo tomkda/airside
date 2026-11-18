@@ -118,9 +118,11 @@ export class UI {
     // offer answered); the drafts are lifted out for the moment of the save.
     const save0 = ctl.save.bind(ctl);
     ctl.save = () => {
-      const lv = this.live; if (!lv?.temp.length) { save0(); return; }
-      const all = this.sim.world.zones; this.sim.world.zones = all.filter(z => !lv.temp.includes(z));
-      try { save0(); } finally { this.sim.world.zones = all; }
+      const lv = this.live; if (!lv?.temp.length && !lv?.tempWays.length && !lv?.ways.length) { save0(); return; }
+      // (v0.48: nor a way being drawn, and a way being bent is saved on its line from before the drag)
+      const W = this.sim.world, all = W.zones, allW = W.ways, now = lv.ways.map(s0 => ({ w: s0.w, a: s0.w.a, b: s0.w.b, c: s0.w.c }));
+      W.zones = all.filter(z => !lv.temp.includes(z)); W.ways = allW.filter(w => !lv.tempWays.includes(w)); this.liveWaysBack();
+      try { save0(); } finally { W.zones = all; W.ways = allW; for (const n of now) { n.w.a = n.a; n.w.b = n.b; if (n.c) n.w.c = n.c; else delete n.w.c; } }
     };
     this.buildChrome();
     this.bindInput();
@@ -712,7 +714,7 @@ export class UI {
       const cost = Math.max(0, (wayLen({ a, b, c }) - wayLen(o)) * wayCostPerM(w.kind, w.cls, w.lanes));
       const ok = chk.ok && this.sim.canAfford(cost);
       dr.bend = { a, b, c, ok, cost, reason: chk.reason };
-      if (chk.ok && this.live) { w.a = a; w.b = b; if (c) w.c = c; else delete w.c; followBend(this.world, w, o); }
+      if (ok && this.live) { w.a = a; w.b = b; if (c) w.c = c; else delete w.c; followBend(this.world, w, o); }
       if (this.live) this.live.dirty = true;
       this.ren.ghost = { kind: 'way', a, b, c, ok, way: { kind: w.kind, cls: w.cls, lanes: w.lanes } };
       this.hint(chk.ok ? (ok ? `${dr.handle === 'm' ? (c ? 'Bending' : 'Straight') : 'Moving the end'} · ${n0(wayLen({ a, b, c }))} m${cost ? ` · ${money(cost)}` : ''}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
