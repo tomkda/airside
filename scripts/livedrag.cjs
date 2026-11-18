@@ -88,6 +88,15 @@ const path = require('path');
   check('letting go keeps it where it was shown', !kept.live && kept.x === mid2.x && kept.y === mid2.y && (kept.x !== before.x || kept.y !== before.y));
   const orbit = await p.evaluate(() => window.__game.ren.r3.controls.enabled);
   check('the view orbits again after the move', orbit);
+  // a click (no drag) on the selected building's roof still selects: here a lot inside it, at terminal detail
+  const lot = await p.evaluate(id => { const g = window.__game; g.ui.setLod?.('terminal'); g.ren.lod = 'terminal'; g.ren.focus = g.sim.world.zones.find(q => q.id === id).site ?? g.ren.focus;
+    const z = g.sim.world.zones.find(q => q.id === id); g.ren.selected = { kind: 'zone', id }; const [sx, sy] = g.ren.P(z.x + z.w * 0.3, z.y + z.h / 2, 12); return { sx, sy }; }, m.id);
+  await p.waitForTimeout(1200);
+  const selBefore = await p.evaluate(() => JSON.stringify(window.__game.ren.selected));
+  await p.mouse.move(lot.sx, lot.sy); await p.waitForTimeout(100); await p.mouse.down(); await p.mouse.up(); await p.waitForTimeout(300);
+  const after = await p.evaluate(() => ({ sel: JSON.stringify(window.__game.ren.selected), drag: !!window.__game.ui.drag, live: !!window.__game.ui.live }));
+  console.log('click on the roof: selection', selBefore, '→', after.sel);
+  check('a click on the roof is a click: no move left hanging, and it picks again', !after.drag && !after.live && after.sel !== 'null');
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();
