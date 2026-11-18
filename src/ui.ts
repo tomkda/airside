@@ -110,6 +110,8 @@ export class UI {
     ways: { w: Way; a: Pt; b: Pt; c?: Pt }[]; tempWays: Way[] } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
   private liveStale = false;
+  /** v0.49: a hint shown for a grip or roof under the pointer in 3D, to be put back when it leaves */
+  private hoverHint = false;
 
   /** v0.12: sound. `nextSound` lets an edit say what it sounded like before `changed()` plays it. */
   snd = new Sound(); nextSound: 'place' | 'demolish' | 'none' = 'place';
@@ -394,7 +396,7 @@ export class UI {
 
   floorZ() {
     // (v0.43: a grip in 3D stands on the roof of its level, and is dragged across that height)
-    if (this.ren.mode3d && this.drag?.mode === 'grip' && this.drag.zone) return LEVELS[this.drag.zone.level].z1;
+    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move') && this.drag.zone) return LEVELS[this.drag.zone.level].z1;   // (v0.49: and a building moved whole, across its roof)
     if (this.ren.mode3d) return (this.tool in ZONES && !ZONES[this.tool as ZoneType].groundOnly) || (this.tool === 'select' && this.ren.lod === 'terminal') ? LEVELS[this.ren.level].z0 : 0;
     return this.ren.tilt > 0.02 && !isWay(this.tool) && this.tool !== 'runway' ? LEVELS[this.ren.level].z1 : 0;
   }
@@ -547,6 +549,14 @@ export class UI {
         this.beginLive([z3, ...(this.twin(z3) ? [this.twin(z3)!] : [])]);
         this.drag = { mode: 'grip', sx: e.offsetX, sy: e.offsetY, start: this.ren.toWorld(e.offsetX, e.offsetY, LEVELS[z3.level].z1), zone: z3, grip: grip3, z0: geomOf(z3), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return;
       }
+      // v0.49: and the selected building itself, grabbed by its roof, is moved whole as in the plan
+      const roof = z3 && !z3.auto ? this.roofAt(z3, e.offsetX, e.offsetY) : null;
+      if (z3 && roof) {
+        this.orbit3d(false); this.ren.canvas.setPointerCapture(e.pointerId); this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+        this.drag = { mode: 'move', sx: e.offsetX, sy: e.offsetY, start: roof, zone: z3, off: sub(roof, { x: z3.x, y: z3.y }), moved: false }; this.ren.canvas.style.cursor = 'grabbing';
+        this.click3d = { x: e.offsetX, y: e.offsetY };   // (a press that never becomes a move is a click: it still selects, a lot inside for one)
+        return;
+      }
       if (e.button === 0) this.click3d = { x: e.offsetX, y: e.offsetY };
       return;
     }
@@ -615,9 +625,13 @@ export class UI {
       if (this.tool === 'select') {
         // v0.43: over a grip of the selected building the pointer grabs it rather than orbiting
         const z = this.ren.selected?.kind === 'zone' ? this.world.zones.find(q => q.id === this.ren.selected!.id) : undefined;
-        const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null; this.ren.gripHot = grip; this.ren.setOrbitLeft(!grip);   // (left drag only: the wheel and right-drag still work)
-        this.ren.canvas.style.cursor = grip ? 'grab' : '';
+        const grip = z ? this.gripAt(z, e.offsetX, e.offsetY) : null; this.ren.gripHot = grip;
+        const roof = z && !grip && !z.auto ? this.roofAt(z, e.offsetX, e.offsetY) : null;   // (v0.49: or its roof, to move it whole)
+        this.ren.setOrbitLeft(!grip && !roof);   // (left drag only: the wheel and right-drag still work)
+        this.ren.canvas.style.cursor = grip ? 'grab' : roof ? 'move' : '';
         if (z && grip) this.hint(this.gripHint(z, grip));
+        if (grip || roof) this.hoverHint = true; else if (this.hoverHint) { this.hoverHint = false; this.hint(this.toolHint()); }
+        if (z && !grip && roof) this.hint(`Drag to move ${z.type === 'concourse' ? 'the concourse' : ZONES[z.type].short.toLowerCase()} · everything follows · Esc puts it back · drag elsewhere to orbit`);
       }
       if (this.tool !== 'select') { const p = this.wpt(e); if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; } }
       return;
@@ -634,7 +648,7 @@ export class UI {
     }
     // (v0.43: a grip dragged in 3D where the pointer meets no roof, above the horizon or far beyond the view, stays
     //  where it last was)
-    if (this.ren.mode3d && this.drag?.mode === 'grip' && this.drag.zone) {
+    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move') && this.drag.zone) {
       const q = this.ren.r3?.hit(e.offsetX, e.offsetY, LEVELS[this.drag.zone.level].z1);
       if (!q || dist(q, this.drag.start) > 3000) return;
     }
@@ -852,14 +866,14 @@ export class UI {
         const r = { ...r0, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, twist: z.twist, poly: z.poly?.map(q => ({ x: q.x + r0.x - z.x, y: q.y + r0.y - z.y })) };
         const chk = TURNABLE.has(z.type) ? this.placeGeom(z, { ...geomOf(z), x: r.x, y: r.y }) : canPlacePier(this.world, { ...r, level: z.level }, z.id);
         dr.liveOk = chk.ok; dr.reason = chk.reason;
-        if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
+        if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = this.ren.mode3d ? null : { kind: 'zone', rect: r, ok: false };   /* (v0.49: in 3D the outline stays at the last place that fits) */
         this.hint(chk.ok ? `Move the ${z.sides ? 'hub' : z.poly ? 'free area' : TURNABLE.has(z.type) ? ZONES[z.type].short.toLowerCase() : 'pier'} · release to place (free), Esc to put it back` : chk.reason!, !chk.ok);
         return;
       }
       const r = this.magnetMove({ x: p.x - dr.off!.x, y: p.y - dr.off!.y, w: z.w, h: z.h }, z.level, z.id);
       const chk = this.placeHall(r, z.type, z.level, z.id, z);
       dr.liveOk = chk.ok; dr.reason = chk.reason;
-      if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = { kind: 'zone', rect: r, ok: false };
+      if (chk.ok) { this.liveSet(z, { ...geomOf(z), x: r.x, y: r.y }); this.ren.ghost = null; } else this.ren.ghost = this.ren.mode3d ? null : { kind: 'zone', rect: r, ok: false };   /* (v0.49: in 3D the outline stays at the last place that fits) */
       this.hint(chk.ok ? `Move ${ZONES[z.type].short} · release to place (free), Esc to put it back` : chk.reason!, !chk.ok);
     }
   }
@@ -944,6 +958,13 @@ export class UI {
     return [z, { id: id + 1, type: 'claim', level: 0, ...r, tier: 0, pair: id, site: st?.id }];
   }
   /** Which grip of a selected shape is under the pointer. */
+  /** v0.49: in 3D, the point of a building's roof under the pointer (on its level's roof plane), or null */
+  roofAt(z: Zone, sx: number, sy: number): Pt | null {
+    if (!this.ren.mode3d || !this.ren.r3) return null;
+    if (this.ren.lod === 'terminal' && z.level !== this.ren.level) return null;   // (a level not shown has no roof to grab)
+    const q = this.ren.r3.hit(sx, sy, LEVELS[z.level].z1);
+    return q && inZone(q, z) ? q : null;
+  }
   gripAt(z: Zone, sx: number, sy: number): Grip | null {
     if (z.auto) return null;
     const top = this.ren.mode3d || this.ren.tilt > 0.02 ? LEVELS[z.level].z1 : 0;
@@ -1137,7 +1158,8 @@ export class UI {
   }
 
   up(e: PointerEvent) {
-    if (this.ren.mode3d && this.drag?.mode === 'grip') { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
+    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
+    if (this.ren.mode3d && this.drag?.mode === 'move') { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
     if (this.click3d) {
       const c = this.click3d; this.click3d = null;
       if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }
@@ -1300,7 +1322,7 @@ export class UI {
   // ------------------------------------------------------------ forgiving placement
   /** Snap a drawn corner to the edges of nearby modules (any level) so modules meet flush; otherwise to the 10 m grid. */
   magnet(p: Pt, level: Level, ignore = -1): Pt {
-    const tol = Math.max(6, 12 / this.ren.cam.zoom);
+    const tol = this.ren.mode3d ? 8 : Math.max(6, 12 / this.ren.cam.zoom);   // (v0.49: in 3D the plan's zoom means nothing)
     const xs: number[] = [], ys: number[] = [];
     for (const z of this.world.zones) { if (z.id === ignore || z.pair === ignore || (z.level !== level && !isTerminalModule(z))) continue; xs.push(z.x, z.x + z.w); ys.push(z.y, z.y + z.h); }
     for (const st of this.world.sites ?? []) { xs.push(st.x, st.x + st.w); ys.push(st.y, st.y + st.h); }
@@ -1310,7 +1332,7 @@ export class UI {
   }
   /** Moving a module: whichever of its edges is closest to a neighbour's edge snaps flush. */
   magnetMove(r: Rect, level: Level, ignore: number): Rect {
-    const tol = Math.max(6, 12 / this.ren.cam.zoom);
+    const tol = this.ren.mode3d ? 8 : Math.max(6, 12 / this.ren.cam.zoom);   // (v0.49: in 3D the plan's zoom means nothing)
     let dx = snap(r.x, 10) - r.x, dy = snap(r.y, 10) - r.y, bx = tol + 1, by = tol + 1;
     for (const z of this.world.zones) {
       if (z.id === ignore || z.pair === ignore || (z.level !== level && !isTerminalModule(z))) continue;

@@ -3,7 +3,8 @@
 const { chromium } = require('playwright');
 const path = require('path');
 (async () => {
-  const b = await chromium.launch();
+  // (software WebGL, so the 3D view renders headless for the v0.49 checks)
+  const b = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   const p = await b.newPage({ viewport: { width: 1500, height: 900 } });
   p.on('pageerror', e => console.log('ERR', e.message));
   await p.goto('file://' + path.resolve(__dirname, '../dist/index.html'));
@@ -64,6 +65,38 @@ const path = require('path');
   await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(200);
   const s6 = await state();
   check('Esc leaves no taxiway behind', !s6.live && s6.taxis === s4.taxis && s6.sig === s4.sig);
+  // v0.49: in 3D, the selected building is grabbed by its roof and moved whole, with everything following
+  const m = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); g.ui.set3d(true);
+    const z = g.sim.world.zones.find(q => q.type === 'concourse'); g.ren.selected = { kind: 'zone', id: z.id };
+    return { id: z.id, x: z.x, y: z.y }; });
+  await p.waitForTimeout(1500);
+  const roof = await p.evaluate(id => { const g = window.__game; const z = g.sim.world.zones.find(q => q.id === id);
+    const [sx, sy] = g.ren.P(z.x + z.w * 0.3, z.y + z.h / 2, 12); return { sx, sy }; }, m.id);   // (a little above the roof plane's height is fine: it is hit at the roof)
+  const zxy = () => p.evaluate(id => { const g = window.__game; const z = g.sim.world.zones.find(q => q.id === id); return { x: z.x, y: z.y, live: !!g.ui.live, sig: JSON.stringify(g.sim.d.aprons.map(a => a.rect)) }; }, m.id);
+  const before = await zxy();
+  const drag3 = async () => { await p.mouse.move(roof.sx, roof.sy); await p.waitForTimeout(100); await p.mouse.down();
+    for (let k = 1; k <= 8; k++) { await p.mouse.move(roof.sx - k * 6, roof.sy); await p.waitForTimeout(50); } await p.waitForTimeout(250); };
+  await drag3();
+  const mid = await zxy();
+  console.log('3D: concourse at', before.x, before.y, '→ while dragging its roof', mid.x, mid.y);
+  check('in 3D the selected building moves whole while its roof is dragged, with its stands following', mid.live && (mid.x !== before.x || mid.y !== before.y) && mid.sig !== before.sig);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(300);
+  const back = await zxy();
+  check('Esc puts it back', !back.live && back.x === before.x && back.y === before.y && back.sig === before.sig);
+  await drag3(); const mid2 = await zxy(); await p.mouse.up(); await p.waitForTimeout(400);
+  const kept = await zxy();
+  check('letting go keeps it where it was shown', !kept.live && kept.x === mid2.x && kept.y === mid2.y && (kept.x !== before.x || kept.y !== before.y));
+  const orbit = await p.evaluate(() => window.__game.ren.r3.controls.enabled);
+  check('the view orbits again after the move', orbit);
+  // a click (no drag) on the selected building's roof still selects: here a lot inside it, at terminal detail
+  const lot = await p.evaluate(id => { const g = window.__game; g.ui.setLod?.('terminal'); g.ren.lod = 'terminal'; g.ren.focus = g.sim.world.zones.find(q => q.id === id).site ?? g.ren.focus;
+    const z = g.sim.world.zones.find(q => q.id === id); g.ren.selected = { kind: 'zone', id }; const [sx, sy] = g.ren.P(z.x + z.w * 0.3, z.y + z.h / 2, 12); return { sx, sy }; }, m.id);
+  await p.waitForTimeout(1200);
+  const selBefore = await p.evaluate(() => JSON.stringify(window.__game.ren.selected));
+  await p.mouse.move(lot.sx, lot.sy); await p.waitForTimeout(100); await p.mouse.down(); await p.mouse.up(); await p.waitForTimeout(300);
+  const after = await p.evaluate(() => ({ sel: JSON.stringify(window.__game.ren.selected), drag: !!window.__game.ui.drag, live: !!window.__game.ui.live }));
+  console.log('click on the roof: selection', selBefore, '→', after.sel);
+  check('a click on the roof is a click: no move left hanging, and it picks again', !after.drag && !after.live && after.sel !== 'null');
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();
