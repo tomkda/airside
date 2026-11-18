@@ -3,7 +3,7 @@
 import { build } from 'esbuild';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
 const entry = `
-import { derive, newWorld, canPlaceWay, canPlaceTurned, gripsFor, canPlacePier, migrateWorld } from './src/world';
+import { derive, newWorld, canPlaceWay, followBend, canPlaceTurned, gripsFor, canPlacePier, migrateWorld } from './src/world';
 import { zonePts, zonesOverlap, inZone, centreOf, frameOf } from './src/shapes';
 import { facesOf } from './src/frontage';
 import { shellsOf } from './src/shell';
@@ -521,6 +521,18 @@ for (const deg of [12, -20]) {
   check('a curve too tight for a taxiway (' + (tx.reason ?? 'ok') + ') can still be a road (' + (rd.reason ?? 'ok') + ')', !tx.ok && /45 m radius/.test(tx.reason) && rd.ok);
   const wk = canPlaceWay(w2, 'walk', { x: 2000, y: 2560 }, { x: 2400, y: 2560 }, [], { x: 2200, y: 2400 });
   check('a curved sidewalk that dips across a taxiway is refused (' + (wk.reason ?? 'ok') + ')', !wk.ok && /taxiway/.test(wk.reason)); }
+// v0.46 (cases found by review): a save keeps the curves; a curved taxiway keeps its letter; bending it takes its exits along
+{ const w = sampleWorld(); const A = w.ways.find(q => q.kind === 'taxi' && q.a.y === 2490 && q.b.y === 2490);
+  w.ways.push({ id: w.nextId++, kind: 'walk', a: { x: 3240, y: 3010 }, b: { x: 3460, y: 2900 }, c: { x: 3420, y: 3020 }, cls: 0, lanes: 0 });
+  const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+  const onA = p => { const pl = wayPts(A); return Math.min(...pl.slice(1).map((q, i) => segD(p, pl[i], q))); };
+  const exits = w.ways.flatMap(o => o !== A && o.kind === 'taxi' ? ['a', 'b'].filter(e => onA(o[e]) < 4 && Math.hypot(o[e].x - A.a.x, o[e].y - A.a.y) > 4 && Math.hypot(o[e].x - A.b.x, o[e].y - A.b.y) > 4).map(e => ({ o, e })) : []);
+  const old = { a: { ...A.a }, b: { ...A.b } }; A.c = { x: 3200, y: 2420 }; followBend(w, A, old);
+  check('bending taxiway A takes the exits that joined it part way along onto the curve (' + exits.length + ')', exits.length >= 2 && exits.every(({ o, e }) => onA(o[e]) < 0.5));
+  const d = derive(w); const letA = d.taxiLetter.get(A.id);
+  check('the curved taxiway keeps its letter, on the plan too (' + letA + ': ' + d.taxiLabels.map(l => l.text).join('') + ')', letA === 'A' && d.taxiLabels.some(l => l.text === 'A'));
+  const m = migrateWorld(JSON.parse(JSON.stringify(w)));
+  check('a save keeps the curve of a taxiway and of a sidewalk', !!m.ways.find(q => q.id === A.id).c && !!m.ways.find(q => q.kind === 'walk' && q.c)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

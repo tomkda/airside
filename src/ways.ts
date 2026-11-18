@@ -60,7 +60,7 @@ export const curveOK = (w: Curved, minR: number = ROADS.minRadius) => !w.c || be
  *  everything that reads taxiways and sidewalks as segments (the networks, gates, aprons, clearances, drawing) takes
  *  these. Roads keep their curves: `roadPieces` cuts them up itself. */
 export function chordWays<T extends Curved & { kind: string }>(ws: T[]): T[] {
-  return ws.flatMap(w => (w.c && w.kind !== 'road' ? waySegs(w).map(([a, b]) => { const q = { ...w, a, b }; delete q.c; return q; }) : [w]));
+  return ws.flatMap(w => (w.c && w.kind !== 'road' ? waySegs(w).map(([a, b]) => { const q = { ...w, a, b, chord: true }; delete q.c; return q; }) : [w]));
 }
 
 /**

@@ -13,7 +13,7 @@ import {
 } from './world';
 import { rectsOverlap, rectSegDist, segsIntersect } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
-import { canPlacePier } from './world';
+import { canPlacePier, followBend } from './world';
 import { simplePoly, polyBox, polyCentre } from './shapes';
 import type { Cut } from './shell';
 /** v0.35: a cut-out as a shape, for overlap tests. */
@@ -23,7 +23,7 @@ import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Gri
 import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
-import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef, chordWays } from './ways';
+import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef, chordWays, curveOK } from './ways';
 import { roadPlan } from './roads';
 import { Sound } from './sound';
 import { planTerminal, airsideOf, planCost, PlanPart, PLAN_MIN } from './terminalplan';
@@ -1162,11 +1162,15 @@ export class UI {
       else if (dist(g.a, g.b) > 50) this.toast(canPlaceRunway(this.world, g.a, g.b).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'way' && g?.a && g.b && g.way) {
       if (g.ok) this.buildWay(g.way.kind, g.a, g.b, g.way.cls, g.way.lanes, dr.extras ?? [], g.c, g.way.kind === 'road' && !!this.opt.oneway);
-      else if (dist(g.a, g.b) > 10) this.toast(canPlaceWay(this.world, g.way.kind, g.a, g.b, this.aprons, g.c).reason ?? 'Not enough money', 'bad');
+      else if (dist(g.a, g.b) > 10) this.toast(canPlaceWay(this.world, g.way.kind, g.a, g.b, this.aprons, g.c, g.way.cls).reason ?? 'Not enough money', 'bad');
     } else if (dr.mode === 'bend' && dr.way && dr.bend) {
       const bd = dr.bend; const w = dr.way;
       if (bd.ok) {
+        // (v0.46: a taxiway or sidewalk bent by its middle takes with it the ends of the others that joined it part way
+        //  along, such as a taxiway's exits: each moves to the nearest point of the new curve)
+        const old = { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined };
         w.a = bd.a; w.b = bd.b; if (bd.c) w.c = bd.c; else delete w.c;
+        followBend(this.world, w, old);
         if (bd.cost) { this.sim.spend(bd.cost); this.ren.float(`− ${money(bd.cost)}`, wayMid(w), PAL_BAD); }
         this.changed(); this.ren.selected = { kind: 'way', id: w.id };
       } else this.toast(bd.reason ?? 'Not enough money', 'bad');
@@ -2205,7 +2209,9 @@ export class UI {
       z.cls = c; z.units = undefined; this.changed();
       this.toast(`Gates resized for ${CLASSES[c].example}: ${s.d.units.get(z.id)?.count ?? 0} gates`);
     } else if (a === 'taxiF' && w && w.cls < 3) {
-      if (!pay(dist(w.a, w.b) * (TAXI_CLASSES[1].costPerM - TAXI_CLASSES[0].costPerM))) return;
+      // (v0.46: by its length round the curve; and a curve too tight for Code F stays as it is)
+      if (w.c && !curveOK(w, CURVE_MIN.taxi[3])) { this.toast(`Too tight a curve for Code F: ${CURVE_MIN.taxi[3]} m radius at least. Ease the bend first.`, 'warn'); return; }
+      if (!pay(wayLen(w) * (TAXI_CLASSES[1].costPerM - TAXI_CLASSES[0].costPerM))) return;
       w.cls = 3; this.changed();
     } else if (a === 'lanes4' && w && w.lanes < 4) {
       if (!pay(wayLen(w) * (ROAD_LANES[1].costPerM - ROAD_LANES[0].costPerM))) return;
