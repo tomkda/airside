@@ -9,6 +9,8 @@ import { sampleWorld } from './src/sample';
 import { roadPlan } from './src/roads';
 import { isRingRef, wayLen } from './src/ways';
 import { carPoses } from './src/traffic';
+let fails = 0; const check = (what, ok) => { if (!ok) { fails++; console.log('   FAIL:', what); } };
+const rounds = new Map();
 const run = (name, edit, days = 2) => {
   const sim = new Sim(sampleWorld(), 7); const w = sim.world;
   edit(w); sim.relayout(); sim.startDay();
@@ -17,10 +19,31 @@ const run = (name, edit, days = 2) => {
   console.log(name + ':', T.active ? 'Terminal 1 open' : 'Terminal 1 CLOSED (' + T.problems.join('; ') + ')', '| roundabouts', RP.rounds.map(r => r.entries.length + ' roads').join(', ') || 'none',
     '| curved', w.ways.filter(q => q.c).length, 'one-way', w.ways.filter(q => q.oneway).length, '| issues:', sim.d.issues.filter(i => i.level !== 'info').map(i => i.text));
   let ring = 0, wrong = 0; const seen = new Set(); let pairsRaw = 0, pairsLane = 0, samples = 0;
-  sim.onDayEnd = r => { const s = r.stats; console.log('  ' + r.label, '| flights', s.flights, 'pax', s.paxDep, 'missed', s.missed, 'stranded', s.stranded, '| cars round the ring', ring, '| wrong-way', wrong, '| sat', r.sat.toFixed(0), r.stats && pairsRaw ? '| overlapping cars: ' + pairsRaw + ' on the centreline, ' + pairsLane + ' as drawn' : ''); ring = 0; pairsRaw = 0; };
+  // v0.47: who gives way where. A held car waits at the first junction it has not been let through
+  const N = sim.d.road.nodes; let held = 0, moving = 0, prio = 0, longest = 0; const heldAt = [new Set(), new Set(), new Set()];
+  const giveWay = () => {
+    const q = new Map();
+    for (const c of sim.cars) {
+      if (c.stage === 'in' || c.stage === 'out' || c.stage === 'park') moving++;
+      if (!c.wait) continue;
+      held++;
+      const i = Math.max(c.si, (c.passed ?? -1) + 1), a = E[c.eids[i]], b = E[c.eids[i + 1]]; if (!a || !b) continue;
+      const n = a.u === b.u || a.u === b.v ? a.u : a.v, k = sim.yieldKind[n];
+      heldAt[k].add(c.id);
+      const m0 = sim.major[n * 2], m1 = sim.major[n * 2 + 1];
+      if (!k || (k === 2 && isRingRef(a.ref)) || (k === 1 && ((a.id === m0 && b.id === m1) || (a.id === m1 && b.id === m0)))) prio++;
+      const key = a.id + ':' + n; q.set(key, (q.get(key) || 0) + 1);
+    }
+    for (const v of q.values()) longest = Math.max(longest, v);
+  };
+  sim.onDayEnd = r => { const s = r.stats; console.log('  ' + r.label, '| flights', s.flights, 'pax', s.paxDep, 'missed', s.missed, 'stranded', s.stranded, '| cars round the ring', ring, '| wrong-way', wrong, '| sat', r.sat.toFixed(0),
+    '| gave way:', heldAt[2].size, 'cars at roundabout entries,', heldAt[1].size, 'at junctions, longest queue', longest, 'cars, waiting', (100 * held / Math.max(1, moving)).toFixed(1) + '% of the time driven, with right of way', prio,
+    r.stats && pairsRaw ? '| overlapping cars: ' + pairsRaw + ' on the centreline, ' + pairsLane + ' as drawn' : '');
+    if (T.active) { check(name + ': nobody with right of way waits', prio === 0); check(name + ': nobody missed or stranded', s.missed === 0 && s.stranded === 0); check(name + ': no queue over 60 cars (gridlock)', longest <= 60); }
+    rounds.set(name, (rounds.get(name) || 0) + heldAt[2].size); ring = 0; pairsRaw = 0; held = moving = prio = longest = 0; heldAt.forEach(x => x.clear()); };
   const close = pts => { let n = 0; for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) if (Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y) < 3) n++; return n; };
   while (sim.day < days) {
-    sim.step(0.25);
+    sim.step(0.25); giveWay();
     if (sim.day === 0) {   // v0.12: cars as drawn keep to lanes and hold a gap, so far fewer sit on top of each other
       const mv = sim.cars.filter(c => c.stage === 'in' || c.stage === 'out' || c.stage === 'park'); const ps = carPoses(sim);
       pairsRaw += close(mv); pairsLane += close(mv.map(c => ps.get(c)).filter(Boolean)); samples += mv.length;
@@ -55,6 +78,8 @@ run('curved approach', w => {
   road(w, [2400, 5700], [2780, 3230], { c: { x: 2400, y: 3230 }, lanes: 4 });
   road(w, [3320, 3230], [3700, 5700], { c: { x: 3700, y: 3230 }, lanes: 4 });
 });
+check('cars wait for a gap at the sample\\'s roundabouts', rounds.get('sample') > 0);
+console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed'); if (fails) process.exitCode = 1;
 `;
 const dir = mkdtempSync(join(tmpdir(), 'roads-')); const out = join(dir, 'run.mjs');
 await build({ stdin: { contents: entry, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'esm', outfile: out, logLevel: 'error' });

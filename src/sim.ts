@@ -2,7 +2,7 @@
 // Time unit: minutes of the day. One sim "day" stands in for several calendar days.
 // Everything moves on networks: aircraft on taxiways, cars on roads, people through doors, cores and sidewalks.
 import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
-import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER } from './config';
+import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER, YIELD } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { wayLen, isRingRef } from './ways';
 import { toLocal, clampInto, frameOf, polyArea } from './shapes';
@@ -34,6 +34,8 @@ export interface Car {
   id: number; party: Party; pick: boolean; pts: Pt[]; eids: number[]; d: number; len: number; si: number; cum: number[];
   stage: 'in' | 'queue' | 'bay' | 'out' | 'park' | 'gone'; x: number; y: number; ang: number;
   bay: number; until: number; since: number; curb?: Proc; entry: number;
+  /** v0.47: the last junction on its way it has been let through, and whether it is waiting at one now */
+  passed?: number; wait?: boolean;
 }
 
 export interface Proc {
@@ -104,6 +106,12 @@ export class Sim {
   lotUsed = 0;
   roadLoad = new Float32Array(0);
   roadCap = new Float32Array(0);
+  /** v0.47: at each road node, 0 none, 1 a crossroads or T and 2 a roundabout entry, where cars give way; for an entry,
+   *  the ring edge that arrives at it; for a crossroads or T, the two edges that line up best (the main road, -1 if none);
+   *  and the flow each gives way to (cars passing it, decaying over `YIELD.window`). */
+  yieldKind = new Uint8Array(0); ringIn = new Int32Array(0); major = new Int32Array(0); yieldFlow = new Float32Array(0);
+  /** v0.47: how many cars each approach (road edge end, `edge * 2 + (the end is v)`) can let through now */
+  yieldCredit = new Float32Array(0);
   stats = emptyStats();
   plan!: PlanInfo;
   history: Report[] = [];
@@ -204,7 +212,21 @@ export class Sim {
     const R = this.d.road;
     this.roadCap = new Float32Array(R.edges.length).fill(1);
     const stopAt = (n: number) => R.adj[n].length >= 3 && !R.adj[n].some(k => R.edges[k].kind === 'hwy' || isRingRef(R.edges[k].ref) || this.d.rampRefs.has(R.edges[k].ref));
-    for (const e of R.edges) if (e.kind !== 'hwy' && !isRingRef(e.ref) && (stopAt(e.u) || stopAt(e.v))) this.roadCap[e.id] = ROADS.junctionDelay;
+    this.yieldKind = new Uint8Array(R.nodes.length); this.yieldFlow = new Float32Array(R.nodes.length); this.yieldCredit = new Float32Array(R.edges.length * 2).fill(YIELD.store); this.ringIn = new Int32Array(R.nodes.length).fill(-1); this.major = new Int32Array(R.nodes.length * 2).fill(-1);
+    const dirOut = (k: number, n: number) => { const e = R.edges[k]; const o = R.nodes[e.u === n ? e.v : e.u], p = R.nodes[n]; const l = Math.hypot(o.x - p.x, o.y - p.y) || 1; return { x: (o.x - p.x) / l, y: (o.y - p.y) / l }; };
+    for (let n = 0; n < R.nodes.length; n++) {
+      const ring = R.adj[n].filter(k => isRingRef(R.edges[k].ref));
+      if (ring.length) { const up = ring.find(k => R.edges[k].v === n); if (up !== undefined && R.adj[n].some(k => !isRingRef(R.edges[k].ref))) { this.yieldKind[n] = 2; this.ringIn[n] = up; } }
+      else if (stopAt(n)) {
+        this.yieldKind[n] = 1;
+        let best = -0.866; // (the main road bends by less than 30° through the junction)
+        const ks = R.adj[n];
+        for (let i = 0; i < ks.length; i++) for (let j = i + 1; j < ks.length; j++) {
+          const a = dirOut(ks[i], n), b = dirOut(ks[j], n), dot = a.x * b.x + a.y * b.y;
+          if (dot < best) { best = dot; this.major[n * 2] = ks[i]; this.major[n * 2 + 1] = ks[j]; }
+        }
+      }
+    }
     const keep = new Map(this.procs);
     this.procs.clear();
     for (const z of this.d.zones) {
@@ -1227,7 +1249,7 @@ export class Sim {
   }
 
   setCarPath(c: Car, pts: Pt[], eids: number[]) {
-    c.pts = pts; c.eids = eids; c.cum = [0];
+    c.pts = pts; c.eids = eids; c.cum = [0]; c.passed = -1; c.wait = false;
     for (let i = 1; i < pts.length; i++) c.cum.push(c.cum[i - 1] + dist(pts[i - 1], pts[i]));
     c.d = 0; c.si = 0; c.len = c.cum[c.cum.length - 1];
   }
@@ -1251,11 +1273,34 @@ export class Sim {
       if (c.stage === 'in' || c.stage === 'out' || c.stage === 'park') { const e = c.eids[c.si]; if (e >= 0 && e < load.length) load[e]++; }
       else if (c.stage === 'queue') { const e = c.eids[c.eids.length - 1]; if (e >= 0 && e < load.length) load[e]++; }
     }
+    // v0.47: each approach to a junction lets cars through at the gap-acceptance capacity for the flow it gives way to
+    const R = this.d.road, fade = Math.exp(-dt / YIELD.window);
+    for (let n = 0; n < this.yieldKind.length; n++) {
+      const k = this.yieldKind[n]; if (!k) continue;
+      const q = this.yieldFlow[n] / YIELD.window; this.yieldFlow[n] *= fade; // cars a minute
+      const cap = k === 2 ? (YIELD.entry / 60) * Math.exp(-YIELD.entryB * q * 60) : (60 / YIELD.tf) * Math.exp(-(q / 60) * (YIELD.tc - YIELD.tf / 2));
+      for (const e of R.adj[n]) { const s2 = e * 2 + (R.edges[e].v === n ? 1 : 0); this.yieldCredit[s2] = Math.min(YIELD.store, this.yieldCredit[s2] + cap * dt); }
+    }
     for (const c of this.cars) {
       if (c.stage === 'gone') continue;
       if (c.stage === 'in' || c.stage === 'out' || c.stage === 'park') {
         const e = c.eids[c.si];
-        c.d += TUNE.carSpeed * (e >= 0 ? this.congestion(e) : 0.5) * dt;
+        let to = c.d + TUNE.carSpeed * (e >= 0 ? this.congestion(e) : 0.5) * dt; c.wait = false;
+        // (at each junction ahead within this step's run: through if it can let one more car through, else stop at the line)
+        for (let i = c.si; i < c.eids.length - 1 && c.cum[i + 1] - YIELD.stop < to; i++) {
+          if ((c.passed ?? -1) >= i) continue;
+          const a = R.edges[c.eids[i]], b = R.edges[c.eids[i + 1]]; if (!a || !b) continue;
+          const n = a.u === b.u || a.u === b.v ? a.u : a.v;
+          const k = this.yieldKind[n], m0 = this.major[n * 2], m1 = this.major[n * 2 + 1];
+          if (!k) { c.passed = i; continue; }
+          // (the ones that never wait, and are the flow the others wait for)
+          if (k === 2 ? isRingRef(a.ref) : m0 >= 0 && ((a.id === m0 && b.id === m1) || (a.id === m1 && b.id === m0))) { if (k === 1 || a.id === this.ringIn[n]) this.yieldFlow[n]++; c.passed = i; continue; }
+          if (k === 2 && !isRingRef(b.ref)) { c.passed = i; continue; }
+          const slot = a.id * 2 + (a.v === n ? 1 : 0);
+          if (this.yieldCredit[slot] >= 1) { this.yieldCredit[slot] -= 1; c.passed = i; continue; }
+          to = Math.max(c.d, c.cum[i + 1] - YIELD.stop); c.wait = true; break;
+        }
+        c.d = to;
         while (c.si < c.cum.length - 2 && c.d > c.cum[c.si + 1]) c.si++;
         const a = along(c.pts, c.d); c.x = a.p.x; c.y = a.p.y; c.ang = a.ang;
         if (c.d >= c.len) {
