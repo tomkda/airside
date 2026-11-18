@@ -105,7 +105,9 @@ export class UI {
   /** v0.19: a live edit in progress: the layout as it was, the shapes as they were, and a zone that exists only while dragging. */
   private live: null | { d0: Derived; saved: { z: Zone; g: Geom }[]; temp: Zone[]; dirty: boolean; touched: boolean;
     /** v0.35: cut-outs changed during the edit, with their corners from before it; and those carried along by a moved building */
-    cuts: { k: Cut; pts: Pt[] }[]; carry?: { z: Zone; x: number; y: number; ks: { k: Cut; pts: Pt[] }[] } } = null;
+    cuts: { k: Cut; pts: Pt[] }[]; carry?: { z: Zone; x: number; y: number; ks: { k: Cut; pts: Pt[] }[] };
+    /** v0.48: ways changed during the edit, with their line from before it; and ways that exist only while drawing */
+    ways: { w: Way; a: Pt; b: Pt; c?: Pt }[]; tempWays: Way[] } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
   private liveStale = false;
 
@@ -700,12 +702,18 @@ export class UI {
     }
     if (dr.mode === 'bend' && dr.way && dr.orig3) {
       const w = dr.way; const o = dr.orig3; let a = o.a, b = o.b, c = o.c;
+      // v0.48: the layout follows the way as it is dragged: its gates, stands, taxilanes and holdrooms, a road's curbs.
+      // Every way of its kind is held, since the ones that join it part way along follow its bend (`followBend`).
+      if (!this.live) this.beginLive([], [], this.world.ways.filter(q => q.kind === w.kind));
+      this.liveWaysBack();   // (checked, and snapped, against the world as it was)
       if (dr.handle === 'm') c = bendThrough(a, b, w.kind === 'road' ? this.curveSnap(p) : { x: snap(p.x, 1), y: snap(p.y, 1) });
       else { const q = this.snapFor(w.kind, p).p; if (dr.handle === 'a') a = q; else b = q; }
       const chk = canPlaceWay(this.world, w.kind, a, b, this.aprons, c, w.cls);
       const cost = Math.max(0, (wayLen({ a, b, c }) - wayLen(o)) * wayCostPerM(w.kind, w.cls, w.lanes));
       const ok = chk.ok && this.sim.canAfford(cost);
       dr.bend = { a, b, c, ok, cost, reason: chk.reason };
+      if (chk.ok && this.live) { w.a = a; w.b = b; if (c) w.c = c; else delete w.c; followBend(this.world, w, o); }
+      if (this.live) this.live.dirty = true;
       this.ren.ghost = { kind: 'way', a, b, c, ok, way: { kind: w.kind, cls: w.cls, lanes: w.lanes } };
       this.hint(chk.ok ? (ok ? `${dr.handle === 'm' ? (c ? 'Bending' : 'Straight') : 'Moving the end'} · ${n0(wayLen({ a, b, c }))} m${cost ? ` · ${money(cost)}` : ''}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
       return;
@@ -786,6 +794,7 @@ export class UI {
       return;
     }
     if (dr.mode === 'way') {
+      this.liftDraftWays();
       const kind = this.tool as WayKind;
       const s = this.snapFor(kind, p);
       const curved = !!this.opt.shape;   // (v0.46: taxiways and sidewalks curve too)
@@ -798,6 +807,10 @@ export class UI {
       const xcost = extras.reduce((t, x) => t + dist(x.a, x.b) * wayCostPerM('taxi', cls, 0), 0);
       const ok = chk.ok && this.sim.canAfford(cost + xcost);
       dr.extras = extras;
+      // v0.48: what it is about to build stands there as it is drawn, with the gates and stands it brings
+      const id0 = this.world.nextId;
+      this.liveDraftWays(ok ? [{ id: id0, kind, a: dr.start, b, c, cls, lanes, oneway: kind === 'road' && !!this.opt.oneway ? true : undefined },
+        ...extras.map((x, i) => ({ id: id0 + 1 + i, kind: 'taxi' as WayKind, a: x.a, b: x.b, cls: x.cls, lanes: 0 }))] : []);
       this.ren.ghost = { kind: 'way', a: dr.start, b, c, ok, way: { kind, cls, lanes }, snapA: dr.snapStart, snapB: s.snapped, extras };
       const what = kind === 'taxi' ? `${c ? 'Curved ' : ''}${TAXI_CLASSES[cls === 3 ? 1 : 0].name} taxiway` : kind === 'road' ? `${lanes}-lane ${this.opt.oneway ? 'one-way ' : ''}${c ? 'curved ' : ''}road` : c ? 'Curved sidewalk' : 'Sidewalk';
       const xs = extras.length ? ` + ${extras.length} runway link${extras.length > 1 ? 's' : ''}` : '';
@@ -856,10 +869,11 @@ export class UI {
   //   meanwhile. Letting go either keeps the change (one undo step, through `changed()`) or puts everything back.
   //   v0.43: in 3D too, for a grip of the selected building: its outline follows at once, and the model itself is
   //   rebuilt at most every `LIVE_3D_MS` (render3d.ts), since building it takes some tens of milliseconds.
-  beginLive(zs: Zone[], cuts: Cut[] = []) {
+  beginLive(zs: Zone[], cuts: Cut[] = [], ways: Way[] = []) {
     if (this.live) return;   // (v0.43: in 3D too, for a grip: the model is rebuilt a few times a second meanwhile)
     this.ren.liveEdit = true;
-    this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })) };
+    this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })),
+      ways: ways.map(w => ({ w, a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined })), tempWays: [] };
     this.ctl.hold = true; holdScenery(this.world, this.sim.d);
   }
   /** Give a zone (and the baggage claim under a hall) a new shape for now. */
@@ -884,6 +898,20 @@ export class UI {
     this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
     lv.temp = zs; this.world.zones.push(...zs); lv.dirty = true;
   }
+  /** v0.48: put every way the edit holds back on its line from before it (for a placement check, or before a new frame) */
+  liveWaysBack() { for (const s0 of this.live?.ways ?? []) { s0.w.a = { ...s0.a }; s0.w.b = { ...s0.b }; if (s0.c) s0.w.c = { ...s0.c }; else delete s0.w.c; } }
+  /** v0.48: take the ways being drawn out of the world for a moment (a placement check or a snap must not find them) */
+  liftDraftWays() { const lv = this.live; if (lv?.tempWays.length) this.world.ways = this.world.ways.filter(w => !lv.tempWays.includes(w)); }
+  /** v0.48: ways that exist only while the mouse is down, so gates, stands, holdrooms and curbs follow a way being
+   *  drawn as they follow a building. Call `liftDraftWays` first. */
+  liveDraftWays(ws: Way[]) {
+    if (this.ren.mode3d) return;
+    if (!this.live) { if (!ws.length) return; this.beginLive([]); }
+    const lv = this.live!;
+    if (!ws.length && !lv.tempWays.length) return;
+    this.world.ways = this.world.ways.filter(w => !lv.tempWays.includes(w));
+    lv.tempWays = ws; this.world.ways.push(...ws); lv.dirty = true;
+  }
   /** Once a frame (main.ts): rebuild the layout if a live edit moved something. */
   frame() {
     const lv = this.live; if (!lv?.dirty) return;
@@ -895,7 +923,8 @@ export class UI {
     const lv = this.live; if (!lv) return;
     this.live = null; this.ctl.hold = false; holdScenery(null); this.ren.liveEdit = false;
     if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
-    if (!keep) { for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; }
+    if (lv.tempWays.length) this.world.ways = this.world.ways.filter(w => !lv.tempWays.includes(w));
+    if (!keep) { for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
     this.sim.d = lv.d0;
     if (lv.touched) this.liveStale = true;
   }
