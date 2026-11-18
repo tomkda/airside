@@ -13,7 +13,7 @@ import { regrip, gripsOf, toWorld } from './src/shapes';
 import { segsIntersect } from './src/geom';
 import { wayPts } from './src/ways';
 import { holdArea } from './src/bands';
-import { maxTwist } from './src/shapes';
+import { maxTwist, heart } from './src/shapes';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
 const rep = (name, w) => {
@@ -480,6 +480,35 @@ for (const deg of [12, -20]) {
   w2.zones.push({ id: w2.nextId++, type: 'concourse', level: 1, x: 3600, y: 2620, w: 500, h: 60, tier: 0, cls: 2, site: st2.id }, { id: w2.nextId++, type: 'security', level: 1, x: 3790, y: 2680, w: 120, h: 130, tier: 0, units: 8, site: st2.id });
   const d2 = derive(w2);
   check('a second terminal being built beside a working one gets no landside people mover to the working one, which stays open', !d2.trainLinks.some(l => l.land) && d2.terminals[0].active && d2.terminals.length === 2); }
+// v0.45: people-mover lines through several stations, and loops
+{ const conc2 = (w, x, y, ww, h) => { const z = { id: w.nextId++, type: 'concourse', level: 1, x, y, w: ww, h, tier: 0, cls: 2 }; w.zones.push(z); return z; };
+  const near = (p, q) => Math.hypot(p.x - q.x, p.y - q.y) < 0.5;
+  { const w = sampleWorld(); const A = conc2(w, 3520, 2620, 300, 60), B = conc2(w, 3980, 2620, 400, 60); const d = derive(w); const mv = d.trainLinks.filter(l => l.apm);
+    const shared = mv.length === 2 && [mv[0].a, mv[0].b].some(p => near(p, mv[1].a) || near(p, mv[1].b));
+    const main = w.zones.find(z => z.type === 'concourse'); const r = d.pedRoute(heart(B), 1, heart(main), 1); const mid = r && mv.flatMap(l => [l.a, l.b]).find(p => mv.filter(l => near(l.a, p) || near(l.b, p)).length === 2);
+    check('two satellites in a row are one line of three stations sharing the middle one, with no loop, and a ride from the far one passes through it', shared && mv.every(l => l.stations === 3 && !l.loop) && !!r && !!mid && r.pts.some(p => near(p, mid))); }
+  // (cases found by review) a courtyard where a shared station would stand: the station keeps off it, and the ride
+  // runs under it rather than ending at its edge
+  const cutW = (w, x0, x1) => { w.cuts = [...(w.cuts ?? []), { id: w.nextId++, level: 1, pts: [{ x: x0, y: 2632 }, { x: x1, y: 2632 }, { x: x1, y: 2668 }, { x: x0, y: 2668 }] }]; };
+  { const w = sampleWorld(); conc2(w, 3520, 2620, 300, 60); conc2(w, 2300, 2620, 400, 60); cutW(w, 3050, 3150); const main = w.zones.find(z => z.type === 'concourse');
+    const d = derive(w); const mv = d.trainLinks.filter(l => l.apm); const st = mv.flatMap(l => [l.a, l.b]).filter(p => inZone(p, main));
+    main.off = d.gates.filter(g => g.zone.id === main.id).map(g => g.key);
+    const sim = new Sim(w, 7); sim.relayout(); let rode = 0, missed = 0; const seen = new WeakSet(); sim.onDayEnd = q => { missed += q.stats.missed; }; sim.startDay();
+    while (sim.day < 1) { sim.step(0.25); for (const p of sim.pax) if (p.ride && !seen.has(p)) { seen.add(p); rode++; } }
+    check('a station shared by two movers keeps off a courtyard in the middle of its concourse, and the satellites fly a day by train (' + rode + ' riding, ' + missed + ' missed)', st.length >= 2 && st.every(p => p.x < 3044 || p.x > 3156) && rode > 2000 && missed === 0); }
+  { const w = sampleWorld(); conc2(w, 3520, 2620, 300, 60); const B = conc2(w, 3980, 2620, 400, 60); cutW(w, 3570, 3640); const main = w.zones.find(z => z.type === 'concourse');
+    const d = derive(w); const r = d.pedRoute(heart(B), 1, heart(main), 1);
+    check('a courtyard in the middle satellite of a line does not cut the line', !!r); }
+  const w = sampleWorld(); const A = conc2(w, 3600, 1980, 400, 60), B = conc2(w, 2900, 1700, 400, 60); const main = w.zones.find(z => z.type === 'concourse');
+  const d = derive(w); const mv = d.trainLinks.filter(l => l.apm); const pts = []; for (const l of mv) for (const p of [l.a, l.b]) if (!pts.some(q => near(p, q))) pts.push(p);
+  check('two satellites round the concourse close one loop of three stations, one station to a concourse (' + mv.length + ' runs, ' + pts.length + ' stations)', mv.length === 3 && mv.every(l => l.loop && l.stations === 3) && pts.length === 3);
+  const sA = pts.find(p => inZone(p, A)); const r = d.pedRoute(heart(B), 1, heart(main), 1);
+  check('a ride from the far satellite to the concourse takes the short way round the loop, not through the other', !!r && !!sA && !r.pts.some(p => near(p, sA)));
+  main.off = d.gates.filter(g => g.zone.id === main.id).map(g => g.key);
+  const sim = new Sim(w, 7); sim.relayout(); let missed = 0, stranded = 0, rode = 0; const seen = new WeakSet();
+  sim.onDayEnd = q => { missed += q.stats.missed; stranded += q.stats.stranded; }; sim.startDay();
+  while (sim.day < 1) { sim.step(0.25); for (const p of sim.pax) if (p.ride && !seen.has(p)) { seen.add(p); rode++; } }
+  check('with the main gates off a day flies round the loop with 0 missed and 0 stranded (' + missed + ', ' + stranded + '), ' + rode + ' riding', missed === 0 && stranded === 0 && rode > 2000); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

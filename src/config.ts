@@ -316,7 +316,10 @@ export const HALL = { minDia: 60, maxDia: 400, shapes: [{ sides: 32, name: 'Roun
 // Planning and Implementing Automated People Mover Systems at Airports) gives airside shuttles cruising at
 // 40–55 km/h on headways of about two minutes; satellites sit 300–1,200 m from the terminal at Tampa, Orlando,
 // Denver and Atlanta. Here the ride is 8 times walking pace with a 1.5 minute average wait.
-export const MOVER = { reach: 1800, speed: 8, wait: 1.5, upkeepPerM: 14 };
+// v0.45: `dwell` is the stop at each station a train passes through on a line of several (minutes): automated people
+// movers stop for about half a minute at each station (doors open 20–30 s; Atlanta's Plane Train and Denver's run
+// 30–40 s), so a ride through two stations costs one boarding wait and one stop, not two waits.
+export const MOVER = { reach: 1800, speed: 8, wait: 1.5, dwell: 0.5, upkeepPerM: 14 };
 export const SITES = {
   minW: 80, minH: 60,      // smallest terminal site, m
   reach: 120,              // m: a module can be placed this far outside its terminal's site; the site then grows

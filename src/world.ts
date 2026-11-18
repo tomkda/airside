@@ -242,8 +242,9 @@ export interface Derived {
   /** v0.13: road ids that are ramps up to a departures deck. Only cars bound for or leaving that deck use them. */
   rampRefs: Set<number>;
   /** `apm`: an airside people mover between two concourses (v0.16), with the ids of the zones it joins. */
-  /** v0.44: `land`: a landside people mover, from a remote building's security to a check-in hall. */
-  autoRoads: Way[]; trainLinks: { a: Pt; b: Pt; apm?: boolean; land?: boolean; from?: number; to?: number }[]; served: Set<number>;
+  /** v0.44: `land`: a landside people mover, from a remote building's security to a check-in hall. v0.45: `line`, the
+   *  line it is part of (movers sharing stations), how many `stations` that line has, and whether it is a `loop`. */
+  autoRoads: Way[]; trainLinks: { a: Pt; b: Pt; apm?: boolean; land?: boolean; from?: number; to?: number; line?: number; stations?: number; loop?: boolean }[]; served: Set<number>;
   isTrainNode(p: Pt): boolean;
   zoneAt(p: Pt, lv: Level): Zone | undefined;
   pedRoute(p: Pt, lv: Level, q: Pt, lvq: Level): Route | null;
@@ -889,7 +890,9 @@ export function derive(source: World): Derived {
   // v0.16: a concourse that touches no terminal is a satellite. It links itself to the nearest concourse that is
   // already part of a terminal (or of another linked satellite) with an airside people mover: a station in each,
   // and a fast ride between them. Generated like a forecourt, never saved.
-  const movers: { a: Pt; b: Pt; from: number; to: number; land?: boolean }[] = [];
+  const movers: { a: Pt; b: Pt; from: number; to: number; land?: boolean; line?: number; stations?: number; loop?: boolean }[] = [];
+  /** v0.45: the platform nodes beside mover stations: reached only from their station, never from outside. */
+  const platNodes = new Set<number>();
   /** v0.44: a site whose remote building a landside people mover has linked to a hall on another site: it is part of
    *  that hall's terminal. */
   const siteJoin = new Map<number, Site>();
@@ -906,6 +909,11 @@ export function derive(source: World): Derived {
     const gap = (A: Zone, B: Zone) => gap0(zoneBox(A), zoneBox(B));
     const inset = (z: Zone) => Math.min(12, z.w / 2 - 1, z.h / 2 - 1);
     const station = (z: Zone, to: Pt) => (z.sides ? centreOf(z) : toWorld(z, clampToRect(toLocal(z, to), frameOf(z), inset(z))));
+    // v0.45: one station per module, shared by every mover that stops there, so movers that meet make one line. The
+    // links are chosen first and the stations placed after: in the middle of a module two or more movers serve (as on
+    // a line through several concourses), else at its end nearer the one it links to, as before.
+    const pairs: { a: Zone; b: Zone; land?: boolean }[] = [];
+    const link = (a: Zone, b: Zone, land?: boolean) => { pairs.push({ a, b, land }); };
     // v0.44: a landside people mover. A building with its own security and concourse but no check-in (a remote
     // concourse, screened at its own door) links itself to the nearest check-in hall within reach, before security:
     // a station in the hall and one in its security, so a passenger checks in, rides out and is screened there, and
@@ -926,11 +934,7 @@ export function derive(source: World): Derived {
           for (const h of mods) if (h.type === 'checkin' && root(h.id) !== r && !hasT(root(h.id), 'security') && sitesOK(r, root(h.id))) { const d0 = gap(sz, h); if (d0 <= MOVER.reach && (!best || d0 < best.d || (d0 === best.d && sz.id < best.s.id))) best = { s: sz, h, d: d0 }; }
         }
         if (!best) break;
-        const pa = station(best.s, heart(best.h)), pb = station(best.h, pa);
-        const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.h.level, zones: [best.h.id] }) - 1;
-        pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
-        tKeys.add(tKey(pa)); tKeys.add(tKey(pb));
-        movers.push({ a: pa, b: pb, from: best.s.id, to: best.h.id, land: true });
+        link(best.s, best.h, true);
         { const hs = siteOf(world, best.h); if (hs) for (const id of siteIds(root(best.s.id))) if (id !== hs.id) siteJoin.set(id, hs); }
         par.set(root(best.s.id), root(best.h.id));
       }
@@ -942,12 +946,56 @@ export function derive(source: World): Derived {
         const d0 = gap(sz, m); if (d0 <= MOVER.reach && (!best || d0 < best.d || (d0 === best.d && sz.id < best.s.id))) best = { s: sz, m, d: d0 };
       }
       if (!best) break;
-      const pa = station(best.s, heart(best.m)), pb = station(best.m, pa);
-      const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.m.level, zones: [best.m.id] }) - 1;
-      pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
-      tKeys.add(tKey(pa)); tKeys.add(tKey(pb));
-      movers.push({ a: pa, b: pb, from: best.s.id, to: best.m.id });
+      link(best.s, best.m);
       linked.add(root(best.s.id));
+    }
+    // v0.45: lines and loops. Movers that share a station are one line. A line of three or more stations in a row whose
+    // two end stations are within reach of each other closes into a loop. Riding it: a platform beside each station
+    // (getting on and off costs the wait less one stop, half each way), and a run between neighbouring platforms that
+    // costs the ride and one stop; so a ride costs one wait and a stop at each station passed, and the rider follows
+    // the line through them, not a chord across.
+    const stns = new Map<number, { z: Zone; p: Pt; n: number }>();
+    {
+      const deg = new Map<number, number>(); for (const q of pairs) for (const z of [q.a, q.b]) deg.set(z.id, (deg.get(z.id) ?? 0) + 1);
+      const place = (z: Zone, p: Pt) => { const s = { z, p, n: ped.push({ p, level: z.level, zones: [z.id] }) - 1 }; stns.set(z.id, s); tKeys.add(tKey(p)); return s; };
+      // (a middle station keeps off the floor a cut-out took, and 6 m clear of it: along the centreline from the
+      //  middle, the nearest point clear; else at the end nearer its partner, as a single mover's is)
+      const inVoid = (p: Pt, lv: number) => shells.some(sh => sh.level === lv && sh.voids?.some(v => [p, { x: p.x + 6, y: p.y }, { x: p.x - 6, y: p.y }, { x: p.x, y: p.y + 6 }, { x: p.x, y: p.y - 6 }].some(q => pointInPoly(q, v))));
+      const middle = (z: Zone, to: Pt) => {
+        const m0 = z.sides ? centreOf(z) : heart(z); if (!inVoid(m0, z.level)) return m0;
+        if (!z.sides && !z.poly) { const F = frameOf(z); const cy = F.y + F.h / 2; for (let k = 6; k < F.w / 2 - inset(z); k += 6) for (const x of [F.x + F.w / 2 - k, F.x + F.w / 2 + k]) { const q = toWorld(z, { x, y: cy }); if (!inVoid(q, z.level)) return q; } }
+        return station(z, to);
+      };
+      const stationOf = (z: Zone, to: Pt) => stns.get(z.id) ?? place(z, deg.get(z.id)! >= 2 ? middle(z, to) : station(z, to));
+      for (const q of pairs) {
+        const sa = stationOf(q.a, stns.get(q.b.id)?.p ?? heart(q.b)), sb = stationOf(q.b, sa.p);
+        vpairs.push([sa.n, sb.n]); movers.push({ a: sa.p, b: sb.p, from: q.a.id, to: q.b.id, ...(q.land ? { land: true } : {}) });
+      }
+    }
+    {
+      const adj = new Map<number, Set<number>>(); const add = (a: number, b: number) => { adj.set(a, (adj.get(a) ?? new Set()).add(b)); adj.set(b, (adj.get(b) ?? new Set()).add(a)); };
+      for (const m of movers) add(m.from, m.to);
+      const seen = new Set<number>(); let line = 0;
+      for (const id0 of [...adj.keys()].sort((p, q) => p - q)) {
+        if (seen.has(id0)) continue;
+        const comp: number[] = []; const st = [id0]; seen.add(id0);
+        while (st.length) { const u = st.pop()!; comp.push(u); for (const v of adj.get(u)!) if (!seen.has(v)) { seen.add(v); st.push(v); } }
+        const ends = comp.filter(u => adj.get(u)!.size === 1);
+        const path = comp.length >= 3 && ends.length === 2 && comp.every(u => adj.get(u)!.size <= 2);
+        const za = path ? stns.get(ends[0])!.z : null, zb = path ? stns.get(ends[1])!.z : null;
+        const own = movers.filter(m => comp.includes(m.from));
+        // (only where it shortens the way round: a closing run less than 80% of the line, so stations in a row never loop)
+        const runL = own.reduce((t, m) => t + dist(m.a, m.b), 0);
+        if (za && zb && gap(za, zb) <= MOVER.reach && !own.some(m => m.land) && dist(stns.get(za.id)!.p, stns.get(zb.id)!.p) < 0.8 * runL) {
+          const sa = stns.get(za.id)!, sb = stns.get(zb.id)!; vpairs.push([sa.n, sb.n]);
+          movers.push({ a: sa.p, b: sb.p, from: za.id, to: zb.id, loop: true }); add(za.id, zb.id);
+        }
+        for (const m of movers) if (comp.includes(m.from)) { m.line = line; m.stations = comp.length; if (za && zb && comp.length >= 3 && movers.some(q => q.loop && comp.includes(q.from))) m.loop = true; }
+        line++;
+      }
+      const plat = new Map<number, number>();
+      for (const [id, s] of stns) { const q = ped.push({ p: s.p, level: s.z.level, zones: [] }) - 1; plat.set(id, q); platNodes.add(q); pedE.push([s.n, q, ((MOVER.wait - MOVER.dwell) * TUNE.walkSpeed) / 2]); }
+      for (const m of movers) pedE.push([plat.get(m.from)!, plat.get(m.to)!, dist(m.a, m.b) / MOVER.speed + MOVER.dwell * TUNE.walkSpeed]);
     }
   }
   const walks = [...world.ways.filter(w => w.kind === 'walk'), ...laid];
@@ -971,7 +1019,7 @@ export function derive(source: World): Derived {
   };
   const nearPed = (p: Pt, lv: Level) => {
     const out: { n: number; c: number }[] = [];
-    ped.forEach((q, i) => { if (q.level === lv) { const d0 = dist(p, q.p); if (d0 < 120) out.push({ n: i, c: d0 }); } });
+    ped.forEach((q, i) => { if (q.level === lv && !platNodes.has(i)) { const d0 = dist(p, q.p); if (d0 < 120) out.push({ n: i, c: d0 }); } });
     return out.sort((a, b) => a.c - b.c).slice(0, 4);
   };
   // v0.20: inside a bent pier a straight line from one point to another can leave the building. Wherever two
@@ -1027,11 +1075,14 @@ export function derive(source: World): Derived {
     if (!skirtCuts.length) return r;
     // (a point of the route in a void, such as a bent pier's centreline point or a door the void has reached, steps out
     //  to the floor beside it; the way round is then found from there)
-    const rp = r.pts.map((p, i) => (i < r.pts.length - 1 ? stepOut(p, r.lvs[i]) : p)), rl = r.lvs;
+    // (v0.45: a ride runs underground: its stations and platforms stay where they are, and a run between two of them
+    //  is never taken round a courtyard)
+    const isTrain = (p: Pt) => tKeys.has(tKey(p));
+    const rp = r.pts.map((p, i) => (i < r.pts.length - 1 && !isTrain(p) ? stepOut(p, r.lvs[i]) : p)), rl = r.lvs;
     const pts: Pt[] = [], lvs: Level[] = []; let a = from, la = lv0, extra = 0;
     for (let i = 0; i < rp.length; i++) {
       const b = rp[i], lb = rl[i];
-      const walls = la === lb ? skirtCuts.filter(c => c.level === la) : [];
+      const walls = la === lb && !(isTrain(a) && isTrain(b)) ? skirtCuts.filter(c => c.level === la) : [];
       if (walls.some(c => crosses(a, b, c.wall))) {
         const a2 = stepOut(a, la), b2 = stepOut(b, la);
         const V = [a2, b2, ...walls.flatMap(c => c.nodes)];
