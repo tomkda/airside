@@ -112,7 +112,7 @@ export function carPoses(sim: Sim): Map<Car, Pose> {
       const d = Math.max(0, it.c.d - held) * it.lane.ratio;
       const a = along(it.lane.pts, Math.min(d, it.lane.len));
       const e = it.c.eids[it.c.si];
-      out.set(it.c, { x: a.p.x, y: a.p.y, ang: a.ang, brake: held > 1.5 || (e >= 0 && sim.congestion(e) < 0.55), moving: true, up: deckHeight(sim, it.c, a.p) });
+      out.set(it.c, { x: a.p.x, y: a.p.y, ang: a.ang, brake: held > 1.5 || !!it.c.wait || (e >= 0 && sim.congestion(e) < 0.55), moving: true, up: deckHeight(sim, it.c, a.p) });
     }
   }
   memo = { sim, t: sim.t, n: sim.cars.length, d: sim.d, out };
