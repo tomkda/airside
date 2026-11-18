@@ -1886,7 +1886,7 @@ export class UI {
         ${(() => { const T = s.d.termOf.get(z.id); return T ? `<dt>Terminal</dt><dd class="${T.active ? '' : 'bad'}">${T.name} · ${T.active ? 'open' : 'closed'}</dd>` : ''; })()}
         ${(() => {   // (v0.44: a people mover with a station in this module)
           const mv = s.d.trainLinks.filter(l => l.apm && (l.from === z.id || l.to === z.id)); if (!mv.length) return '';
-          return `<dt>People mover</dt><dd>${mv.map(l => { const o = s.world.zones.find(q => q.id === (l.from === z.id ? l.to : l.from)); const L = dist(l.a, l.b); return `${n0(L)} m to ${o ? ZONES[o.type].short.toLowerCase() : 'the terminal'}, about ${(L / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} min${l.land ? ' · landside: passengers are screened at the far end' : ' · airside'}`; }).join('<br>')}</dd>`;
+          return `<dt>People mover</dt><dd>${mv.map(l => { const o = s.world.zones.find(q => q.id === (l.from === z.id ? l.to : l.from)); const L = dist(l.a, l.b); return `${n0(L)} m to ${o ? ZONES[o.type].short.toLowerCase() : 'the terminal'}, about ${(L / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} min${l.land ? ' · landside: passengers are screened at the far end' : ' · airside'}${l.loop ? ` · on a loop of ${l.stations} stations` : (l.stations ?? 2) > 2 ? ` · on a line of ${l.stations} stations` : ''}`; }).join('<br>')}</dd>`;
         })()}
         ${z.type === 'concourse' ? this.gateSidesHTML(z) : ''}
         ${u.max && z.type !== 'concourse' && !z.auto ? `<dt>${z.type === 'claim' ? 'Carousels built' : def.unit[0].toUpperCase() + def.unit.slice(1)}</dt><dd>
