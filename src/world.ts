@@ -242,7 +242,8 @@ export interface Derived {
   /** v0.13: road ids that are ramps up to a departures deck. Only cars bound for or leaving that deck use them. */
   rampRefs: Set<number>;
   /** `apm`: an airside people mover between two concourses (v0.16), with the ids of the zones it joins. */
-  autoRoads: Way[]; trainLinks: { a: Pt; b: Pt; apm?: boolean; from?: number; to?: number }[]; served: Set<number>;
+  /** v0.44: `land`: a landside people mover, from a remote building's security to a check-in hall. */
+  autoRoads: Way[]; trainLinks: { a: Pt; b: Pt; apm?: boolean; land?: boolean; from?: number; to?: number }[]; served: Set<number>;
   isTrainNode(p: Pt): boolean;
   zoneAt(p: Pt, lv: Level): Zone | undefined;
   pedRoute(p: Pt, lv: Level, q: Pt, lvq: Level): Route | null;
@@ -888,7 +889,10 @@ export function derive(source: World): Derived {
   // v0.16: a concourse that touches no terminal is a satellite. It links itself to the nearest concourse that is
   // already part of a terminal (or of another linked satellite) with an airside people mover: a station in each,
   // and a fast ride between them. Generated like a forecourt, never saved.
-  const movers: { a: Pt; b: Pt; from: number; to: number }[] = [];
+  const movers: { a: Pt; b: Pt; from: number; to: number; land?: boolean }[] = [];
+  /** v0.44: a site whose remote building a landside people mover has linked to a hall on another site: it is part of
+   *  that hall's terminal. */
+  const siteJoin = new Map<number, Site>();
   {
     const mods = zs.filter(z => TERMINAL_TYPES.has(z.type));
     const par = new Map<number, number>(mods.map(z => [z.id, z.id]));
@@ -897,18 +901,47 @@ export function derive(source: World): Derived {
       const A = mods[i], B = mods[j]; const ir = A.level !== B.level && !shaped(A) && !shaped(B) ? intersectRect(A, B) : null;
       if (shaped(A) || shaped(B) ? zonesOverlap(A, B, A.level === B.level ? 24 : 256) : (A.level === B.level && shared(A, B)) || (ir && ir.w >= 16 && ir.h >= 16)) par.set(root(A.id), root(B.id));
     }
-    const linked = new Set<number>(mods.filter(z => z.type === 'security').map(z => root(z.id)));
     const concs = mods.filter(z => z.type === 'concourse');
     const gap0 = (A: Rect, B: Rect) => Math.hypot(Math.max(0, A.x - (B.x + B.w), B.x - (A.x + A.w)), Math.max(0, A.y - (B.y + B.h), B.y - (A.y + A.h)));
     const gap = (A: Zone, B: Zone) => gap0(zoneBox(A), zoneBox(B));
+    const inset = (z: Zone) => Math.min(12, z.w / 2 - 1, z.h / 2 - 1);
+    const station = (z: Zone, to: Pt) => (z.sides ? centreOf(z) : toWorld(z, clampToRect(toLocal(z, to), frameOf(z), inset(z))));
+    // v0.44: a landside people mover. A building with its own security and concourse but no check-in (a remote
+    // concourse, screened at its own door) links itself to the nearest check-in hall within reach, before security:
+    // a station in the hall and one in its security, so a passenger checks in, rides out and is screened there, and
+    // an arriving one rides back to the hall and down to baggage claim. Nearest first, so each such building takes
+    // the hall nearest it.
+    {
+      const hasT = (r: number, t: ZoneType) => mods.some(z => z.type === t && root(z.id) === r);
+      // (only to a hall with no security of its own, so a terminal keeps one airside and everyone is screened where
+      //  their gates are; and across sites only from one that has no check-in of its own, which then joins the hall's
+      //  terminal: a remote building laid out on a New terminal site is part of the terminal it is linked to)
+      const siteIds = (r: number) => new Set(mods.filter(z => root(z.id) === r).map(z => siteOf(world, z)?.id).filter((x): x is number => x !== undefined));
+      const siteHasCI = (id: number) => mods.some(z => z.type === 'checkin' && siteOf(world, z)?.id === id);
+      const sitesOK = (rs: number, rh: number) => { const a = siteIds(rs), b = siteIds(rh); return !a.size || !b.size || [...a].every(id => b.has(id) || !siteHasCI(id)); };
+      for (let guard = 0; guard < 40; guard++) {
+        let best: { s: Zone; h: Zone; d: number } | null = null;
+        for (const sz of mods) if (sz.type === 'security') {
+          const r = root(sz.id); if (hasT(r, 'checkin') || !hasT(r, 'concourse')) continue;
+          for (const h of mods) if (h.type === 'checkin' && root(h.id) !== r && !hasT(root(h.id), 'security') && sitesOK(r, root(h.id))) { const d0 = gap(sz, h); if (d0 <= MOVER.reach && (!best || d0 < best.d || (d0 === best.d && sz.id < best.s.id))) best = { s: sz, h, d: d0 }; }
+        }
+        if (!best) break;
+        const pa = station(best.s, heart(best.h)), pb = station(best.h, pa);
+        const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.h.level, zones: [best.h.id] }) - 1;
+        pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
+        tKeys.add(tKey(pa)); tKeys.add(tKey(pb));
+        movers.push({ a: pa, b: pb, from: best.s.id, to: best.h.id, land: true });
+        { const hs = siteOf(world, best.h); if (hs) for (const id of siteIds(root(best.s.id))) if (id !== hs.id) siteJoin.set(id, hs); }
+        par.set(root(best.s.id), root(best.h.id));
+      }
+    }
+    const linked = new Set<number>(mods.filter(z => z.type === 'security').map(z => root(z.id)));
     for (let guard = 0; guard < 40; guard++) {
       let best: { s: Zone; m: Zone; d: number } | null = null;
       for (const sz of concs) if (!linked.has(root(sz.id))) for (const m of concs) if (linked.has(root(m.id))) {
         const d0 = gap(sz, m); if (d0 <= MOVER.reach && (!best || d0 < best.d || (d0 === best.d && sz.id < best.s.id))) best = { s: sz, m, d: d0 };
       }
       if (!best) break;
-      const inset = (z: Zone) => Math.min(12, z.w / 2 - 1, z.h / 2 - 1);
-      const station = (z: Zone, to: Pt) => (z.sides ? centreOf(z) : toWorld(z, clampToRect(toLocal(z, to), frameOf(z), inset(z))));
       const pa = station(best.s, heart(best.m)), pb = station(best.m, pa);
       const na = ped.push({ p: pa, level: best.s.level, zones: [best.s.id] }) - 1, nb = ped.push({ p: pb, level: best.m.level, zones: [best.m.id] }) - 1;
       pedE.push([na, nb, dist(pa, pb) / MOVER.speed + MOVER.wait * TUNE.walkSpeed]); vpairs.push([na, nb]);
@@ -1086,12 +1119,14 @@ export function derive(source: World): Derived {
   // v0.8: a terminal is a site and the modules on it. Modules on no site (old saves) group by touching, as before.
   const sites = world.sites ?? [];
   const groups = new Map<string, { zones: Zone[]; site?: Site }>();
-  for (const st of sites) groups.set(`s${st.id}`, { zones: [], site: st });
+  for (const st of sites) if (!siteJoin.has(st.id)) groups.set(`s${st.id}`, { zones: [], site: st });
   // a module on no site joins the site of whatever it connects to on foot
+  // (v0.44: and a module on a site a landside people mover has joined to another, that other one)
+  const siteFor = (z: Zone) => { const st = siteOf(world, z); return st ? siteJoin.get(st.id) ?? st : undefined; };
   const rootSite = new Map<number, Site>();
-  for (const z of zs) if (tParent.has(z.id)) { const st = siteOf(world, z); if (st && !rootSite.has(tRoot(z.id))) rootSite.set(tRoot(z.id), st); }
+  for (const z of zs) if (tParent.has(z.id)) { const st = siteFor(z); if (st && !rootSite.has(tRoot(z.id))) rootSite.set(tRoot(z.id), st); }
   for (const z of zs) if (tParent.has(z.id)) {
-    const st = siteOf(world, z) ?? rootSite.get(tRoot(z.id));
+    const st = siteFor(z) ?? rootSite.get(tRoot(z.id));
     const k = st ? `s${st.id}` : `c${tRoot(z.id)}`;
     const g = groups.get(k) ?? { zones: [] }; g.zones.push(z); groups.set(k, g);
   }
@@ -1120,7 +1155,7 @@ export function derive(source: World): Derived {
     if (!ga.length) missing.push('a concourse'); if (!cl.length) missing.push('baggage claim');
     if (missing.length) {
       const others = terminals.filter(o => o !== T);
-      T.problems.push(`needs ${listOf(missing)}${others.length ? `: connect it to another terminal or build them touching it${ga.length && !sec.length ? `, or bring the concourse within ${MOVER.reach.toLocaleString()} m of a terminal's concourse for a people mover` : ''}` : ''}`);
+      T.problems.push(`needs ${listOf(missing)}${others.length ? `: connect it to another terminal or build them touching it${ga.length && !sec.length ? `, or bring the concourse within ${MOVER.reach.toLocaleString()} m of a terminal's concourse for a people mover` : ga.length && sec.length && !ci.length ? `, or bring its security within ${MOVER.reach.toLocaleString()} m of a check-in hall that has no security of its own, for a landside people mover` : ''}` : ''}`);
       if (others.length) {
         const [a, b] = nearPair(T.zones, others.flatMap(o => o.zones));
         links.push({ a: center(a), b: center(b), text: 'Not connected' });
