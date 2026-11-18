@@ -10,6 +10,7 @@
 import { Pt, Rect, clamp, segDist } from './geom';
 import { Level, SITES, ZoneType, ZONES } from './config';
 import type { World } from './world';
+import { chordWays } from './ways';
 
 export type Side = 'n' | 'e' | 's' | 'w';
 export interface PlanPart { type: ZoneType; level: Level; rect: Rect }
@@ -21,7 +22,7 @@ export function airsideOf(site: Rect, world: World): Side {
     ['n', { x: site.x + site.w / 2, y: site.y }], ['e', { x: site.x + site.w, y: site.y + site.h / 2 }],
     ['s', { x: site.x + site.w / 2, y: site.y + site.h }], ['w', { x: site.x, y: site.y + site.h / 2 }],
   ];
-  const taxis = world.ways.filter(w => w.kind === 'taxi');
+  const taxis = chordWays(world.ways).filter(w => w.kind === 'taxi');   // (v0.46: a curved one as its chords)
   const lines = taxis.length ? taxis : world.runways;
   if (!lines.length) return 'n';
   let best: Side = 'n', bd = Infinity;

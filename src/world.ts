@@ -5,10 +5,10 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC } from './config';
+import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
-import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef } from './ways';
+import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, curveOK, roundOuter, roundDef, chordWays } from './ways';
 export type { Round, Piece } from './ways';
 import { gripsOf, Grip, maxTwist, curved, widthK, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
@@ -244,6 +244,8 @@ export interface Derived {
   /** `apm`: an airside people mover between two concourses (v0.16), with the ids of the zones it joins. */
   /** v0.44: `land`: a landside people mover, from a remote building's security to a check-in hall. v0.45: `line`, the
    *  line it is part of (movers sharing stations), how many `stations` that line has, and whether it is a `loop`. */
+  /** v0.46: every taxiway and sidewalk drawn, curved ones as their chords: what the renderers draw them from. */
+  wayPieces: Way[];
   autoRoads: Way[]; trainLinks: { a: Pt; b: Pt; apm?: boolean; land?: boolean; from?: number; to?: number; line?: number; stations?: number; loop?: boolean }[]; served: Set<number>;
   isTrainNode(p: Pt): boolean;
   zoneAt(p: Pt, lv: Level): Zone | undefined;
@@ -377,10 +379,11 @@ export function canPlaceRunway(world: World, a: Pt, b: Pt, ignoreId = -1): Place
   return { ok: true };
 }
 
-export function canPlaceWay(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[], c?: Pt): PlaceCheck {
+export function canPlaceWay(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[], c?: Pt, cls = 2): PlaceCheck {
   if (dist(a, b) < 10) return { ok: false, reason: 'Too short' };
   if (!c) return placeSeg(world, kind, a, b, aprons);
-  if (!curveOK({ a, b, c })) return { ok: false, reason: `Curve too tight: ${ROADS.minRadius} m radius at least` };
+  const minR = kind === 'taxi' ? CURVE_MIN.taxi[cls] ?? CURVE_MIN.taxi[2] : kind === 'walk' ? CURVE_MIN.walk : ROADS.minRadius;
+  if (!curveOK({ a, b, c }, minR)) return { ok: false, reason: `Curve too tight: ${minR} m radius at least` };
   for (const [p, q] of waySegs({ a, b, c })) { const r = placeSeg(world, kind, p, q, aprons); if (!r.ok) return r; }
   return { ok: true };
 }
@@ -403,7 +406,7 @@ export function canPlacePier(world: World, z: { x: number; y: number; w: number;
     if (o.level === z.level && o.type !== 'concourse' && !(z.sides && o.type === 'security')) return { ok: false, reason: `Overlaps ${ZONES[o.type].short}: ${z.sides ? 'a hall joins concourses and security' : 'a pier joins a concourse'}, not ${ZONES[o.type].short.toLowerCase()}` };
     if (o.level !== z.level && o.type === 'parking') return { ok: false, reason: 'Cannot build over a surface lot' };
   }
-  for (const w of world.ways) if (w.kind === 'taxi' && (inZone(w.a, z) || inZone(w.b, z) || edges.some(([a, b]) => segsIntersect(a, b, w.a, w.b)))) return { ok: false, reason: 'Crosses a taxiway' };
+  for (const w of chordWays(world.ways)) if (w.kind === 'taxi' && (inZone(w.a, z) || inZone(w.b, z) || edges.some(([a, b]) => segsIntersect(a, b, w.a, w.b)))) return { ok: false, reason: 'Crosses a taxiway' };
   for (const rd of world.rounds ?? []) if (inZone(rd, z, roundOuter(rd)) && z.level === 0) return { ok: false, reason: 'Overlaps a roundabout' };
   return { ok: true };
 }
@@ -422,7 +425,7 @@ export function canPlaceRound(world: World, p: Pt, size: number, aprons: Apron[]
   for (const z of world.zones) if (z.level === 0 && rectSegDist(z, p, p) < R - 1) return { ok: false, reason: `Overlaps the ${ZONES[z.type].short.toLowerCase()}` };
   for (const ap of aprons) if (!ap.self && rectSegDist(ap.rect, p, p) < R) return { ok: false, reason: 'Overlaps an apron' };
   for (const rw of world.runways) if (segDist(p, rw.a, rw.b) < runwayWidth(dist(rw.a, rw.b)) / 2 + 60 + R) return { ok: false, reason: 'Inside the runway strip' };
-  for (const w of world.ways) if (w.kind === 'taxi' && segDist(p, w.a, w.b) < R + 10) return { ok: false, reason: 'Too close to a taxiway' };
+  for (const w of chordWays(world.ways)) if (w.kind === 'taxi' && segDist(p, w.a, w.b) < R + 10) return { ok: false, reason: 'Too close to a taxiway' };
   for (const o of world.rounds ?? []) if (o.id !== ignoreId && dist(o, p) < R + roundOuter(o) + 6) return { ok: false, reason: 'Too close to another roundabout' };
   return { ok: true };
 }
@@ -440,7 +443,7 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
     const half = runwayWidth(dist(rw.a, rw.b)) / 2 + 60;
     if (segsIntersect(a, b, rw.a, rw.b) || segDist(a, rw.a, rw.b) < half || segDist(b, rw.a, rw.b) < half) return { ok: false, reason: `${name}s can't enter the runway strip` };
   }
-  for (const w of world.ways) if (w.kind === 'taxi' && segsIntersect(a, b, w.a, w.b)) return { ok: false, reason: `${name}s can't cross a taxiway` };
+  for (const w of chordWays(world.ways)) if (w.kind === 'taxi' && segsIntersect(a, b, w.a, w.b)) return { ok: false, reason: `${name}s can't cross a taxiway` };
   if (kind === 'walk') for (const rd of world.rounds ?? []) if (segDist(rd, a, b) < roundOuter(rd) - 2) return { ok: false, reason: "Sidewalks go round a roundabout, not through it" };
   for (const ap of aprons) if (!ap.self && rectSegDist(inset(ap.rect, 2), a, b) === 0) return { ok: false, reason: `${name}s can't cross an apron` };
   for (const z of world.zones) if (z.level === 0 && rectSegDist(inset(z, 2), a, b) === 0)
@@ -509,7 +512,9 @@ export function windSamples(): Wind[] {
 export const runwayUsable = (r: RunwayInfo, w: Wind) => crosswind(r.heading, w) <= TUNE.crosswindLimit;
 
 // ------------------------------------------------------------ derive the generated layout
-export function derive(source: World): Derived {
+export function derive(drawn: World): Derived {
+  // (v0.46: a curved taxiway or sidewalk is its chords to everything below)
+  const source: World = { ...drawn, ways: chordWays(drawn.ways) };
   // Curbs grow where roads run along terminal faces (frontage.ts). Everything below sees them as ordinary zones.
   // v0.12: first, a hall with no road along its face lays its own forecourt to the nearest road.
   const runways = runwayInfos(source);
@@ -1323,7 +1328,7 @@ export function derive(source: World): Derived {
     zoneAt, pedRoute, inCut: (p: Pt, lv: Level) => !!inWall(p, lv) && !onFloor(p, lv), zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,   // (inCut: in a cut-out, and off the floor: a notch's rounded corners keep a little of it)
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
     roadPieces: pieces, rounds, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),
-    autoRoads: laidRoads, trainLinks: [...tLinks.map(l => ({ a: center(l.a), b: center(l.b) })), ...movers.map(m => ({ ...m, apm: true }))], served, isTrainNode: (p: Pt) => tKeys.has(tKey(p)),
+    wayPieces: source.ways.filter(w => w.kind !== 'road'), autoRoads: laidRoads, trainLinks: [...tLinks.map(l => ({ a: center(l.a), b: center(l.b) })), ...movers.map(m => ({ ...m, apm: true }))], served, isTrainNode: (p: Pt) => tKeys.has(tKey(p)),
   };
 }
 
@@ -1404,7 +1409,7 @@ export function followRunwayEnd(world: World, fixed: Pt, oldEnd: Pt, newEnd: Pt,
   const sOld = dist(fixed, oldEnd), sNew = dot(sub(newEnd, fixed), along);
   if (sNew <= sOld + 20) return { moves, adds, cost };
   for (const w of world.ways) {
-    if (w.kind !== 'taxi' || Math.abs(dot(norm(sub(w.b, w.a)), along)) < 0.996) continue;
+    if (w.kind !== 'taxi' || w.c || Math.abs(dot(norm(sub(w.b, w.a)), along)) < 0.996) continue;   // (v0.46: not a curved one)
     const off = dot(sub(lerpPt(w.a, w.b, 0.5), fixed), n);
     if (Math.abs(off) < PAR_MIN || Math.abs(off) > PAR_MAX) continue;
     for (const end of ['a', 'b'] as const) {

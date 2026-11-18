@@ -22,8 +22,8 @@ export function scenery(world: World, d: Derived): Scenery {
   if (held) return held;
   const hit = cache.get(d); if (hit) return hit;
   // v0.11: roads are taken as straight pieces, so trees and lamps follow curves and keep off roundabouts
-  const roads = [...world.ways.filter(w => w.kind === 'walk'), ...d.autoWalks, ...d.roadPieces.map(p => ({ ...p, kind: 'road' as const, cls: 0, id: p.ref }))];
-  const taxis = [...world.ways.filter(w => w.kind === 'taxi').map(w => ({ a: w.a, b: w.b, w: wayWidth('taxi', w.cls, 0) })), ...d.airExtra.map(x => ({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0) }))];
+  const roads = [...d.wayPieces.filter(w => w.kind === 'walk'), ...d.autoWalks, ...d.roadPieces.map(p => ({ ...p, kind: 'road' as const, cls: 0, id: p.ref }))];
+  const taxis = [...d.wayPieces.filter(w => w.kind === 'taxi').map(w => ({ a: w.a, b: w.b, w: wayWidth('taxi', w.cls, 0) })), ...d.airExtra.map(x => ({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0) }))];
   const pads: { r: Rect; k: number }[] = [
     ...d.zones.map(z => ({ r: zoneBox(z), k: 7 })), ...(world.sites ?? []).map(s => ({ r: s as Rect, k: 4 })), ...d.aprons.map(a => ({ r: a.rect, k: 14 })), ...d.pads.map(q => ({ r: polyBox(q), k: 14 })),
   ];

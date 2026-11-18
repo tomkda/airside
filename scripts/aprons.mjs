@@ -509,6 +509,18 @@ for (const deg of [12, -20]) {
   sim.onDayEnd = q => { missed += q.stats.missed; stranded += q.stats.stranded; }; sim.startDay();
   while (sim.day < 1) { sim.step(0.25); for (const p of sim.pax) if (p.ride && !seen.has(p)) { seen.add(p); rode++; } }
   check('with the main gates off a day flies round the loop with 0 missed and 0 stranded (' + missed + ', ' + stranded + '), ' + rode + ' riding', missed === 0 && stranded === 0 && rode > 2000); }
+// v0.46: curved taxiways and sidewalks
+{ const w = sampleWorld(); const A = w.ways.find(q => q.kind === 'taxi' && q.a.y === 2490 && q.b.y === 2490); A.c = { x: 3200, y: 2420 };
+  const sim = new Sim(w, 7); sim.relayout(); const d = sim.d; const pcs = d.wayPieces.filter(p => p.id === A.id);
+  check('taxiway A bent towards the runway is drawn and used as its chords (' + pcs.length + '), each on the curve', pcs.length > 20 && pcs.every(p => !p.c));
+  check('the sample keeps its 14 gates with it bent, every one reaching the runway, and Terminal 1 opens', d.gates.length === 14 && d.gates.every(g => g.rwys[0].size > 0) && d.terminals[0].active);
+  let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
+  check('and flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0);
+  const w2 = sampleWorld(); const a = { x: 2500, y: 3700 }, b = { x: 2580, y: 3700 }, c = { x: 2540, y: 3760 };
+  const tx = canPlaceWay(w2, 'taxi', a, b, [], c, 2), rd = canPlaceWay(w2, 'road', a, b, [], c);
+  check('a curve too tight for a taxiway (' + (tx.reason ?? 'ok') + ') can still be a road (' + (rd.reason ?? 'ok') + ')', !tx.ok && /45 m radius/.test(tx.reason) && rd.ok);
+  const wk = canPlaceWay(w2, 'walk', { x: 2000, y: 2560 }, { x: 2400, y: 2560 }, [], { x: 2200, y: 2400 });
+  check('a curved sidewalk that dips across a taxiway is refused (' + (wk.reason ?? 'ok') + ')', !wk.ok && /taxiway/.test(wk.reason)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

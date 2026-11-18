@@ -18,12 +18,12 @@ import { simplePoly, polyBox, polyCentre } from './shapes';
 import type { Cut } from './shell';
 /** v0.35: a cut-out as a shape, for overlap tests. */
 const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
-import { AREA } from './config';
+import { AREA, CURVE_MIN } from './config';
 import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
-import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef } from './ways';
+import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef, chordWays } from './ways';
 import { roadPlan } from './roads';
 import { Sound } from './sound';
 import { planTerminal, airsideOf, planCost, PlanPart, PLAN_MIN } from './terminalplan';
@@ -259,7 +259,8 @@ export class UI {
     const seg = (key: string, cur: number, items: [number, string][]) =>
       `<div class="seg">${items.map(([v, l]) => `<button data-opt="${key}:${v}" aria-pressed="${cur === v}">${l}</button>`).join('')}</div>`;
     let html = '';
-    if (t === 'taxi') html = `<span class="label">Taxiway</span>${seg('taxi', this.opt.taxi, TAXI_CLASSES.map(c => [c.cls, `${c.name}<span class="opt-note"> · ${c.note}</span>`]))}<span class="label">Runway links</span>${seg('auto', this.opt.auto, [[1, 'Auto'], [0, 'Manual']])}`;
+    if (t === 'taxi') html = `<span class="label">Taxiway</span>${seg('taxi', this.opt.taxi, TAXI_CLASSES.map(c => [c.cls, `${c.name}<span class="opt-note"> · ${c.note}</span>`]))}<span class="label">Shape</span>${seg('shape', this.opt.shape, [[0, 'Straight'], [1, 'Curve']])}<span class="label">Runway links</span>${seg('auto', this.opt.auto, [[1, 'Auto'], [0, 'Manual']])}`;
+    else if (t === 'walk') html = `<span class="label">Shape</span>${seg('shape', this.opt.shape, [[0, 'Straight'], [1, 'Curve']])}`;   // (v0.46)
     else if (t === 'select' && this.ren.selected?.kind === 'runway') html = `<span class="label">Extending</span>${seg('auto', this.opt.auto, [[1, 'Stretch parallel taxiways'], [0, 'Runway only']])}`;
     else if (t === 'road') html = `<span class="label">Road</span>${seg('lanes', this.opt.lanes, ROAD_LANES.map(c => [c.lanes, c.name]))}<span class="label">Shape</span>${seg('shape', this.opt.shape, [[0, 'Straight'], [1, 'Curve']])}<span class="label">Traffic</span>${seg('oneway', this.opt.oneway, [[0, 'Two-way'], [1, 'One-way']])}`;
     else if (t === 'site') html = `<span class="label">New terminal</span>${seg('layout', this.opt.layout, [[0, 'Empty site<span class="opt-note"> · lay it out yourself</span>'], [1, 'With a starter layout']])}`;
@@ -333,6 +334,7 @@ export class UI {
     const t = this.tool;
     if (t === 'select') { if (this.ren.selected?.kind === 'runway') return 'Drag either end of the runway to extend or shorten it'; if (this.ren.mode3d) return 'Drag to orbit · right-drag to pan · scroll to zoom · click to inspect · T for plan'; return matchMedia('(pointer: coarse)').matches ? 'Drag to pan · pinch to zoom · tap to inspect' : 'Drag to pan · scroll to zoom · click to inspect · drag a module to move it'; }
     if (t === 'runway') return 'Drag to draw a runway · 1,200 m turboprop · 1,600 m E175 · 2,100 m A320 · 3,000 m A380';
+    if ((t === 'taxi' || t === 'walk') && this.opt.shape) return `Drag to draw a curved ${t === 'taxi' ? 'taxiway' : 'sidewalk'} · it leaves in line with the ${t === 'taxi' ? 'taxiway' : 'sidewalk'} it starts from, or sweeps round a corner on open ground${t === 'taxi' ? ` · at least ${CURVE_MIN.taxi[this.opt.taxi] ?? 45} m radius on its centreline · no automatic runway links on a curve` : ''} · select one later and drag its middle handle to bend it`;
     if (t === 'taxi') return `Drag to draw a taxiway · snaps to runways, aprons and other taxiways${this.opt.auto ? ' · drawn beside a runway, it links itself with end stubs and rapid exits' : ''}`;
     if (t === 'checkin') return `Drag the hall: check-in on Level 1 with baggage claim under it on Ground, as one building · put it against security · any road within ${FRONTAGE.reach} m of its open face and it lays its own two-level forecourt`;
     if (t === 'hub') return 'Drag a hub out from its centre: a round or polygonal hall with shops round an atrium · overlap a concourse or security and it joins that building · start piers inside it and they join too';
@@ -700,7 +702,7 @@ export class UI {
       const w = dr.way; const o = dr.orig3; let a = o.a, b = o.b, c = o.c;
       if (dr.handle === 'm') c = bendThrough(a, b, w.kind === 'road' ? this.curveSnap(p) : { x: snap(p.x, 1), y: snap(p.y, 1) });
       else { const q = this.snapFor(w.kind, p).p; if (dr.handle === 'a') a = q; else b = q; }
-      const chk = canPlaceWay(this.world, w.kind, a, b, this.aprons, c);
+      const chk = canPlaceWay(this.world, w.kind, a, b, this.aprons, c, w.cls);
       const cost = Math.max(0, (wayLen({ a, b, c }) - wayLen(o)) * wayCostPerM(w.kind, w.cls, w.lanes));
       const ok = chk.ok && this.sim.canAfford(cost);
       dr.bend = { a, b, c, ok, cost, reason: chk.reason };
@@ -786,18 +788,18 @@ export class UI {
     if (dr.mode === 'way') {
       const kind = this.tool as WayKind;
       const s = this.snapFor(kind, p);
-      const curved = kind === 'road' && !!this.opt.shape;
+      const curved = !!this.opt.shape;   // (v0.46: taxiways and sidewalks curve too)
       const b = s.snapped ? s.p : curved ? { x: snap(p.x, 5), y: snap(p.y, 5) } : this.angled(dr.start, p, 10).b;
       const cls = kind === 'taxi' ? this.opt.taxi : 0, lanes = kind === 'road' ? this.opt.lanes : 0;
       const c = curved ? this.curveControl(dr.start, b) : undefined;
-      const chk = canPlaceWay(this.world, kind, dr.start, b, this.aprons, c);
+      const chk = canPlaceWay(this.world, kind, dr.start, b, this.aprons, c, cls);
       const cost = wayLen({ a: dr.start, b, c }) * wayCostPerM(kind, cls, lanes);
-      const extras = kind === 'taxi' && this.opt.auto && chk.ok ? autoConnectors(this.world, { a: dr.start, b, cls }, this.aprons) : [];
+      const extras = kind === 'taxi' && !c && this.opt.auto && chk.ok ? autoConnectors(this.world, { a: dr.start, b, cls }, this.aprons) : [];
       const xcost = extras.reduce((t, x) => t + dist(x.a, x.b) * wayCostPerM('taxi', cls, 0), 0);
       const ok = chk.ok && this.sim.canAfford(cost + xcost);
       dr.extras = extras;
       this.ren.ghost = { kind: 'way', a: dr.start, b, c, ok, way: { kind, cls, lanes }, snapA: dr.snapStart, snapB: s.snapped, extras };
-      const what = kind === 'taxi' ? `${TAXI_CLASSES[cls === 3 ? 1 : 0].name} taxiway` : kind === 'road' ? `${lanes}-lane ${this.opt.oneway ? 'one-way ' : ''}${c ? 'curved ' : ''}road` : 'Sidewalk';
+      const what = kind === 'taxi' ? `${c ? 'Curved ' : ''}${TAXI_CLASSES[cls === 3 ? 1 : 0].name} taxiway` : kind === 'road' ? `${lanes}-lane ${this.opt.oneway ? 'one-way ' : ''}${c ? 'curved ' : ''}road` : c ? 'Curved sidewalk' : 'Sidewalk';
       const xs = extras.length ? ` + ${extras.length} runway link${extras.length > 1 ? 's' : ''}` : '';
       this.hint(chk.ok ? (ok ? `${what} · ${n0(wayLen({ a: dr.start, b, c }))} m${xs} · ${money(cost + xcost)}${s.snapped ? ' · connects here' : ''}` : `Not enough money: ${money(cost + xcost)}`) : chk.reason!, !ok);
       return;
@@ -1316,7 +1318,7 @@ export class UI {
     if (!inBuildable(r)) return { ok: false, reason: 'Outside the airport boundary or in the lake' };
     for (const rw of this.world.runways) if (rectSegDist(r, rw.a, rw.b) < TUNE.runwayClear) return { ok: false, reason: 'Inside the runway safety strip (150 m)' };
     for (const o of this.world.sites ?? []) if (rectsOverlap(r, o)) return { ok: false, reason: `Overlaps ${this.siteName(o)}'s site` };
-    for (const w of this.world.ways) if (w.kind === 'taxi' && rectSegDist(r, w.a, w.b) === 0) return { ok: false, reason: 'Crosses a taxiway' };
+    for (const w of chordWays(this.world.ways)) if (w.kind === 'taxi' && rectSegDist(r, w.a, w.b) === 0) return { ok: false, reason: 'Crosses a taxiway' };
     return { ok: true };
   }
   siteName(st: Site) { return this.sim.d.terminals.find(t => t.site?.id === st.id)?.name ?? 'that terminal'; }
@@ -1414,8 +1416,10 @@ export class UI {
   /** Curve tool: where the control point goes. In line with a road the new one starts from (or ends at); else round a corner. */
   curveControl(a: Pt, b: Pt): Pt | undefined {
     const L = dist(a, b); if (L < 20) return undefined;
+    // (v0.46: in line with a way of the kind being drawn, so a curved taxiway leaves a taxiway as a road leaves a road)
+    const kind = isWay(this.tool) ? this.tool : 'road';
     const tangent = (p: Pt): Pt | null => {
-      for (const w of this.world.ways) if (w.kind === 'road') {
+      for (const w of this.world.ways) if (w.kind === kind) {
         if (dist(w.b, p) < 1.5) return norm(sub(w.b, w.c ?? w.a));
         if (dist(w.a, p) < 1.5) return norm(sub(w.a, w.c ?? w.b));
       }
@@ -1437,7 +1441,7 @@ export class UI {
   /** Which handle of a selected way is under the pointer: an end, or the middle (drag it to bend a road). */
   wayHandleAt(w: Way, sx: number, sy: number): 'a' | 'b' | 'm' | null {
     const near = (p: Pt) => { const [x, y] = this.ren.P(p.x, p.y); return Math.hypot(x - sx, y - sy) < 11; };
-    if (w.kind === 'road' && near(wayMid(w))) return 'm';
+    if (near(wayMid(w))) return 'm';   // (v0.46: a taxiway or sidewalk bends too)
     if (w.kind === 'taxi') return null;
     return near(w.a) ? 'a' : near(w.b) ? 'b' : null;
   }
