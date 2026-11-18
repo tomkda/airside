@@ -947,7 +947,7 @@ export class Renderer {
         const e = clamp((k * T - 0.4) / (T - 0.8), 0, 1); const c = lerp2(l.a, l.b, e);
         if (z > 0.2) { this.line(add(c, mul(dv, -11)), add(c, mul(dv, 11)), 3.4, '#F4EDDF', 0, 'round', 3); this.line(add(c, mul(dv, -11)), add(c, mul(dv, 11)), 1.4, PAL.select, 0, 'butt', 1.2); }
         for (const p of [l.a, l.b]) { const [x, y] = this.P(p.x, p.y); const r = clamp(7 * z, 3.5, 9); g.fillStyle = '#F4EDDF'; g.strokeStyle = PAL.select; g.lineWidth = 2; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); g.stroke(); g.fillStyle = PAL.select; g.beginPath(); g.arc(x, y, r * 0.38, 0, Math.PI * 2); g.fill(); }
-        const many = (l.stations ?? 2) > 2; const name = l.loop ? `PEOPLE MOVER LOOP · ${l.stations} STATIONS` : many ? `PEOPLE MOVER · ${l.stations} STATIONS` : `${l.land ? 'LANDSIDE ' : ''}PEOPLE MOVER · ${Math.round(L)} m`;
+        const many = (l.stations ?? 2) > 2; const name = l.loop ? `PEOPLE MOVER LOOP · ${l.stations} STATIONS` : many ? `${l.land ? 'LANDSIDE ' : ''}PEOPLE MOVER · ${l.stations} STATIONS` : `${l.land ? 'LANDSIDE ' : ''}PEOPLE MOVER · ${Math.round(L)} m`;
         if (z > 0.35 && L * z > 150 && (!many || longest.get(l.line!) === i)) { const rot = Math.atan2((l.b.y - l.a.y) * this.yScale, l.b.x - l.a.x); this.label(name, add(lerp2(l.a, l.b, 0.5), mul(n, 9)), 0, 8, PAL.select, { weight: 800, spacing: 1.2, rot: Math.cos(rot) < 0 ? rot + Math.PI : rot }); }
         continue;
       }
