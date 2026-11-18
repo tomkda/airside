@@ -1279,7 +1279,7 @@ export class Sim {
       const k = this.yieldKind[n]; if (!k) continue;
       const q = this.yieldFlow[n] / YIELD.window; this.yieldFlow[n] *= fade; // cars a minute
       const cap = k === 2 ? (YIELD.entry / 60) * Math.exp(-YIELD.entryB * q * 60) : (60 / YIELD.tf) * Math.exp(-(q / 60) * (YIELD.tc - YIELD.tf / 2));
-      for (const e of R.adj[n]) { const s2 = e * 2 + (R.edges[e].v === n ? 1 : 0); this.yieldCredit[s2] = Math.min(YIELD.store, this.yieldCredit[s2] + cap * dt); }
+      for (const e of R.adj[n]) { const s2 = e * 2 + (R.edges[e].v === n ? 1 : 0); this.yieldCredit[s2] = Math.min(YIELD.store, this.yieldCredit[s2]) + cap * dt; /* (only what is left over is capped, so the step size does not limit capacity) */ }
     }
     for (const c of this.cars) {
       if (c.stage === 'gone') continue;
@@ -1294,7 +1294,7 @@ export class Sim {
           const k = this.yieldKind[n], m0 = this.major[n * 2], m1 = this.major[n * 2 + 1];
           if (!k) { c.passed = i; continue; }
           // (the ones that never wait, and are the flow the others wait for)
-          if (k === 2 ? isRingRef(a.ref) : m0 >= 0 && ((a.id === m0 && b.id === m1) || (a.id === m1 && b.id === m0))) { if (k === 1 || a.id === this.ringIn[n]) this.yieldFlow[n]++; c.passed = i; continue; }
+          if (k === 2 ? isRingRef(a.ref) : m0 >= 0 && ((a.id === m0 && b.id === m1) || (a.id === m1 && b.id === m0))) { if (k === 1 || (a.id === this.ringIn[n] && isRingRef(b.ref))) this.yieldFlow[n]++; /* (a ring car leaving here takes no gap) */ c.passed = i; continue; }
           if (k === 2 && !isRingRef(b.ref)) { c.passed = i; continue; }
           const slot = a.id * 2 + (a.v === n ? 1 : 0);
           if (this.yieldCredit[slot] >= 1) { this.yieldCredit[slot] -= 1; c.passed = i; continue; }

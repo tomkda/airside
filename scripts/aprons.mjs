@@ -129,8 +129,7 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   sim.onDayEnd = r => { st = r.stats; console.log('flying:', r.label, '| flights', st.flights, '(' + used.size + ' at the pier\\'s self-laid gates)', 'missed', st.missed, 'stranded', st.stranded, 'cancelled', st.cancelled); };
   while (sim.day < 2) { sim.step(0.25); for (const f of sim.flights) if (f.gate && f.gate.zone.id === z.id) used.add(f.id); }
   check('every flight uses the self-laid gates', used.size >= st.flights && st.flights > 10);
-  // (since v0.47, when cars began to give way at junctions, a handful can miss on the second day, walking the 400 m pier)
-  check('nobody stranded, and no more than a handful missed', st && st.missed <= 0.002 * (st.paxDep + st.paxArr) && st.stranded === 0); }
+  check('nobody missed or stranded', st && st.missed === 0 && st.stranded === 0); }
 { // grips
   const lim = { minLen: 60, minWide: 30, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 };
   const z0 = { x: 3368, y: 2693, w: 400, h: 50, rot: 20 * Math.PI / 180 };

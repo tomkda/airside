@@ -9,8 +9,8 @@ import { sampleWorld } from './src/sample';
 import { roadPlan } from './src/roads';
 import { isRingRef, wayLen } from './src/ways';
 import { carPoses } from './src/traffic';
+import { YIELD } from './src/config';
 let fails = 0; const check = (what, ok) => { if (!ok) { fails++; console.log('   FAIL:', what); } };
-const rounds = new Map();
 const run = (name, edit, days = 2) => {
   const sim = new Sim(sampleWorld(), 7); const w = sim.world;
   edit(w); sim.relayout(); sim.startDay();
@@ -40,7 +40,7 @@ const run = (name, edit, days = 2) => {
     '| gave way:', heldAt[2].size, 'cars at roundabout entries,', heldAt[1].size, 'at junctions, longest queue', longest, 'cars, waiting', (100 * held / Math.max(1, moving)).toFixed(1) + '% of the time driven, with right of way', prio,
     r.stats && pairsRaw ? '| overlapping cars: ' + pairsRaw + ' on the centreline, ' + pairsLane + ' as drawn' : '');
     if (T.active) { check(name + ': nobody with right of way waits', prio === 0); check(name + ': nobody missed or stranded', s.missed === 0 && s.stranded === 0); check(name + ': no queue over 60 cars (gridlock)', longest <= 60); }
-    rounds.set(name, (rounds.get(name) || 0) + heldAt[2].size); ring = 0; pairsRaw = 0; held = moving = prio = longest = 0; heldAt.forEach(x => x.clear()); };
+    ring = 0; pairsRaw = 0; held = moving = prio = longest = 0; heldAt.forEach(x => x.clear()); };
   const close = pts => { let n = 0; for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) if (Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y) < 3) n++; return n; };
   while (sim.day < days) {
     sim.step(0.25); giveWay();
@@ -78,7 +78,20 @@ run('curved approach', w => {
   road(w, [2400, 5700], [2780, 3230], { c: { x: 2400, y: 3230 }, lanes: 4 });
   road(w, [3320, 3230], [3700, 5700], { c: { x: 3700, y: 3230 }, lanes: 4 });
 });
-check('cars wait for a gap at the sample\\'s roundabouts', rounds.get('sample') > 0);
+// v0.47: each approach lets cars through at the HCM gap-acceptance capacity for the flow it crosses, whatever the step
+{ const sim = new Sim(sampleWorld(), 7); sim.relayout(); const R = sim.d.road;
+  const rate = (kind, q, dt) => {   // cars a minute let through from one approach, given q cars a minute crossing it
+    const n = sim.yieldKind.findIndex(k => k === kind); if (n < 0) return NaN;
+    const e = R.adj[n].find(k => !isRingRef(R.edges[k].ref) && !(sim.major[n * 2] === k && kind === 1) ) ?? R.adj[n][0];
+    const slot = e * 2 + (R.edges[e].v === n ? 1 : 0); sim.yieldCredit[slot] = 0; let out = 0;
+    for (let t = 0; t < 30; t += dt) { sim.yieldFlow[n] = q * YIELD.window; sim.updateCars(dt); const w = Math.floor(sim.yieldCredit[slot]); out += w; sim.yieldCredit[slot] -= w; }
+    return out / 30; };
+  const hcmEntry = q => (YIELD.entry / 60) * Math.exp(-YIELD.entryB * q * 60), siegloch = q => (60 / YIELD.tf) * Math.exp(-(q / 60) * (YIELD.tc - YIELD.tf / 2));
+  for (const [kind, q, f, what] of [[2, 0, hcmEntry, 'a roundabout entry, empty ring'], [2, 20, hcmEntry, 'a roundabout entry, 1,200 cars an hour on the ring'], [1, 10, siegloch, 'a side road onto 600 cars an hour']]) {
+    const a = rate(kind, q, 0.25), b = rate(kind, q, 0.05), want = f(q);
+    console.log('capacity of ' + what + ':', a.toFixed(1), 'cars a minute at 0.25 min steps,', b.toFixed(1), 'at 0.05; HCM', want.toFixed(1));
+    check(what + ': HCM capacity at either step size', Math.abs(a - want) < 0.1 * want + 0.1 && Math.abs(b - want) < 0.1 * want + 0.1);
+  } }
 console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed'); if (fails) process.exitCode = 1;
 `;
 const dir = mkdtempSync(join(tmpdir(), 'roads-')); const out = join(dir, 'run.mjs');

@@ -189,7 +189,7 @@ export const CURVE_MIN = { taxi: { 2: 45, 3: 60 } as Record<number, number>, wal
  *  - a side road or a turn: HCM 7th ed. ch. 20 (two-way stop control), Siegloch's form, c = 3600 / tf · e^(-q (tc - tf / 2))
  *    with a critical gap `tc` 6.5 s and follow-up `tf` 3.5 s, about 1,030 cars an hour onto an empty main road;
  *  - a roundabout entry: HCM 7th ed. ch. 22, single-lane, c = 1,380 e^(-0.00102 v_c) cars an hour, v_c the ring's flow.
- *  `store`: cars an idle approach can let go at once (whole cars only); `stop`: the stop line, metres short of the junction. */
+ *  `store`: unused capacity an idle approach carries over (whole cars only); `stop`: the stop line, metres short of the junction. */
 export const YIELD = { tc: 6.5, tf: 3.5, entry: 1380, entryB: 0.00102, window: 2, store: 2, stop: 4 };
 export const ROADS = { minRadius: 14, minChord: 5.5, straighten: 3, onewayCost: 0.8, ringSpeed: 0.7 };
 
