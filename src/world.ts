@@ -1437,7 +1437,7 @@ export function followRunwayEnd(world: World, fixed: Pt, oldEnd: Pt, newEnd: Pt,
       const other = end === 'a' ? w.b : w.a;
       if (!canPlaceWay(world, 'taxi', other, to, aprons).ok) continue;
       moves.push({ way: w, end, to });
-      cost += (sNew - sq) * wayCostPerM('taxi', w.cls, 0);
+      cost += Math.max(0, sNew - sq) * wayCostPerM('taxi', w.cls, 0);   // (v0.50: a taxiway pulled back to the new end costs nothing, and gives nothing back)
       if (canPlaceWay(world, 'taxi', newEnd, to, aprons).ok) { adds.push({ a: newEnd, b: to, cls: w.cls }); cost += dist(newEnd, to) * wayCostPerM('taxi', w.cls, 0); }
     }
   }

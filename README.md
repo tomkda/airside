@@ -37,7 +37,11 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.49)
+## What's in the alpha (v0.50)
+
+- **Runway ends that drag live (v0.50):** drag a selected runway's end to lengthen or shorten it, and the runway itself grows or shrinks under the cursor, not just an outline: its threshold markings and designators move to the new end, the parallel taxiway stretches with it and a new end link is laid as you drag, and everything that depends on the runway's length follows before you let go (which aircraft it takes, the flight plan's limit, the taxiways' letters). `Esc` puts it all back; letting go keeps it, charged as before.
+
+  ![Dragging runway 09/27 out to 3,000 m: the parallel taxiway stretches and a new end link G is laid before the mouse is let go](docs/shots/v050-live-runway.png)
 
 - **Moving buildings in 3D (v0.49):** select a building in the 3D view and grab its roof: the pointer turns to a move cursor over it, and dragging moves the building whole as it does in the plan, across the roof of its level, with the same rules (a hall keeps to its site, a concourse snaps against its neighbours) and the same live layout following it: stands, aprons, curbs, the forecourt and the interior. `Esc` puts it back; letting go keeps it, free of charge. Dragging anywhere else still orbits the view, and the wheel and right-drag still work over a roof.
 
@@ -469,7 +473,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 - Adding a second terminal splits the same check-in agents and screeners across both, so queues grow until you hire more in Operations.
 - Terminal sites are rectangles. A pier that reaches far out grows its site's bounding box rather than an L or T shape.
 - A forecourt is laid along one straight face of the hall. Its links run straight out, straight on, or out and round one corner to the nearest road; they do not yet find a way round a building in between or pick a one-way loop, and it links to the nearest road even if that road goes nowhere (the design check then reports the curb has no road to State Route 12). A hand-drawn frontage road must still run parallel to the face, or follow a curved one, to grow a curb. Cars reach the upper deck by its ramps, but drive under it in the plan view. The curved ramps need a link at least 45 m long that comes straight out from the frontage; otherwise the deck keeps a straight ramp. The ground road under a ramp is still drawn in the plan.
-- A runway's ends, when dragged, still show only an outline until let go (taxiways, roads and sidewalks are live since v0.48), and a way cannot be moved whole by dragging. Ways are bent and drawn in the plan only.
+- A way or a runway cannot be moved whole by dragging (their ends and bends are live since v0.48 and v0.50); a runway is only lengthened or shortened along its own line. Ways are bent and drawn in the plan only.
 - In 3D, modules are drawn, selected, reshaped by their grips and moved whole by their roof (v0.49), but a building has to be selected first (a click selects, a drag on an unselected one orbits), at terminal detail only a module on the level shown can be grabbed, a refused move shows no red outline in 3D (the building stays at the last place that fits, and the hint says why), and nothing new is drawn by dragging on a roof. Cut-outs are moved and reshaped in the plan only. Labels in 3D are terminal names only.
 - No signal timing at junctions; sidewalks are ground-level only (no elevated walkways yet), and they cannot cross a roundabout.
 - Lot sidewalks go straight or round one corner; a lot boxed in by buildings still needs a hand-drawn one.
