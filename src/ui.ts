@@ -83,7 +83,7 @@ export class UI {
   tab: 'inspect' | 'ops' | 'report' = 'ops';
   opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 0, pierW: 50, hub: 32, pierPath: 0 };
   private drag: null | {
-    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip' | 'cutgrip' | 'cutmove' | 'waymove';
+    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip' | 'cutgrip' | 'cutmove' | 'waymove' | 'rwmove';
     /** v0.35: a cut-out being reshaped by a corner (`vi`) or moved, and its corners when the drag began */
     cut?: Cut; vi?: number; pts0?: Pt[];
     /** v0.19: a grip on a built shape, the shape as it was when the drag began, and whether where it is now is allowed */
@@ -95,6 +95,8 @@ export class UI {
     pend?: { a: Pt; b: Pt; ok: boolean; cost: number; delta: number; follow: ReturnType<typeof followRunwayEnd> | null };
     /** v0.52: a way moved whole: its new line, and the ends of the ways joined to its ends that stretch to follow */
     wm?: { a: Pt; b: Pt; c?: Pt; ends: { way: Way; end: 'a' | 'b'; to: Pt }[]; ok: boolean; cost: number; reason?: string; d: Pt };
+    /** v0.53: a runway moved whole: where it goes and how many taxiways stretch to stay on it */
+    rm?: { a: Pt; b: Pt; n: number; ok: boolean; cost: number; reason?: string; d: Pt };
   } = null;
   private pointers = new Map<number, { x: number; y: number }>();
   private pinch: { d: number; zoom: number; mid: Pt; cam: Pt } | null = null;
@@ -343,7 +345,7 @@ export class UI {
 
   toolHint(): string {
     const t = this.tool;
-    if (t === 'select') { if (this.ren.selected?.kind === 'runway') return 'Drag either end of the runway to extend or shorten it'; if (this.ren.mode3d) return 'Drag to orbit · right-drag to pan · scroll to zoom · click to inspect · T for plan'; return matchMedia('(pointer: coarse)').matches ? 'Drag to pan · pinch to zoom · tap to inspect' : 'Drag to pan · scroll to zoom · click to inspect · drag a module to move it'; }
+    if (t === 'select') { if (this.ren.selected?.kind === 'runway') return 'Drag either end of the runway to extend or shorten it, or its pavement to move it whole'; if (this.ren.mode3d) return 'Drag to orbit · right-drag to pan · scroll to zoom · click to inspect · T for plan'; return matchMedia('(pointer: coarse)').matches ? 'Drag to pan · pinch to zoom · tap to inspect' : 'Drag to pan · scroll to zoom · click to inspect · drag a module to move it'; }
     if (t === 'runway') return 'Drag to draw a runway · 1,200 m turboprop · 1,600 m E175 · 2,100 m A320 · 3,000 m A380';
     if ((t === 'taxi' || t === 'walk') && this.opt.shape) return `Drag to draw a curved ${t === 'taxi' ? 'taxiway' : 'sidewalk'} · it leaves in line with the ${t === 'taxi' ? 'taxiway' : 'sidewalk'} it starts from, or sweeps round a corner on open ground${t === 'taxi' ? ` · at least ${CURVE_MIN.taxi[this.opt.taxi] ?? 45} m radius on its centreline · no automatic runway links on a curve` : ''} · select one later and drag its middle handle to bend it`;
     if (t === 'taxi') return `Drag to draw a taxiway · snaps to runways, aprons and other taxiways${this.opt.auto ? ' · drawn beside a runway, it links itself with end stubs and rapid exits' : ''}`;
@@ -400,7 +402,7 @@ export class UI {
   }
 
   floorZ() {
-    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove')) return 0;   // (v0.52: a way is dragged on the ground)
+    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove')) return 0;   // (v0.53: and a runway)   // (v0.52: a way is dragged on the ground)
     // (v0.43: a grip in 3D stands on the roof of its level, and is dragged across that height)
     if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move') && this.drag.zone) return LEVELS[this.drag.zone.level].z1;   // (v0.49: and a building moved whole, across its roof)
     // (v0.51: piers, hubs, satellites, free areas and cut-outs are built on Level 1, and are drawn on its floor; a hall too)
@@ -577,6 +579,18 @@ export class UI {
         if (!h3) this.click3d = { x: e.offsetX, y: e.offsetY };
         return;
       }
+      // v0.53: and a selected runway, by its ends (to extend it) or its pavement (to move it whole)
+      const r3 = this.tool === 'select' && e.button === 0 && this.ren.selected?.kind === 'runway' ? this.world.runways.find(q => q.id === this.ren.selected!.id) : undefined;
+      const rp = r3 ? this.ren.r3?.hit(e.offsetX, e.offsetY, 0) : null;
+      const re = r3 && rp ? this.runwayEndAt(r3, e.offsetX, e.offsetY) : null;
+      if (r3 && rp && (re || this.onRunway(r3, rp))) {
+        this.orbit3d(false); this.ren.canvas.setPointerCapture(e.pointerId); this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+        const orig = { a: { ...r3.a }, b: { ...r3.b } };
+        this.drag = re ? { mode: 'extend', sx: e.offsetX, sy: e.offsetY, start: rp, rw: r3, end: re, orig } : { mode: 'rwmove', sx: e.offsetX, sy: e.offsetY, start: rp, rw: r3, moved: false, orig };
+        this.ren.canvas.style.cursor = 'grabbing';
+        if (!re) this.click3d = { x: e.offsetX, y: e.offsetY };
+        return;
+      }
       if (e.button === 0) this.click3d = { x: e.offsetX, y: e.offsetY };
       return;
     }
@@ -632,6 +646,8 @@ export class UI {
       const rw = this.world.runways.find(r => r.id === this.ren.selected!.id);
       const end = rw && this.runwayEndAt(rw, e.offsetX, e.offsetY);
       if (rw && end) { this.drag = { mode: 'extend', ...base, rw, end, orig: { a: { ...rw.a }, b: { ...rw.b } } }; return; }
+      // v0.53: grabbed by its surface, the selected runway moves whole
+      if (rw && this.onRunway(rw, p)) { this.drag = { mode: 'rwmove', ...base, rw, moved: false, orig: { a: { ...rw.a }, b: { ...rw.b } } }; return; }
     }
     const hit = this.hitTest(p);
     if (t === 'demolish') { if (hit) this.demolish(hit); return; }
@@ -654,6 +670,12 @@ export class UI {
         this.ren.canvas.style.cursor = grip ? 'grab' : roof ? 'move' : '';
         if (z && grip) this.hint(this.gripHint(z, grip));
         if (grip || roof) this.hoverHint = true; else if (this.hoverHint) { this.hoverHint = false; this.hint(this.toolHint()); }
+        const sr = this.ren.selected?.kind === 'runway' ? this.world.runways.find(q => q.id === this.ren.selected!.id) : undefined;
+        if (sr) {   // (v0.53: a selected runway's ends and pavement grab the pointer in 3D too)
+          const gp = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); const en = gp ? this.runwayEndAt(sr, e.offsetX, e.offsetY) : null; const on = !!gp && !en && this.onRunway(sr, gp);
+          this.ren.setOrbitLeft(!en && !on); this.ren.canvas.style.cursor = en ? 'grab' : on ? 'move' : '';
+          if (en || on) { this.hoverHint = true; this.hint(en ? 'Drag to extend or shorten the runway' : 'Drag to move the runway whole · Esc puts it back · drag elsewhere to orbit'); }
+        }
         const w = this.ren.selected?.kind === 'way' ? this.world.ways.find(q => q.id === this.ren.selected!.id) : undefined;
         if (w) {   // (v0.52: a selected way's handles and body grab the pointer in 3D too)
           const gp = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); const h = gp ? this.wayHandleAt(w, e.offsetX, e.offsetY) : null; const on = !!gp && !h && this.onWay(w, gp);
@@ -684,16 +706,16 @@ export class UI {
       const q = this.ren.r3?.hit(e.offsetX, e.offsetY, LEVELS[this.drag.zone.level].z1);
       if (!q || dist(q, this.drag.start) > 3000) return;
     }
-    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove')) { const q = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); if (!q || dist(q, this.drag.start) > 3000) return; }
+    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove')) { const q = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); if (!q || dist(q, this.drag.start) > 3000) return; }
     const p = this.wpt(e);
     const dr = this.drag;
     if (!dr && this.path) { this.pathPreview(p); return; }
     if (!dr) {
       if (this.tool === 'select' || this.tool === 'demolish') {
         const sr = this.ren.selected?.kind === 'runway' && this.tool === 'select' ? this.world.runways.find(r => r.id === this.ren.selected!.id) : undefined;
-        const onEnd = !!(sr && this.runwayEndAt(sr, e.offsetX, e.offsetY));
-        this.ren.canvas.style.cursor = onEnd ? 'grab' : 'default';
-        this.ren.hover = onEnd ? null : this.hitToSel(this.hitTest(p));
+        const onEnd = !!(sr && this.runwayEndAt(sr, e.offsetX, e.offsetY)), onBody = !onEnd && !!sr && this.onRunway(sr, p);
+        this.ren.canvas.style.cursor = onEnd ? 'grab' : onBody ? 'move' : 'default';
+        this.ren.hover = onEnd || onBody ? null : this.hitToSel(this.hitTest(p));
       }
       else if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; }
       else if (this.tool === 'round') {
@@ -749,6 +771,21 @@ export class UI {
       const size = size0 + ends;
       const count = z.type === 'concourse' ? ` · ${u?.count ?? 0} gates` : u ? ` · ${u.max} ${ZONES[z.type].unit}` : '';
       this.hint(ok ? `${size}${count}${cost > 0 ? ` · ${money(cost)}` : cost < 0 ? ` · ${money(-cost * 0.4)} back` : ''} · release to keep, Esc to put it back` : dr.reason!, !ok);
+      return;
+    }
+    if (dr.mode === 'rwmove' && dr.rw && dr.orig) {
+      // v0.53: the runway slides whole under the cursor, its heading kept; every taxiway that ends on it is carried along
+      const rw = dr.rw, o = dr.orig;
+      if (!dr.moved) { if (Math.hypot(e.offsetX - dr.sx, e.offsetY - dr.sy) < 5) return; dr.moved = true; this.click3d = null; }
+      if (!this.live) this.beginLive([], [], this.world.ways.filter(q => q.kind === 'taxi'), [rw]);
+      this.liveWaysBack(); rw.a = { ...o.a }; rw.b = { ...o.b };
+      const d = { x: snap(p.x - dr.start.x, 5), y: snap(p.y - dr.start.y, 5) };
+      const sl = this.slideRunway(rw, o, d, !!this.live);
+      dr.rm = { ...sl, d };
+      if (this.live) this.live.dirty = true;
+      const r = this.sim.d.runways.find(q => q.rw.id === rw.id);
+      this.ren.ghost = { kind: 'runway', a: sl.a, b: sl.b, ok: sl.ok || (d.x === 0 && d.y === 0) };
+      this.hint(!sl.reason ? (this.sim.canAfford(sl.cost) ? `Move runway ${r ? r.labels.join('/') : ''} · ${n0(Math.hypot(d.x, d.y))} m${sl.n ? ` · ${sl.n} taxiway${sl.n > 1 ? 's' : ''} stretch${sl.n > 1 ? '' : 'es'} to stay on it` : ''}${sl.cost ? ` · ${money(sl.cost)}` : ' · free'} · release to keep, Esc to put it back` : `Not enough money: ${money(sl.cost)}`) : sl.reason, !sl.ok && (d.x !== 0 || d.y !== 0));
       return;
     }
     if (dr.mode === 'waymove' && dr.way && dr.orig3) {
@@ -1219,8 +1256,8 @@ export class UI {
   }
 
   up(e: PointerEvent) {
-    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move' || this.drag?.mode === 'bend' || this.drag?.mode === 'waymove')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
-    if (this.ren.mode3d && (this.drag?.mode === 'move' || this.drag?.mode === 'waymove')) { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
+    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move' || this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
+    if (this.ren.mode3d && (this.drag?.mode === 'move' || this.drag?.mode === 'waymove' || this.drag?.mode === 'rwmove')) { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
     if (this.click3d) {
       const c = this.click3d; this.click3d = null;
       if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }
@@ -1288,6 +1325,18 @@ export class UI {
         if (bd.cost) { this.sim.spend(bd.cost); this.ren.float(`− ${money(bd.cost)}`, wayMid(w), PAL_BAD); }
         this.changed(); this.ren.selected = { kind: 'way', id: w.id };
       } else this.toast(bd.reason ?? 'Not enough money', 'bad');
+    } else if (dr.mode === 'rwmove' && !dr.moved) {
+      this.select(this.hitTest(this.wpt(e)));   // (a click)
+    } else if (dr.mode === 'rwmove' && dr.rw && dr.rm && dr.moved && dr.orig) {
+      const rm = dr.rm, rw = dr.rw;
+      if (rm.ok) {
+        this.slideRunway(rw, { a: { ...rw.a }, b: { ...rw.b } }, rm.d, true);
+        if (rm.cost) this.sim.spend(rm.cost);
+        this.changed(); this.ren.selected = { kind: 'runway', id: rw.id };
+        const r = this.sim.d.runways.find(q => q.rw.id === rw.id);
+        if (r) this.toast(`Runway ${r.labels.join('/')} moved ${n0(Math.hypot(rm.d.x, rm.d.y))} m${rm.n ? ` · ${rm.n} taxiway${rm.n > 1 ? 's' : ''} stretched to stay on it` : ''}`);
+      } else if (rm.reason) this.toast(`Cannot move it there: ${rm.reason}`, 'bad');
+      else if (!this.sim.canAfford(rm.cost)) this.toast('Not enough money', 'bad');
     } else if (dr.mode === 'waymove' && !dr.moved) {
       this.select(this.hitTest(this.wpt(e)));   // (pressed and let go without moving: a click)
     } else if (dr.mode === 'waymove' && dr.way && dr.wm && dr.moved && dr.orig3) {
@@ -1615,6 +1664,40 @@ export class UI {
     const res = out(reason, cost);
     if (!apply || !res.ok) back();
     return res;
+  }
+  /** v0.53: is the point on the runway's own pavement (to grab it and move it whole)? */
+  onRunway(rw: Runway, p: Pt) { return segDistWay(p, rw) < runwayWidth(dist(rw.a, rw.b)) / 2 + 3; }
+  /**
+   * v0.53: slide runway `rw` (on its ends `o`, the world otherwise as it was) by `d`, keeping its heading. Every taxiway
+   * end on it (within its half width + 6 m: exits, end links) is carried with it (a taxiway with both ends on it slides
+   * whole); the runway is checked by `canPlaceRunway` and each taxiway that changed by `canPlaceWay`, and any taxiway
+   * length gained is charged (moving the runway itself is free, as moving a building is). With `apply`, a move that
+   * passes is made; one that fails leaves all as it was.
+   */
+  slideRunway(rw: Runway, o: { a: Pt; b: Pt }, d: Pt, apply: boolean) {
+    const mv = (q: Pt) => ({ x: q.x + d.x, y: q.y + d.y });
+    const a = mv(o.a), b = mv(o.b), reach = runwayWidth(dist(o.a, o.b)) / 2 + 6;
+    const ends: { way: Way; end: 'a' | 'b'; from: Pt }[] = [];
+    for (const w of this.world.ways) if (w.kind === 'taxi') for (const end of ['a', 'b'] as const) if (segDistWay(w[end], o) < reach) ends.push({ way: w, end, from: { ...w[end] } });
+    const ways = [...new Set(ends.map(x => x.way))];
+    const res = (reason?: string, cost = 0) => ({ a, b, n: ways.length, cost, reason, ok: !reason && (d.x !== 0 || d.y !== 0) && this.sim.canAfford(cost) });
+    const chk = canPlaceRunway(this.world, a, b, rw.id);
+    if (!chk.ok) return res(chk.reason);
+    let cost = 0, reason: string | undefined;
+    for (const w of ways) {
+      const mine = ends.filter(x => x.way === w), na = mine.some(x => x.end === 'a') ? mv(w.a) : w.a, nb = mine.some(x => x.end === 'b') ? mv(w.b) : w.b;
+      const nc = w.c && mine.length === 2 ? mv(w.c) : w.c;
+      const r = canPlaceWay(this.world, 'taxi', na, nb, this.aprons, nc, w.cls);
+      if (!r.ok && !reason) reason = `a taxiway on it: ${r.reason}`;
+      cost += Math.max(0, wayLen({ a: na, b: nb, c: nc }) - wayLen(w)) * wayCostPerM('taxi', w.cls, 0);
+    }
+    const out = res(reason, cost);
+    if (apply && out.ok) {
+      for (const w of ways) { const both = ends.filter(x => x.way === w).length === 2; if (both && w.c) w.c = mv(w.c); }
+      for (const x of ends) x.way[x.end] = mv(x.from);
+      rw.a = a; rw.b = b;
+    }
+    return out;
   }
   /** v0.52: is the point on the way's own surface (to grab it and move it whole)? */
   onWay(w: Way, p: Pt) { return segDistWay(p, w) < wayWidth(w.kind, w.cls, w.lanes) / 2 + 3; }
