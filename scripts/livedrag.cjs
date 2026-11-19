@@ -125,6 +125,47 @@ const path = require('path');
   const tdu = await p.evaluate(() => JSON.stringify(window.__game.sim.world.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])));
   console.log('Terminal Drive dragged:', tdm.hint.slice(0, 90));
   check('a road whose ends meet roundabouts is not slid off them, and says why', tdm.roads === td.roads && tdu === td.roads && /roundabout/.test(tdm.hint));
+  // v0.53: the runway moved whole by its pavement, every taxiway on it carried along
+  const rmv = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); const rw = g.sim.world.runways[0];
+    g.ren.selected = { kind: 'runway', id: rw.id }; const m = { x: (rw.a.x + rw.b.x) / 2 - 300, y: (rw.a.y + rw.b.y) / 2 };
+    g.ren.cam.x = m.x; g.ren.cam.y = m.y + 100; g.ren.cam.zoom = 0.5;
+    const [sx, sy] = g.ren.P(m.x, m.y); const [tx, ty] = g.ren.P(m.x, m.y - 60); return { sx, sy, tx, ty }; });
+  await p.waitForTimeout(300);
+  const rms = () => p.evaluate(() => { const g = window.__game, w = g.sim.world, rw = w.runways[0];
+    const L = Math.hypot(rw.b.x - rw.a.x, rw.b.y - rw.a.y), hw = 30;
+    const on = w.ways.filter(q => q.kind === 'taxi' && [q.a, q.b].some(e => { const t = Math.max(0, Math.min(1, ((e.x - rw.a.x) * (rw.b.x - rw.a.x) + (e.y - rw.a.y) * (rw.b.y - rw.a.y)) / (L * L))); return Math.hypot(e.x - (rw.a.x + t * (rw.b.x - rw.a.x)), e.y - (rw.a.y + t * (rw.b.y - rw.a.y))) < hw; })).length;
+    return { y: rw.a.y, L: Math.round(L), on, live: !!g.ui.live, gates: g.sim.d.gateSlots.length, reach: g.sim.d.gateSlots.filter(s => s.reach !== false).length }; });
+  const m0 = await rms();
+  const pullR = async () => { await p.mouse.move(rmv.sx, rmv.sy); await p.mouse.down(); for (let k = 1; k <= 8; k++) { await p.mouse.move(rmv.sx, rmv.sy + (rmv.ty - rmv.sy) * k / 8); await p.waitForTimeout(40); } await p.waitForTimeout(200); };
+  await pullR(); const m1 = await rms();
+  console.log('runway moved whole: y', m0.y, '→', m1.y, '| taxiways on it', m0.on, '→', m1.on, '| length', m0.L, '→', m1.L);
+  check('the runway moves whole while its pavement is dragged, keeping its length', m1.live && m1.y === m0.y - 60 && m1.L === m0.L);
+  check('every taxiway that was on it is still on it', m1.on === m0.on && m0.on > 0);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(250);
+  const m2 = await rms();
+  check('Esc puts the runway back', !m2.live && m2.y === m0.y && m2.on === m0.on);
+  await pullR(); const m3a = await rms(); await p.mouse.up(); await p.waitForTimeout(300); const m3 = await rms();
+  check('letting go keeps it, with its taxiways on it', !m3.live && m3.y === m3a.y && m3.on === m0.on);
+  // moved onto its own parallel taxiway it is refused; an aircraft rolling out on it as it moves goes with it
+  const bad = await p.evaluate(() => { const g = window.__game, rw = g.sim.world.runways[0];
+    const r = g.ui.slideRunway(rw, { a: { ...rw.a }, b: { ...rw.b } }, { x: 0, y: 170 }, false); return { ok: r.ok, reason: r.reason ?? '', y: rw.a.y }; });
+  console.log('runway slid 170 m onto taxiway A:', bad.ok ? 'ACCEPTED' : 'refused: ' + bad.reason);
+  check('a runway moved onto its parallel taxiway is refused, naming it', !bad.ok && /taxiway A/.test(bad.reason));
+  const roll = await p.evaluate(() => { const g = window.__game, sim = g.sim, rw = sim.world.runways[0];
+    let f = null; for (let i = 0; i < 6000 && !f; i++) { sim.step(0.25); f = sim.flights.find(q => q.state === 'roll' && q.rw?.rw.id === rw.id); }
+    if (!f) return { found: false };
+    const d = { x: 0, y: -20 }; const r = g.ui.slideRunway(rw, { a: { ...rw.a }, b: { ...rw.b } }, d, true); if (!r.ok) return { found: true, moved: false, reason: r.reason };
+    sim.runwayMoved(rw.id, d); g.ui.changed();
+    const id = f.id; for (let i = 0; i < 200; i++) { sim.step(0.25); const q = sim.flights.find(x => x.id === id); if (!q || q.state !== 'roll') break; }
+    const q = sim.flights.find(x => x.id === id); return { found: true, moved: true, state: q ? q.state : 'gone' }; });
+  console.log('an aircraft rolling out as the runway moves:', JSON.stringify(roll));
+  check('an aircraft rolling out on a moved runway is not cancelled', roll.found && roll.moved && roll.state !== 'cancelled');
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
+  const fly = await p.evaluate(() => { const g = window.__game, sim = g.sim; const c0 = sim.stats.cancelled, l0 = sim.stats.flights;
+    for (let i = 0; i < 2400; i++) sim.step(0.25); return { cxl: sim.stats.cancelled - c0, landed: sim.stats.flights - l0, issues: sim.d.issues.filter(i => i.level !== 'info').map(i => i.text) }; });
+  console.log('flying 10 hours on the moved runway:', fly.landed, 'flights,', fly.cxl, 'cancelled', fly.issues.length ? '| ' + fly.issues.join('; ') : '');
+  check('aircraft use the moved runway: none cancelled, no design issue', fly.cxl === 0 && fly.landed > 0 && fly.issues.length === 0);
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
   // v0.49: in 3D, the selected building is grabbed by its roof and moved whole, with everything following
   const m = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select');
     const z = g.sim.world.zones.find(q => q.type === 'concourse'); g.ren.cam.x = z.x + z.w / 2; g.ren.cam.y = z.y + z.h / 2 + 60; g.ren.cam.zoom = 0.8;

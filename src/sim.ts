@@ -1248,6 +1248,14 @@ export class Sim {
     if (curb) curb.cars!.push(c);
   }
 
+  /** v0.53: a runway was moved whole by `d`: aircraft landing, rolling out or taking off on it move with it, so their
+   *  paths (and the exit a rolling one leaves by) stay on its pavement. Call before the relayout. */
+  runwayMoved(rwId: number, d: Pt) {
+    for (const f of this.flights) if (f.rw?.rw.id === rwId && (f.state === 'approach' || f.state === 'roll' || f.state === 'takeoff')) {
+      f.path = f.path.map(q => ({ x: q.x + d.x, y: q.y + d.y })); f.x += d.x; f.y += d.y;
+    }
+  }
+
   setCarPath(c: Car, pts: Pt[], eids: number[]) {
     c.pts = pts; c.eids = eids; c.cum = [0]; c.passed = -1; c.wait = false;
     for (let i = 1; i < pts.length; i++) c.cum.push(c.cum[i - 1] + dist(pts[i - 1], pts[i]));
