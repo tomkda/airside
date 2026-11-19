@@ -39,7 +39,7 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 
 ## What's in the alpha (v0.55)
 
-- **Shortening a runway tidies its taxiways (v0.55):** drag a runway's end back and the taxiways follow it in, as they already followed it out: a parallel taxiway that ran on to the old end is pulled back to the new one, the end link at the old threshold slides back along the runway to the new threshold, and an exit that the shorter runway no longer reaches is taken away, all live as you drag (with Stretch parallel taxiways on, as before). Nothing is left pointing at bare ground past the end. `Esc` puts it all back; letting go keeps it, with 40% of the pavement back as before.
+- **Shortening a runway tidies its taxiways (v0.55):** drag a runway's end back and the taxiways follow it in, as they already followed it out: a parallel taxiway that ran on to the old end is pulled back to the new one, the end link at the old threshold slides back along the runway to the new threshold, and an exit that the shorter runway no longer reaches is taken away, all live as you drag (with Stretch parallel taxiways on, as before). A taxiway that meets the stretch being given up and is not one of these (a long connector, a curved exit, a link to another runway) refuses the shortening and says so; an aircraft rolling out to an exit that has gone leaves by the nearest one still on the runway. Nothing is left pointing at bare ground past the end. `Esc` puts it all back; letting go keeps it, with 40% of the pavement back as before.
 
   ![Shortening runway 09/27 by 600 m: the parallel taxiway and its end link come back with the runway's end](docs/shots/v055-shorten-runway.png)
 

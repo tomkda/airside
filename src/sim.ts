@@ -264,7 +264,13 @@ export class Sim {
       const r = this.d.runways.find(x => x.rw.id === f.rw!.rw.id);
       if (r) f.rw = r;
       else if (f.state === 'approach' || f.state === 'roll' || f.state === 'takeoff') { this.cancel(f, 'its runway was closed'); continue; }
-      if (f.state === 'roll' && f.path.length) f.exitNode = nearestNode(this.d.air, f.path[f.path.length - 1], 8);
+      if (f.state === 'roll' && f.path.length) {
+        f.exitNode = nearestNode(this.d.air, f.path[f.path.length - 1], 8);
+        // (v0.55: the exit it was rolling to is gone, the runway shortened under it: it leaves by the nearest node still on the runway)
+        if (f.exitNode < 0 && r) { const q = f.path[f.path.length - 1], a = r.rw.a, b = r.rw.b, ab = { x: b.x - a.x, y: b.y - a.y };
+          const t = Math.max(0, Math.min(1, ((q.x - a.x) * ab.x + (q.y - a.y) * ab.y) / (ab.x * ab.x + ab.y * ab.y || 1)));
+          const on = { x: a.x + ab.x * t, y: a.y + ab.y * t }; f.path[f.path.length - 1] = on; f.exitNode = nearestNode(this.d.air, on, 400); }
+      }
     }
     // People re-plan: their routes may run through something that changed.
     for (const p of this.pax) {
