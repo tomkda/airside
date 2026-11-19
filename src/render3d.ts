@@ -186,7 +186,7 @@ export class Renderer3D {
   draw(sim: Sim, night: number) {
     this.controls.update();
     const now = performance.now();
-    if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; this.noteBirths(sim, now); }
+    if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; if (!this.ren.liveEdit) this.noteBirths(sim, now); }   // (v0.51: a draft is not built yet: it does not rise)
     const rising = [...this.born.entries()].filter(([, t]) => now - t < RISE_MS).map(([id]) => id);
     const key = [this.dGen, this.ren.lod, this.ren.focus, this.ren.level, JSON.stringify(this.ren.selected), this.ren.commerce, sim.world.sites?.length, rising.join(',')].join('|');
     // (v0.43: while a grip is dragged the layout changes every frame; the model follows at most every LIVE_3D_MS, and at
@@ -750,7 +750,7 @@ export class Renderer3D {
     if (!gh) return;
     const col = gh.ok ? PAL.select : PAL.bad;
     if (gh.kind === 'zone' && gh.rect) {
-      const L = LEVELS[this.ren.level];
+      const L = LEVELS[(gh.level ?? this.ren.level) as 0 | 1];
       const r = gh.rect as Rect & { rot?: number; sides?: number; bend?: number; taper?: number; poly?: Pt[]; twist?: number };
       if (r.rot || r.sides || r.bend || r.taper || r.poly || r.twist) {
         // (v0.51: a turned, bent, tapered, round or free-drawn shape as its true outline, at floor and roof with its corners joined)

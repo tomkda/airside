@@ -140,6 +140,17 @@ const path = require('path');
   await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(300);
   const se = await p.evaluate(() => ({ live: !!window.__game.ui.live, zones: window.__game.sim.world.zones.length }));
   check('Esc leaves nothing drawn', !se.live && se.zones === sat.n);
+  // v0.51: a free area is clicked out corner by corner in 3D, its outline following the pointer
+  const fa = await p.evaluate(() => { const g = window.__game; g.ui.setTool('area');
+    return [[3950, 2800], [4250, 2800], [4250, 2950], [3950, 2950]].map(([x, y]) => g.ren.P(x, y, 9)); });
+  for (const [x, y] of fa.slice(0, 3)) { await p.mouse.click(x, y); await p.waitForTimeout(150); }
+  await p.mouse.move(fa[3][0], fa[3][1]); await p.waitForTimeout(400);
+  const fs = await p.evaluate(() => { const g = window.__game; return { path: g.ui.path?.length ?? 0, live: !!g.ui.live, zones: g.sim.world.zones.length, d: g.sim.d.zones.filter(z => z.poly).length }; });
+  console.log('3D: free area:', fs.path, 'corners clicked, draft shapes with an outline:', fs.d);
+  check('in 3D a free area is clicked out corner by corner, standing there as it is drawn', fs.path === 3 && fs.live && fs.d >= 1);
+  await p.keyboard.press('Escape'); await p.waitForTimeout(300);
+  const fe = await p.evaluate(() => ({ path: window.__game.ui.path, live: !!window.__game.ui.live, d: window.__game.sim.d.zones.filter(z => z.poly).length }));
+  check('Esc gives the free area up', !fe.path && !fe.live && fe.d === 0);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();
