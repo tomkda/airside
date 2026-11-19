@@ -11,7 +11,7 @@ import {
   designators, runwayCost, runwayWidth, wayWidth, wayCostPerM, wayName, autoConnectors, followRunwayEnd, WaySpec, Runway, rwyClassLabel,
   Site, siteOf, fitSite, isTerminalModule, inBuildable, padRect,
 } from './world';
-import { rectsOverlap, rectSegDist, segsIntersect } from './geom';
+import { rectsOverlap, rectSegDist, segsIntersect, segDist } from './geom';
 import { ROUNDS, MOVER, PIER, HALL } from './config';
 import { canPlacePier, followBend } from './world';
 import { simplePoly, polyBox, polyCentre } from './shapes';
@@ -1259,7 +1259,7 @@ export class UI {
     if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move' || this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
     if (this.ren.mode3d && (this.drag?.mode === 'move' || this.drag?.mode === 'waymove' || this.drag?.mode === 'rwmove')) { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
     if (this.click3d) {
-      const c = this.click3d; this.click3d = null;
+      const c = this.click3d; this.click3d = null; this.pointers.delete(e.pointerId);   // (v0.53: a 3D press let go is no longer down)
       if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }
       return;
     }
@@ -1329,14 +1329,15 @@ export class UI {
       this.select(this.hitTest(this.wpt(e)));   // (a click)
     } else if (dr.mode === 'rwmove' && dr.rw && dr.rm && dr.moved && dr.orig) {
       const rm = dr.rm, rw = dr.rw;
-      if (rm.ok) {
-        this.slideRunway(rw, { a: { ...rw.a }, b: { ...rw.b } }, rm.d, true);
-        if (rm.cost) this.sim.spend(rm.cost);
+      const fin = rm.ok ? this.slideRunway(rw, { a: { ...rw.a }, b: { ...rw.b } }, rm.d, true) : rm;
+      if (fin.ok) {
+        this.sim.runwayMoved(rw.id, rm.d);   // (aircraft on it move with it, before the relayout)
+        if (fin.cost) this.sim.spend(fin.cost);
         this.changed(); this.ren.selected = { kind: 'runway', id: rw.id };
         const r = this.sim.d.runways.find(q => q.rw.id === rw.id);
         if (r) this.toast(`Runway ${r.labels.join('/')} moved ${n0(Math.hypot(rm.d.x, rm.d.y))} m${rm.n ? ` · ${rm.n} taxiway${rm.n > 1 ? 's' : ''} stretched to stay on it` : ''}`);
-      } else if (rm.reason) this.toast(`Cannot move it there: ${rm.reason}`, 'bad');
-      else if (!this.sim.canAfford(rm.cost)) this.toast('Not enough money', 'bad');
+      } else if (fin.reason) this.toast(`Cannot move it there: ${fin.reason}`, 'bad');
+      else if (!this.sim.canAfford(fin.cost)) this.toast('Not enough money', 'bad');
     } else if (dr.mode === 'waymove' && !dr.moved) {
       this.select(this.hitTest(this.wpt(e)));   // (pressed and let go without moving: a click)
     } else if (dr.mode === 'waymove' && dr.way && dr.wm && dr.moved && dr.orig3) {
@@ -1676,13 +1677,24 @@ export class UI {
    */
   slideRunway(rw: Runway, o: { a: Pt; b: Pt }, d: Pt, apply: boolean) {
     const mv = (q: Pt) => ({ x: q.x + d.x, y: q.y + d.y });
-    const a = mv(o.a), b = mv(o.b), reach = runwayWidth(dist(o.a, o.b)) / 2 + 6;
+    // (the reach derive links a taxiway end to a runway by: its half width + 15 m; an end nearer another runway is that one's)
+    const half = runwayWidth(dist(o.a, o.b)) / 2, a = mv(o.a), b = mv(o.b), reach = half + 15;
+    const others = this.world.runways.filter(r => r.id !== rw.id);
     const ends: { way: Way; end: 'a' | 'b'; from: Pt }[] = [];
-    for (const w of this.world.ways) if (w.kind === 'taxi') for (const end of ['a', 'b'] as const) if (segDistWay(w[end], o) < reach) ends.push({ way: w, end, from: { ...w[end] } });
+    for (const w of this.world.ways) if (w.kind === 'taxi') for (const end of ['a', 'b'] as const) {
+      const dd = segDistWay(w[end], o); if (dd < reach && !others.some(r => segDistWay(w[end], r) < dd)) ends.push({ way: w, end, from: { ...w[end] } });
+    }
     const ways = [...new Set(ends.map(x => x.way))];
     const res = (reason?: string, cost = 0) => ({ a, b, n: ways.length, cost, reason, ok: !reason && (d.x !== 0 || d.y !== 0) && this.sim.canAfford(cost) });
     const chk = canPlaceRunway(this.world, a, b, rw.id);
     if (!chk.ok) return res(chk.reason);
+    // a taxiway it does not carry may not come into its strip (a parallel taxiway, above all): 90 m off the centreline, the
+    // nearest a parallel taxiway is laid (`PAR_MIN`), unless it was that close already (a taxiway crossing it, say)
+    const strip = Math.max(90, half + 30);
+    for (const w of this.world.ways) if (w.kind === 'taxi' && !ends.some(x => x.way === w)) {
+      const near = (l: { a: Pt; b: Pt }) => waySegs(w).reduce((m, [p, q]) => Math.min(m, segsIntersect(p, q, l.a, l.b) ? 0 : Math.min(segDist(p, l.a, l.b), segDist(q, l.a, l.b), segDist(l.a, p, q), segDist(l.b, p, q))), Infinity);
+      if (near({ a, b }) < strip && near(o) >= strip) return res(`taxiway ${this.sim.d.taxiLetter.get(w.id) ?? ''}`.trim() + ` would be within ${strip} m of the runway's centreline`);
+    }
     let cost = 0, reason: string | undefined;
     for (const w of ways) {
       const mine = ends.filter(x => x.way === w), na = mine.some(x => x.end === 'a') ? mv(w.a) : w.a, nb = mine.some(x => x.end === 'b') ? mv(w.b) : w.b;

@@ -146,6 +146,21 @@ const path = require('path');
   check('Esc puts the runway back', !m2.live && m2.y === m0.y && m2.on === m0.on);
   await pullR(); const m3a = await rms(); await p.mouse.up(); await p.waitForTimeout(300); const m3 = await rms();
   check('letting go keeps it, with its taxiways on it', !m3.live && m3.y === m3a.y && m3.on === m0.on);
+  // moved onto its own parallel taxiway it is refused; an aircraft rolling out on it as it moves goes with it
+  const bad = await p.evaluate(() => { const g = window.__game, rw = g.sim.world.runways[0];
+    const r = g.ui.slideRunway(rw, { a: { ...rw.a }, b: { ...rw.b } }, { x: 0, y: 170 }, false); return { ok: r.ok, reason: r.reason ?? '', y: rw.a.y }; });
+  console.log('runway slid 170 m onto taxiway A:', bad.ok ? 'ACCEPTED' : 'refused: ' + bad.reason);
+  check('a runway moved onto its parallel taxiway is refused, naming it', !bad.ok && /taxiway A/.test(bad.reason));
+  const roll = await p.evaluate(() => { const g = window.__game, sim = g.sim, rw = sim.world.runways[0];
+    let f = null; for (let i = 0; i < 6000 && !f; i++) { sim.step(0.25); f = sim.flights.find(q => q.state === 'roll' && q.rw?.rw.id === rw.id); }
+    if (!f) return { found: false };
+    const d = { x: 0, y: -20 }; const r = g.ui.slideRunway(rw, { a: { ...rw.a }, b: { ...rw.b } }, d, true); if (!r.ok) return { found: true, moved: false, reason: r.reason };
+    sim.runwayMoved(rw.id, d); g.ui.changed();
+    const id = f.id; for (let i = 0; i < 200; i++) { sim.step(0.25); const q = sim.flights.find(x => x.id === id); if (!q || q.state !== 'roll') break; }
+    const q = sim.flights.find(x => x.id === id); return { found: true, moved: true, state: q ? q.state : 'gone' }; });
+  console.log('an aircraft rolling out as the runway moves:', JSON.stringify(roll));
+  check('an aircraft rolling out on a moved runway is not cancelled', roll.found && roll.moved && roll.state !== 'cancelled');
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
   const fly = await p.evaluate(() => { const g = window.__game, sim = g.sim; const c0 = sim.stats.cancelled, l0 = sim.stats.flights;
     for (let i = 0; i < 2400; i++) sim.step(0.25); return { cxl: sim.stats.cancelled - c0, landed: sim.stats.flights - l0, issues: sim.d.issues.filter(i => i.level !== 'info').map(i => i.text) }; });
   console.log('flying 10 hours on the moved runway:', fly.landed, 'flights,', fly.cxl, 'cancelled', fly.issues.length ? '| ' + fly.issues.join('; ') : '');
