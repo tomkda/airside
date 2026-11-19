@@ -90,6 +90,41 @@ const path = require('path');
   const r3 = await rwState();
   check('letting go keeps the runway as shown', !r3.live && r3.len === r3a.len && r3.taxi === r3a.taxi && r3.n === r3a.n);
   await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
+  // v0.52: taxiway A moved whole by its body, the ways joined to its ends stretching to stay joined
+  const wmv = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); const w = g.sim.world;
+    const A = w.ways.find(q => q.kind === 'taxi' && Math.abs(q.a.y - q.b.y) < 1 && Math.abs(q.a.x - q.b.x) > 800);
+    g.ren.selected = { kind: 'way', id: A.id }; g.ren.cam.x = (A.a.x + A.b.x) / 2; g.ren.cam.y = A.a.y; g.ren.cam.zoom = 0.6;
+    const x = A.a.x + (A.b.x - A.a.x) * 0.3; const [sx, sy] = g.ren.P(x, A.a.y); const [tx, ty] = g.ren.P(x, A.a.y - 20); return { id: A.id, sx, sy, tx, ty }; });
+  await p.waitForTimeout(300);
+  const wst = () => p.evaluate(id => { const g = window.__game, w = g.sim.world; const A = w.ways.find(q => q.id === id);
+    const joined = w.ways.filter(q => q !== A && q.kind === 'taxi' && [q.a, q.b].some(e => [A.a, A.b].some(f => Math.hypot(e.x - f.x, e.y - f.y) < 1))).length;
+    return { y: A.a.y, joined, live: !!g.ui.live, sig: JSON.stringify(g.sim.d.aprons.map(a => a.rect)), n: w.ways.length }; }, wmv.id);
+  const w0 = await wst();
+  const slide = async () => { await p.mouse.move(wmv.sx, wmv.sy); await p.mouse.down(); for (let k = 1; k <= 8; k++) { await p.mouse.move(wmv.sx, wmv.sy + (wmv.ty - wmv.sy) * k / 8); await p.waitForTimeout(40); } await p.waitForTimeout(200); };
+  await slide(); const w1 = await wst();
+  console.log('taxiway A moved whole: y', w0.y, '→', w1.y, '| ways joined to its ends', w0.joined, '→', w1.joined);
+  check('a taxiway moves whole while its body is dragged, with the gates following', w1.live && w1.y === w0.y - 20 && w1.sig !== w0.sig);
+  check('the ways joined to its ends stay joined', w1.joined === w0.joined && w0.joined > 0);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(250);
+  const w2 = await wst();
+  check('Esc puts it back', !w2.live && w2.y === w0.y && w2.sig === w0.sig && w2.joined === w0.joined);
+  await slide(); const w3a = await wst(); await p.mouse.up(); await p.waitForTimeout(300); const w3 = await wst();
+  check('letting go keeps it, still joined', !w3.live && w3.y === w3a.y && w3.joined === w0.joined && w3.n === w0.n);
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
+  // a road whose ends meet roundabouts (Terminal Drive) does not slide off them: the move is refused and says why
+  const td = await p.evaluate(() => { const g = window.__game; const w = g.sim.world;
+    const T = w.ways.find(q => q.kind === 'road' && Math.abs(q.a.y - 3230) < 1 && Math.abs(q.b.y - 3230) < 1);
+    g.ren.selected = { kind: 'way', id: T.id }; g.ren.cam.x = 3050; g.ren.cam.y = 3230; g.ren.cam.zoom = 0.8;
+    const [sx, sy] = g.ren.P(2900, 3230); const [tx, ty] = g.ren.P(2900, 3190); return { id: T.id, sx, sy, tx, ty, roads: JSON.stringify(w.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])) }; });
+  await p.waitForTimeout(300);
+  await p.mouse.move(td.sx, td.sy); await p.mouse.down();
+  for (let k = 1; k <= 8; k++) { await p.mouse.move(td.sx, td.sy + (td.ty - td.sy) * k / 8); await p.waitForTimeout(40); }
+  await p.waitForTimeout(200);
+  const tdm = await p.evaluate(() => ({ roads: JSON.stringify(window.__game.sim.world.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])), hint: document.querySelector('.hint, #hint')?.textContent ?? '' }));
+  await p.mouse.up(); await p.waitForTimeout(300);
+  const tdu = await p.evaluate(() => JSON.stringify(window.__game.sim.world.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])));
+  console.log('Terminal Drive dragged:', tdm.hint.slice(0, 90));
+  check('a road whose ends meet roundabouts is not slid off them, and says why', tdm.roads === td.roads && tdu === td.roads && /roundabout/.test(tdm.hint));
   // v0.49: in 3D, the selected building is grabbed by its roof and moved whole, with everything following
   const m = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select');
     const z = g.sim.world.zones.find(q => q.type === 'concourse'); g.ren.cam.x = z.x + z.w / 2; g.ren.cam.y = z.y + z.h / 2 + 60; g.ren.cam.zoom = 0.8;
@@ -123,6 +158,21 @@ const path = require('path');
   const after = await p.evaluate(() => ({ sel: JSON.stringify(window.__game.ren.selected), drag: !!window.__game.ui.drag, live: !!window.__game.ui.live }));
   console.log('click on the roof: selection', selBefore, '→', after.sel);
   check('a click on the roof is a click: no move left hanging, and it picks again', !after.drag && !after.live && after.sel !== 'null');
+  // v0.52: in 3D, a selected taxiway is bent by its middle handle
+  await p.keyboard.press('Escape'); await p.waitForTimeout(100);
+  const tb = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); const w = g.sim.world;
+    const A = w.ways.find(q => q.kind === 'taxi' && Math.abs(q.a.y - q.b.y) < 1 && Math.abs(q.a.x - q.b.x) > 800);
+    g.ren.selected = { kind: 'way', id: A.id }; const m = { x: (A.a.x + A.b.x) / 2, y: A.a.y };
+    const [sx, sy] = g.ren.P(m.x, m.y, 0); const [tx, ty] = g.ren.P(m.x, m.y - 40, 0); return { id: A.id, sx, sy, tx, ty }; });
+  await p.waitForTimeout(500);
+  await p.mouse.move(tb.sx, tb.sy); await p.waitForTimeout(100); await p.mouse.down();
+  for (let k = 1; k <= 8; k++) { await p.mouse.move(tb.sx + (tb.tx - tb.sx) * k / 8, tb.sy + (tb.ty - tb.sy) * k / 8); await p.waitForTimeout(60); }
+  await p.waitForTimeout(300);
+  const tb1 = await p.evaluate(id => { const g = window.__game; const A = g.sim.world.ways.find(q => q.id === id); return { bent: !!A.c, live: !!g.ui.live }; }, tb.id);
+  check('in 3D a taxiway bends by its middle handle while dragged', tb1.bent && tb1.live);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(300);
+  const tb2 = await p.evaluate(id => { const g = window.__game; const A = g.sim.world.ways.find(q => q.id === id); return { bent: !!A.c, live: !!g.ui.live, orbit: g.ren.r3.controls.enabled }; }, tb.id);
+  check('Esc straightens it again, and the view orbits again', !tb2.bent && !tb2.live && tb2.orbit);
   // v0.51: in 3D, a satellite concourse being drawn stands there with its stands before the mouse is let go
   await p.keyboard.press('Escape'); await p.waitForTimeout(100);
   await p.evaluate(() => { const g = window.__game; g.ui.set3d(false); g.ren.cam.x = 4100; g.ren.cam.y = 2700; g.ren.cam.zoom = 0.8; g.ui.set3d(true); });
