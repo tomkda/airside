@@ -111,6 +111,20 @@ const path = require('path');
   await slide(); const w3a = await wst(); await p.mouse.up(); await p.waitForTimeout(300); const w3 = await wst();
   check('letting go keeps it, still joined', !w3.live && w3.y === w3a.y && w3.joined === w0.joined && w3.n === w0.n);
   await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
+  // a road whose ends meet roundabouts (Terminal Drive) does not slide off them: the move is refused and says why
+  const td = await p.evaluate(() => { const g = window.__game; const w = g.sim.world;
+    const T = w.ways.find(q => q.kind === 'road' && Math.abs(q.a.y - 3230) < 1 && Math.abs(q.b.y - 3230) < 1);
+    g.ren.selected = { kind: 'way', id: T.id }; g.ren.cam.x = 3050; g.ren.cam.y = 3230; g.ren.cam.zoom = 0.8;
+    const [sx, sy] = g.ren.P(2900, 3230); const [tx, ty] = g.ren.P(2900, 3190); return { id: T.id, sx, sy, tx, ty, roads: JSON.stringify(w.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])) }; });
+  await p.waitForTimeout(300);
+  await p.mouse.move(td.sx, td.sy); await p.mouse.down();
+  for (let k = 1; k <= 8; k++) { await p.mouse.move(td.sx, td.sy + (td.ty - td.sy) * k / 8); await p.waitForTimeout(40); }
+  await p.waitForTimeout(200);
+  const tdm = await p.evaluate(() => ({ roads: JSON.stringify(window.__game.sim.world.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])), hint: document.querySelector('.hint, #hint')?.textContent ?? '' }));
+  await p.mouse.up(); await p.waitForTimeout(300);
+  const tdu = await p.evaluate(() => JSON.stringify(window.__game.sim.world.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])));
+  console.log('Terminal Drive dragged:', tdm.hint.slice(0, 90));
+  check('a road whose ends meet roundabouts is not slid off them, and says why', tdm.roads === td.roads && tdu === td.roads && /roundabout/.test(tdm.hint));
   // v0.49: in 3D, the selected building is grabbed by its roof and moved whole, with everything following
   const m = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select');
     const z = g.sim.world.zones.find(q => q.type === 'concourse'); g.ren.cam.x = z.x + z.w / 2; g.ren.cam.y = z.y + z.h / 2 + 60; g.ren.cam.zoom = 0.8;

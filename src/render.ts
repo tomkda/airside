@@ -1448,9 +1448,9 @@ export class Renderer {
 
   /** v0.19: the grips of the selected shape: square on an edge, round where an end swings or a hub turns. */
   drawGrips(sim: Sim) {
-    // v0.46: a selected way's handles, drawn last so the airfield does not cover them: a taxiway's ends stay put, but
+    // v0.46: a selected way's handles (v0.52: in 3D too, on the ground), drawn last so the airfield does not cover them: a taxiway's ends stay put, but
     // it and a sidewalk bend by their middle as a road does
-    const sw = this.selected?.kind === 'way' && !this.mode3d ? sim.world.ways.find(q => q.id === this.selected!.id) : undefined;
+    const sw = this.selected?.kind === 'way' ? sim.world.ways.find(q => q.id === this.selected!.id) : undefined;
     if (sw && !this.ghost) for (const [p, mid] of [...(sw.kind !== 'taxi' ? [[sw.a, false], [sw.b, false]] as const : []), [wayMid(sw), true] as const] as const) {
       const g = this.ctx; const [x, y] = this.P(p.x, p.y);
       g.fillStyle = mid ? PAL.select : '#FBF8F1'; g.strokeStyle = PAL.select; g.lineWidth = 2;
