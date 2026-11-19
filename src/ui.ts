@@ -83,7 +83,7 @@ export class UI {
   tab: 'inspect' | 'ops' | 'report' = 'ops';
   opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 0, pierW: 50, hub: 32, pierPath: 0 };
   private drag: null | {
-    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip' | 'cutgrip' | 'cutmove' | 'waymove' | 'rwmove';
+    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip' | 'cutgrip' | 'cutmove' | 'waymove' | 'rwmove' | 'rbmove';
     /** v0.35: a cut-out being reshaped by a corner (`vi`) or moved, and its corners when the drag began */
     cut?: Cut; vi?: number; pts0?: Pt[];
     /** v0.19: a grip on a built shape, the shape as it was when the drag began, and whether where it is now is allowed */
@@ -97,6 +97,8 @@ export class UI {
     wm?: { a: Pt; b: Pt; c?: Pt; ends: { way: Way; end: 'a' | 'b'; to: Pt }[]; ok: boolean; cost: number; reason?: string; d: Pt };
     /** v0.53: a runway moved whole: where it goes and how many taxiways stretch to stay on it */
     rm?: { a: Pt; b: Pt; n: number; ok: boolean; cost: number; reason?: string; d: Pt };
+    /** v0.54: a roundabout moved whole: the one moved, its centre when the drag began, and the outcome */
+    rb?: Round; rb0?: Pt; rbm?: { n: number; ok: boolean; cost: number; reason?: string; d: Pt };
   } = null;
   private pointers = new Map<number, { x: number; y: number }>();
   private pinch: { d: number; zoom: number; mid: Pt; cam: Pt } | null = null;
@@ -113,7 +115,9 @@ export class UI {
     /** v0.48: ways changed during the edit, with their line from before it; and ways that exist only while drawing */
     ways: { w: Way; a: Pt; b: Pt; c?: Pt }[]; tempWays: Way[];
     /** v0.50: a runway whose end is being dragged, with its ends from before */
-    rws?: { rw: Runway; a: Pt; b: Pt }[] } = null;
+    rws?: { rw: Runway; a: Pt; b: Pt }[];
+    /** v0.54: a roundabout being moved, with its centre from before */
+    rnds?: { r: Round; x: number; y: number }[] } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
   private liveStale = false;
   /** v0.49: a hint shown for a grip or roof under the pointer in 3D, to be put back when it leaves */
@@ -126,12 +130,13 @@ export class UI {
     // offer answered); the drafts are lifted out for the moment of the save.
     const save0 = ctl.save.bind(ctl);
     ctl.save = () => {
-      const lv = this.live; if (!lv?.temp.length && !lv?.tempWays.length && !lv?.ways.length && !lv?.rws?.length) { save0(); return; }
+      const lv = this.live; if (!lv?.temp.length && !lv?.tempWays.length && !lv?.ways.length && !lv?.rws?.length && !lv?.rnds?.length) { save0(); return; }
+      const qnow = (lv.rnds ?? []).map(q => ({ q, x: q.r.x, y: q.r.y })); for (const q of lv.rnds ?? []) { q.r.x = q.x; q.r.y = q.y; }   // (v0.54: and a roundabout on its centre from before)
       const rnow = (lv.rws ?? []).map(r => ({ r, a: r.rw.a, b: r.rw.b })); for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; }   // (v0.50: and a runway on its ends from before)
       // (v0.48: nor a way being drawn, and a way being bent is saved on its line from before the drag)
       const W = this.sim.world, all = W.zones, allW = W.ways, now = lv.ways.map(s0 => ({ w: s0.w, a: s0.w.a, b: s0.w.b, c: s0.w.c }));
       W.zones = all.filter(z => !lv.temp.includes(z)); W.ways = allW.filter(w => !lv.tempWays.includes(w)); this.liveWaysBack();
-      try { save0(); } finally { W.zones = all; W.ways = allW; for (const n of now) { n.w.a = n.a; n.w.b = n.b; if (n.c) n.w.c = n.c; else delete n.w.c; } for (const x of rnow) { x.r.rw.a = x.a; x.r.rw.b = x.b; } }
+      try { save0(); } finally { W.zones = all; W.ways = allW; for (const n of now) { n.w.a = n.a; n.w.b = n.b; if (n.c) n.w.c = n.c; else delete n.w.c; } for (const x of rnow) { x.r.rw.a = x.a; x.r.rw.b = x.b; } for (const x of qnow) { x.q.r.x = x.x; x.q.r.y = x.y; } }
     };
     this.buildChrome();
     this.bindInput();
@@ -402,7 +407,7 @@ export class UI {
   }
 
   floorZ() {
-    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove')) return 0;   // (v0.53: and a runway)   // (v0.52: a way is dragged on the ground)
+    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove' || this.drag?.mode === 'rbmove')) return 0;   // (v0.53: and a runway)   // (v0.52: a way is dragged on the ground)
     // (v0.43: a grip in 3D stands on the roof of its level, and is dragged across that height)
     if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move') && this.drag.zone) return LEVELS[this.drag.zone.level].z1;   // (v0.49: and a building moved whole, across its roof)
     // (v0.51: piers, hubs, satellites, free areas and cut-outs are built on Level 1, and are drawn on its floor; a hall too)
@@ -591,6 +596,15 @@ export class UI {
         if (!re) this.click3d = { x: e.offsetX, y: e.offsetY };
         return;
       }
+      // v0.54: and a selected roundabout, by its ring
+      const q3 = this.tool === 'select' && e.button === 0 && this.ren.selected?.kind === 'round' ? this.world.rounds?.find(q => q.id === this.ren.selected!.id) : undefined;
+      const qp = q3 ? this.ren.r3?.hit(e.offsetX, e.offsetY, 0) : null;
+      if (q3 && qp && dist(q3, qp) < roundOuter(q3)) {
+        this.orbit3d(false); this.ren.canvas.setPointerCapture(e.pointerId); this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+        this.drag = { mode: 'rbmove', sx: e.offsetX, sy: e.offsetY, start: qp, rb: q3, rb0: { x: q3.x, y: q3.y }, moved: false };
+        this.ren.canvas.style.cursor = 'grabbing'; this.click3d = { x: e.offsetX, y: e.offsetY };
+        return;
+      }
       if (e.button === 0) this.click3d = { x: e.offsetX, y: e.offsetY };
       return;
     }
@@ -649,6 +663,11 @@ export class UI {
       // v0.53: grabbed by its surface, the selected runway moves whole
       if (rw && this.onRunway(rw, p)) { this.drag = { mode: 'rwmove', ...base, rw, moved: false, orig: { a: { ...rw.a }, b: { ...rw.b } } }; return; }
     }
+    if (t === 'select' && this.ren.selected?.kind === 'round') {
+      // v0.54: grabbed by its ring, the selected roundabout moves, its roads stretching with it
+      const r = this.world.rounds?.find(q => q.id === this.ren.selected!.id);
+      if (r && dist(r, p) < roundOuter(r)) { this.drag = { mode: 'rbmove', ...base, rb: r, rb0: { x: r.x, y: r.y }, moved: false }; return; }
+    }
     const hit = this.hitTest(p);
     if (t === 'demolish') { if (hit) this.demolish(hit); return; }
     this.select(hit);
@@ -670,6 +689,12 @@ export class UI {
         this.ren.canvas.style.cursor = grip ? 'grab' : roof ? 'move' : '';
         if (z && grip) this.hint(this.gripHint(z, grip));
         if (grip || roof) this.hoverHint = true; else if (this.hoverHint) { this.hoverHint = false; this.hint(this.toolHint()); }
+        const sq = this.ren.selected?.kind === 'round' ? this.world.rounds?.find(q => q.id === this.ren.selected!.id) : undefined;
+        if (sq) {   // (v0.54: a selected roundabout's ring grabs the pointer in 3D too)
+          const gp = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); const on = !!gp && dist(sq, gp) < roundOuter(sq);
+          this.ren.setOrbitLeft(!on); this.ren.canvas.style.cursor = on ? 'move' : '';
+          if (on) { this.hoverHint = true; this.hint('Drag to move the roundabout · its roads follow · Esc puts it back · drag elsewhere to orbit'); }
+        }
         const sr = this.ren.selected?.kind === 'runway' ? this.world.runways.find(q => q.id === this.ren.selected!.id) : undefined;
         if (sr) {   // (v0.53: a selected runway's ends and pavement grab the pointer in 3D too)
           const gp = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); const en = gp ? this.runwayEndAt(sr, e.offsetX, e.offsetY) : null; const on = !!gp && !en && this.onRunway(sr, gp);
@@ -706,14 +731,15 @@ export class UI {
       const q = this.ren.r3?.hit(e.offsetX, e.offsetY, LEVELS[this.drag.zone.level].z1);
       if (!q || dist(q, this.drag.start) > 3000) return;
     }
-    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove')) { const q = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); if (!q || dist(q, this.drag.start) > 3000) return; }
+    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove' || this.drag?.mode === 'rbmove')) { const q = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); if (!q || dist(q, this.drag.start) > 3000) return; }
     const p = this.wpt(e);
     const dr = this.drag;
     if (!dr && this.path) { this.pathPreview(p); return; }
     if (!dr) {
       if (this.tool === 'select' || this.tool === 'demolish') {
         const sr = this.ren.selected?.kind === 'runway' && this.tool === 'select' ? this.world.runways.find(r => r.id === this.ren.selected!.id) : undefined;
-        const onEnd = !!(sr && this.runwayEndAt(sr, e.offsetX, e.offsetY)), onBody = !onEnd && !!sr && this.onRunway(sr, p);
+        const srd = this.ren.selected?.kind === 'round' && this.tool === 'select' ? this.world.rounds?.find(q => q.id === this.ren.selected!.id) : undefined;
+        const onEnd = !!(sr && this.runwayEndAt(sr, e.offsetX, e.offsetY)), onBody = !onEnd && (!!sr && this.onRunway(sr, p) || !!srd && dist(srd, p) < roundOuter(srd));
         this.ren.canvas.style.cursor = onEnd ? 'grab' : onBody ? 'move' : 'default';
         this.ren.hover = onEnd || onBody ? null : this.hitToSel(this.hitTest(p));
       }
@@ -771,6 +797,19 @@ export class UI {
       const size = size0 + ends;
       const count = z.type === 'concourse' ? ` · ${u?.count ?? 0} gates` : u ? ` · ${u.max} ${ZONES[z.type].unit}` : '';
       this.hint(ok ? `${size}${count}${cost > 0 ? ` · ${money(cost)}` : cost < 0 ? ` · ${money(-cost * 0.4)} back` : ''} · release to keep, Esc to put it back` : dr.reason!, !ok);
+      return;
+    }
+    if (dr.mode === 'rbmove' && dr.rb && dr.rb0) {
+      const r = dr.rb, o = dr.rb0;
+      if (!dr.moved) { if (Math.hypot(e.offsetX - dr.sx, e.offsetY - dr.sy) < 5) return; dr.moved = true; this.click3d = null; }
+      if (!this.live) this.beginLive([], [], this.world.ways.filter(q => q.kind === 'road'), [], [r]);
+      this.liveWaysBack(); r.x = o.x; r.y = o.y;
+      const d = { x: snap(p.x - dr.start.x, 5), y: snap(p.y - dr.start.y, 5) };
+      const sl = this.slideRound(r, o, d, !!this.live);
+      dr.rbm = { ...sl, d };
+      if (this.live) this.live.dirty = true;
+      this.ren.ghost = { kind: 'round', a: { x: o.x + d.x, y: o.y + d.y }, r: roundOuter(r), ok: sl.ok || (d.x === 0 && d.y === 0) };
+      this.hint(!sl.reason ? (this.sim.canAfford(sl.cost) ? `Move the roundabout · ${n0(Math.hypot(d.x, d.y))} m${sl.n ? ` · ${sl.n} road${sl.n > 1 ? 's' : ''} stretch${sl.n > 1 ? '' : 'es'} to stay on it` : ''}${sl.cost ? ` · ${money(sl.cost)}` : ' · free'} · release to keep, Esc to put it back` : `Not enough money: ${money(sl.cost)}`) : sl.reason, !sl.ok && (d.x !== 0 || d.y !== 0));
       return;
     }
     if (dr.mode === 'rwmove' && dr.rw && dr.orig) {
@@ -983,12 +1022,12 @@ export class UI {
   //   meanwhile. Letting go either keeps the change (one undo step, through `changed()`) or puts everything back.
   //   v0.43: in 3D too, for a grip of the selected building: its outline follows at once, and the model itself is
   //   rebuilt at most every `LIVE_3D_MS` (render3d.ts), since building it takes some tens of milliseconds.
-  beginLive(zs: Zone[], cuts: Cut[] = [], ways: Way[] = [], rws: Runway[] = []) {
+  beginLive(zs: Zone[], cuts: Cut[] = [], ways: Way[] = [], rws: Runway[] = [], rnds: Round[] = []) {
     if (this.live) return;   // (v0.43: in 3D too, for a grip: the model is rebuilt a few times a second meanwhile)
     this.ren.liveEdit = true;
     this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })),
       ways: ways.map(w => ({ w, a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined })), tempWays: [],
-      rws: rws.map(rw => ({ rw, a: { ...rw.a }, b: { ...rw.b } })) };
+      rws: rws.map(rw => ({ rw, a: { ...rw.a }, b: { ...rw.b } })), rnds: rnds.map(r => ({ r, x: r.x, y: r.y })) };
     this.ctl.hold = true; holdScenery(this.world, this.sim.d);
   }
   /** Give a zone (and the baggage claim under a hall) a new shape for now. */
@@ -1038,7 +1077,7 @@ export class UI {
     this.live = null; this.ctl.hold = false; holdScenery(null); this.ren.liveEdit = false;
     if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
     if (lv.tempWays.length) this.world.ways = this.world.ways.filter(w => !lv.tempWays.includes(w));
-    if (!keep) { for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; } for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
+    if (!keep) { for (const q of lv.rnds ?? []) { q.r.x = q.x; q.r.y = q.y; } for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; } for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
     this.sim.d = lv.d0;
     if (lv.touched) this.liveStale = true;
   }
@@ -1256,8 +1295,8 @@ export class UI {
   }
 
   up(e: PointerEvent) {
-    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move' || this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
-    if (this.ren.mode3d && (this.drag?.mode === 'move' || this.drag?.mode === 'waymove' || this.drag?.mode === 'rwmove')) { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
+    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move' || this.drag?.mode === 'bend' || this.drag?.mode === 'waymove' || this.drag?.mode === 'extend' || this.drag?.mode === 'rwmove' || this.drag?.mode === 'rbmove')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
+    if (this.ren.mode3d && (this.drag?.mode === 'move' || this.drag?.mode === 'waymove' || this.drag?.mode === 'rwmove' || this.drag?.mode === 'rbmove')) { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
     if (this.click3d) {
       const c = this.click3d; this.click3d = null; this.pointers.delete(e.pointerId);   // (v0.53: a 3D press let go is no longer down)
       if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }
@@ -1325,6 +1364,17 @@ export class UI {
         if (bd.cost) { this.sim.spend(bd.cost); this.ren.float(`− ${money(bd.cost)}`, wayMid(w), PAL_BAD); }
         this.changed(); this.ren.selected = { kind: 'way', id: w.id };
       } else this.toast(bd.reason ?? 'Not enough money', 'bad');
+    } else if (dr.mode === 'rbmove' && !dr.moved) {
+      this.select(this.hitTest(this.wpt(e)));   // (a click)
+    } else if (dr.mode === 'rbmove' && dr.rb && dr.rbm && dr.moved) {
+      const m = dr.rbm, r = dr.rb;
+      const fin = m.ok ? this.slideRound(r, { x: r.x, y: r.y }, m.d, true) : m;
+      if (fin.ok) {
+        if (fin.cost) this.sim.spend(fin.cost);
+        this.changed(); this.ren.selected = { kind: 'round', id: r.id };
+        this.toast(`Roundabout moved ${n0(Math.hypot(m.d.x, m.d.y))} m${fin.n ? ` · ${fin.n} road${fin.n > 1 ? 's' : ''} stretched to stay on it` : ''}`);
+      } else if (fin.reason) this.toast(`Cannot move it there: ${fin.reason}`, 'bad');
+      else if (!this.sim.canAfford(fin.cost)) this.toast('Not enough money', 'bad');
     } else if (dr.mode === 'rwmove' && !dr.moved) {
       this.select(this.hitTest(this.wpt(e)));   // (a click)
     } else if (dr.mode === 'rwmove' && dr.rw && dr.rm && dr.moved && dr.orig) {
@@ -1665,6 +1715,33 @@ export class UI {
     const res = out(reason, cost);
     if (!apply || !res.ok) back();
     return res;
+  }
+  /**
+   * v0.54: move roundabout `r` (centre `o`, the world otherwise as it was) by `d`. Every road with an end on it (within
+   * its outer kerb + 6 m: roads drawn to a roundabout end at its centre) has that end carried with it; the roundabout is
+   * checked by `canPlaceRound` (its own id ignored) and each road that changed by `canPlaceWay`, and any road length
+   * gained is charged (moving the roundabout itself is free). With `apply`, a move that passes is made.
+   */
+  slideRound(r: Round, o: Pt, d: Pt, apply: boolean) {
+    const to = { x: o.x + d.x, y: o.y + d.y }, reach = roundOuter(r) + 6;
+    const ends: { way: Way; end: 'a' | 'b'; from: Pt }[] = [];
+    for (const w of this.world.ways) if (w.kind === 'road') for (const end of ['a', 'b'] as const) if (dist(w[end], o) < reach) ends.push({ way: w, end, from: { ...w[end] } });
+    const ways = [...new Set(ends.map(x => x.way))];
+    const res = (reason?: string, cost = 0) => ({ n: ways.length, cost, reason, ok: !reason && (d.x !== 0 || d.y !== 0) && this.sim.canAfford(cost) });
+    const chk = canPlaceRound(this.world, to, r.size, this.aprons, r.id);
+    if (!chk.ok) return res(chk.reason);
+    let cost = 0, reason: string | undefined;
+    for (const w of ways) {
+      const mine = ends.filter(x => x.way === w);
+      if (mine.length === 2) { if (!reason) reason = 'a road with both ends on it'; continue; }
+      const na = mine[0].end === 'a' ? { x: w.a.x + d.x, y: w.a.y + d.y } : w.a, nb = mine[0].end === 'b' ? { x: w.b.x + d.x, y: w.b.y + d.y } : w.b;
+      const rr = canPlaceWay(this.world, 'road', na, nb, this.aprons, w.c, w.cls);
+      if (!rr.ok && !reason) reason = `a road on it: ${rr.reason}`;
+      cost += Math.max(0, wayLen({ a: na, b: nb, c: w.c }) - wayLen(w)) * wayCostPerM('road', w.cls, w.lanes);
+    }
+    const out = res(reason, cost);
+    if (apply && out.ok) { for (const x of ends) x.way[x.end] = { x: x.from.x + d.x, y: x.from.y + d.y }; r.x = to.x; r.y = to.y; }
+    return out;
   }
   /** v0.53: is the point on the runway's own pavement (to grab it and move it whole)? */
   onRunway(rw: Runway, p: Pt) { return segDistWay(p, rw) < runwayWidth(dist(rw.a, rw.b)) / 2 + 3; }
