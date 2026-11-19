@@ -117,7 +117,9 @@ export class UI {
     /** v0.50: a runway whose end is being dragged, with its ends from before */
     rws?: { rw: Runway; a: Pt; b: Pt }[];
     /** v0.54: a roundabout being moved, with its centre from before */
-    rnds?: { r: Round; x: number; y: number }[] } = null;
+    rnds?: { r: Round; x: number; y: number }[];
+    /** v0.55: ways taken out for now (exits a shortened runway no longer reaches) */
+    hidden?: Way[] } = null;
   /** A live edit showed a layout the sim never took up: the sim must be laid out again before it runs on. */
   private liveStale = false;
   /** v0.49: a hint shown for a grip or roof under the pointer in 3D, to be put back when it leaves */
@@ -130,12 +132,12 @@ export class UI {
     // offer answered); the drafts are lifted out for the moment of the save.
     const save0 = ctl.save.bind(ctl);
     ctl.save = () => {
-      const lv = this.live; if (!lv?.temp.length && !lv?.tempWays.length && !lv?.ways.length && !lv?.rws?.length && !lv?.rnds?.length) { save0(); return; }
+      const lv = this.live; if (!lv?.temp.length && !lv?.tempWays.length && !lv?.ways.length && !lv?.rws?.length && !lv?.rnds?.length && !lv?.hidden?.length) { save0(); return; }
       const qnow = (lv.rnds ?? []).map(q => ({ q, x: q.r.x, y: q.r.y })); for (const q of lv.rnds ?? []) { q.r.x = q.x; q.r.y = q.y; }   // (v0.54: and a roundabout on its centre from before)
       const rnow = (lv.rws ?? []).map(r => ({ r, a: r.rw.a, b: r.rw.b })); for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; }   // (v0.50: and a runway on its ends from before)
       // (v0.48: nor a way being drawn, and a way being bent is saved on its line from before the drag)
       const W = this.sim.world, all = W.zones, allW = W.ways, now = lv.ways.map(s0 => ({ w: s0.w, a: s0.w.a, b: s0.w.b, c: s0.w.c }));
-      W.zones = all.filter(z => !lv.temp.includes(z)); W.ways = allW.filter(w => !lv.tempWays.includes(w)); this.liveWaysBack();
+      W.zones = all.filter(z => !lv.temp.includes(z)); W.ways = [...allW.filter(w => !lv.tempWays.includes(w)), ...(lv.hidden ?? [])]; this.liveWaysBack();   // (v0.55: and the ways taken out for now are saved)
       try { save0(); } finally { W.zones = all; W.ways = allW; for (const n of now) { n.w.a = n.a; n.w.b = n.b; if (n.c) n.w.c = n.c; else delete n.w.c; } for (const x of rnow) { x.r.rw.a = x.a; x.r.rw.b = x.b; } for (const x of qnow) { x.q.r.x = x.x; x.q.r.y = x.y; } }
     };
     this.buildChrome();
@@ -908,6 +910,7 @@ export class UI {
       // everything that hangs off them (exits, gates reaching it, the flight plan's limits) follows as it does
       if (!this.live) this.beginLive([], [], this.world.ways.filter(q => q.kind === 'taxi'), [dr.rw]);
       this.liftDraftWays(); this.liveWaysBack(); dr.rw.a = { ...dr.orig.a }; dr.rw.b = { ...dr.orig.b };   // (checked against the world as it was)
+      if (this.live?.hidden?.length) { this.world.ways.push(...this.live.hidden); this.live.hidden = []; }
       const fixed = dr.end === 'a' ? dr.orig.b : dr.orig.a, moving = dr.end === 'a' ? dr.orig.a : dr.orig.b;
       const dir = norm(sub(moving, fixed));
       const s2 = Math.max(TUNE.minRunway, snap(dot(sub(p, fixed), dir), 50));
@@ -920,7 +923,10 @@ export class UI {
       const ok = chk.ok && this.sim.canAfford(cost);
       dr.pend = { a, b, ok, cost, delta, follow };
       if (this.live) {
-        if (ok) { dr.rw.a = a; dr.rw.b = b; for (const m of follow?.moves ?? []) m.way[m.end] = m.to; }
+        if (ok) {
+          dr.rw.a = a; dr.rw.b = b; for (const m of follow?.moves ?? []) m.way[m.end] = m.to;
+          const gone = follow?.dels ?? []; if (gone.length) { this.world.ways = this.world.ways.filter(w => !gone.includes(w)); this.live.hidden = [...gone]; }
+        }
         const id0 = this.world.nextId;
         this.liveDraftWays(ok ? (follow?.adds ?? []).map((x, i) => ({ id: id0 + i, kind: 'taxi' as WayKind, a: x.a, b: x.b, cls: x.cls, lanes: 0 })) : []);
         this.live.dirty = true;
@@ -930,7 +936,8 @@ export class UI {
       const len = dist(a, b), was = dist(dr.orig.a, dr.orig.b);
       const sign = len >= was ? '+' : '−';
       const money2 = delta >= 0 ? money(cost) : `${money(-delta * 0.4)} back`;
-      const tw = follow && follow.moves.length ? ` · stretches ${follow.moves.length} taxiway${follow.moves.length > 1 ? 's' : ''}` : '';
+      const nm = new Set(follow?.moves.map(m => m.way)).size, nd = follow?.dels.length ?? 0;
+      const tw = (nm ? ` · ${len >= was ? 'stretches' : 'pulls back'} ${nm} taxiway${nm > 1 ? 's' : ''}` : '') + (nd ? ` · ${nd} exit${nd > 1 ? 's' : ''} past the new end taken away` : '');
       this.hint(chk.ok ? (ok ? `Runway ${designators(a, b)} · ${n0(len)} m (${sign}${n0(Math.abs(len - was))} m) · ${rwyClassLabel(len)}${tw} · ${money2}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
       return;
     }
@@ -1077,6 +1084,7 @@ export class UI {
     this.live = null; this.ctl.hold = false; holdScenery(null); this.ren.liveEdit = false;
     if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
     if (lv.tempWays.length) this.world.ways = this.world.ways.filter(w => !lv.tempWays.includes(w));
+    if (lv.hidden?.length) this.world.ways.push(...lv.hidden);   // (v0.55: put back; release takes them out for good if kept)
     if (!keep) { for (const q of lv.rnds ?? []) { q.r.x = q.x; q.r.y = q.y; } for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; } for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
     this.sim.d = lv.d0;
     if (lv.touched) this.liveStale = true;
@@ -1405,6 +1413,7 @@ export class UI {
         dr.rw.a = pd.a; dr.rw.b = pd.b;
         if (pd.delta >= 0) this.sim.spend(pd.cost); else { if (this.sim.moneyOn) this.sim.money += -pd.delta * 0.4; this.sim.spend(pd.follow?.cost ?? 0); }
         for (const m of pd.follow?.moves ?? []) m.way[m.end] = m.to;
+        if (pd.follow?.dels.length) this.world.ways = this.world.ways.filter(w => !pd.follow!.dels.includes(w));   // (v0.55)
         for (const x of pd.follow?.adds ?? []) this.world.ways.push({ id: this.world.nextId++, kind: 'taxi', a: x.a, b: x.b, cls: x.cls, lanes: 0 });
         this.changed();
         const r = this.sim.d.runways.find(q => q.rw.id === dr.rw!.id);

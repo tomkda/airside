@@ -37,7 +37,11 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.54)
+## What's in the alpha (v0.55)
+
+- **Shortening a runway tidies its taxiways (v0.55):** drag a runway's end back and the taxiways follow it in, as they already followed it out: a parallel taxiway that ran on to the old end is pulled back to the new one, the end link at the old threshold slides back along the runway to the new threshold, and an exit that the shorter runway no longer reaches is taken away, all live as you drag (with Stretch parallel taxiways on, as before). Nothing is left pointing at bare ground past the end. `Esc` puts it all back; letting go keeps it, with 40% of the pavement back as before.
+
+  ![Shortening runway 09/27 by 600 m: the parallel taxiway and its end link come back with the runway's end](docs/shots/v055-shorten-runway.png)
 
 - **Moving a roundabout (v0.54):** select a roundabout and drag it by its ring, and it slides under the cursor in 5 m steps; every road that meets it stretches its end to stay on it, and the junction's entries, splitter islands and give-way lines, the forecourt links and the curbs follow live. It keeps clear of buildings, aprons, taxiways, runways, the highway and other roundabouts as when it is built, each stretched road is checked where it ends up, and any road length gained is charged when you let go (moving the roundabout itself is free). `Esc` puts it back; it can be grabbed in the 3D view too.
 

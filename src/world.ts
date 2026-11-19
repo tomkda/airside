@@ -1427,7 +1427,32 @@ export function followRunwayEnd(world: World, fixed: Pt, oldEnd: Pt, newEnd: Pt,
   let cost = 0;
   const along = norm(sub(oldEnd, fixed)); const n = perpLeft(along);
   const sOld = dist(fixed, oldEnd), sNew = dot(sub(newEnd, fixed), along);
-  if (sNew <= sOld + 20) return { moves, adds, cost };
+  const dels: Way[] = [];
+  if (sNew < sOld - 1) {
+    // v0.55: shortened. Parallel taxiways that ran on to the old end are pulled back to the new one; a taxiway with an
+    // end on the runway past the new end is slid back along it if it was the end link at the old threshold, and taken
+    // away if it was an exit the runway no longer reaches. Nothing is charged or refunded for these.
+    const half = runwayWidth(sOld) / 2 + 15;
+    for (const w of world.ways) {
+      if (w.kind !== 'taxi' || w.c) continue;
+      const par = Math.abs(dot(norm(sub(w.b, w.a)), along)) >= 0.996, off = dot(sub(lerpPt(w.a, w.b, 0.5), fixed), n);
+      if (par && Math.abs(off) >= PAR_MIN && Math.abs(off) <= PAR_MAX) {
+        for (const end of ['a', 'b'] as const) {
+          const q = w[end], sq = dot(sub(q, fixed), along); if (Math.abs(sq - sOld) > 100 || sq <= sNew) continue;
+          const to = add(add(fixed, mul(along, sNew)), mul(n, dot(sub(q, fixed), n)));
+          if (dist(end === 'a' ? w.b : w.a, to) > 20) moves.push({ way: w, end, to });
+        }
+        continue;
+      }
+      const onRw = (['a', 'b'] as const).filter(e => Math.abs(dot(sub(w[e], fixed), n)) < half && dot(sub(w[e], fixed), along) > sNew + 5 && dot(sub(w[e], fixed), along) <= sOld + half);
+      if (!onRw.length) continue;
+      const e0 = onRw[0], s0 = dot(sub(w[e0], fixed), along);
+      if (Math.abs(s0 - sOld) < 40) { const dv = mul(along, sNew - s0); moves.push({ way: w, end: 'a', to: add(w.a, dv) }, { way: w, end: 'b', to: add(w.b, dv) }); }
+      else dels.push(w);
+    }
+    return { moves, adds, cost, dels };
+  }
+  if (sNew <= sOld + 20) return { moves, adds, cost, dels };
   for (const w of world.ways) {
     if (w.kind !== 'taxi' || w.c || Math.abs(dot(norm(sub(w.b, w.a)), along)) < 0.996) continue;   // (v0.46: not a curved one)
     const off = dot(sub(lerpPt(w.a, w.b, 0.5), fixed), n);
@@ -1443,5 +1468,5 @@ export function followRunwayEnd(world: World, fixed: Pt, oldEnd: Pt, newEnd: Pt,
       if (canPlaceWay(world, 'taxi', newEnd, to, aprons).ok) { adds.push({ a: newEnd, b: to, cls: w.cls }); cost += dist(newEnd, to) * wayCostPerM('taxi', w.cls, 0); }
     }
   }
-  return { moves, adds, cost };
+  return { moves, adds, cost, dels };
 }

@@ -125,6 +125,27 @@ const path = require('path');
   const tdu = await p.evaluate(() => JSON.stringify(window.__game.sim.world.ways.filter(q => q.kind === 'road').map(q => [q.a, q.b])));
   console.log('Terminal Drive dragged:', tdm.hint.slice(0, 90));
   check('a road whose ends meet roundabouts is not slid off them, and says why', tdm.roads === td.roads && tdu === td.roads && /roundabout/.test(tdm.hint));
+  // v0.55: a runway shortened leaves no stub: its end link slides back, the parallel taxiway is pulled back, exits past the end go
+  const sh = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); const rw = g.sim.world.runways[0];
+    g.ren.selected = { kind: 'runway', id: rw.id }; g.ren.cam.x = rw.b.x - 300; g.ren.cam.y = rw.b.y; g.ren.cam.zoom = 0.5;
+    const L = Math.hypot(rw.b.x - rw.a.x, rw.b.y - rw.a.y), u = { x: (rw.b.x - rw.a.x) / L, y: (rw.b.y - rw.a.y) / L };
+    const [sx, sy] = g.ren.P(rw.b.x, rw.b.y); const [tx, ty] = g.ren.P(rw.b.x - u.x * 600, rw.b.y - u.y * 600); return { sx, sy, tx, ty }; });
+  await p.waitForTimeout(300);
+  const stubs = () => p.evaluate(() => { const g = window.__game, w = g.sim.world, rw = w.runways[0];
+    const L = Math.hypot(rw.b.x - rw.a.x, rw.b.y - rw.a.y), u = { x: (rw.b.x - rw.a.x) / L, y: (rw.b.y - rw.a.y) / L };
+    let past = 0; for (const q of w.ways) if (q.kind === 'taxi') for (const e of [q.a, q.b]) { const s = (e.x - rw.a.x) * u.x + (e.y - rw.a.y) * u.y, o = Math.abs(-(e.x - rw.a.x) * u.y + (e.y - rw.a.y) * u.x); if (o < 40 && s > L + 5) past++; }
+    return { L: Math.round(L), past, taxis: w.ways.filter(q => q.kind === 'taxi').length, live: !!g.ui.live, open: g.sim.d.terminals[0].active }; });
+  const sh0 = await stubs();
+  const pullS = async () => { await p.mouse.move(sh.sx, sh.sy); await p.mouse.down(); for (let k = 1; k <= 10; k++) { await p.mouse.move(sh.sx + (sh.tx - sh.sx) * k / 10, sh.sy + (sh.ty - sh.sy) * k / 10); await p.waitForTimeout(40); } await p.waitForTimeout(200); };
+  await pullS(); const sh1 = await stubs();
+  console.log('runway shortened:', sh0.L, '→', sh1.L, 'm | taxiway ends on its line past its end:', sh1.past, '| taxiways', sh0.taxis, '→', sh1.taxis);
+  check('a runway shortened leaves no taxiway end past its new end', sh1.live && sh1.L < sh0.L - 500 && sh1.past === 0);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(250);
+  const sh2 = await stubs();
+  check('Esc puts the runway and every taxiway back', !sh2.live && sh2.L === sh0.L && sh2.taxis === sh0.taxis);
+  await pullS(); await p.mouse.up(); await p.waitForTimeout(300); const sh3 = await stubs();
+  check('letting go keeps it with no stub, Terminal 1 still open', !sh3.live && sh3.L === sh1.L && sh3.past === 0 && sh3.open);
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
   // v0.53: the runway moved whole by its pavement, every taxiway on it carried along
   const rmv = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); const rw = g.sim.world.runways[0];
     g.ren.selected = { kind: 'runway', id: rw.id }; const m = { x: (rw.a.x + rw.b.x) / 2 - 300, y: (rw.a.y + rw.b.y) / 2 };
