@@ -1256,6 +1256,17 @@ export class Sim {
     }
   }
 
+  /** v0.54: a roundabout centred at `o` was moved by `d`: the points of every car's path within `r` of it (its ring and
+   *  approaches) go with it, so cars on it carry on round the moved ring. Call before the relayout. */
+  roundMoved(o: Pt, r: number, d: Pt) {
+    for (const c of this.cars) {
+      if (c.stage === 'gone' || !c.pts.some(q => dist(q, o) < r)) continue;
+      const d0 = c.d; const pts = c.pts.map(q => (dist(q, o) < r ? { x: q.x + d.x, y: q.y + d.y } : q));
+      c.pts = pts; c.cum = [0]; for (let i = 1; i < pts.length; i++) c.cum.push(c.cum[i - 1] + dist(pts[i - 1], pts[i]));
+      c.len = c.cum[c.cum.length - 1]; c.d = Math.min(d0, c.len); c.si = 0; while (c.si < c.cum.length - 2 && c.d > c.cum[c.si + 1]) c.si++;
+    }
+  }
+
   setCarPath(c: Car, pts: Pt[], eids: number[]) {
     c.pts = pts; c.eids = eids; c.cum = [0]; c.passed = -1; c.wait = false;
     for (let i = 1; i < pts.length; i++) c.cum.push(c.cum[i - 1] + dist(pts[i - 1], pts[i]));

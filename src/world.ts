@@ -441,6 +441,8 @@ export function canPlaceRound(world: World, p: Pt, size: number, aprons: Apron[]
   for (const rw of world.runways) if (segDist(p, rw.a, rw.b) < runwayWidth(dist(rw.a, rw.b)) / 2 + 60 + R) return { ok: false, reason: 'Inside the runway strip' };
   for (const w of chordWays(world.ways)) if (w.kind === 'taxi' && segDist(p, w.a, w.b) < R + 10) return { ok: false, reason: 'Too close to a taxiway' };
   for (const o of world.rounds ?? []) if (o.id !== ignoreId && dist(o, p) < R + roundOuter(o) + 6) return { ok: false, reason: 'Too close to another roundabout' };
+  // (v0.54: sidewalks go round a roundabout, not through it, whichever is built first)
+  for (const w of chordWays(world.ways)) if (w.kind === 'walk' && segDist(p, w.a, w.b) < R - 2) return { ok: false, reason: 'A sidewalk runs through it' };
   return { ok: true };
 }
 function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): PlaceCheck {

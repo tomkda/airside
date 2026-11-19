@@ -166,6 +166,33 @@ const path = require('path');
   console.log('flying 10 hours on the moved runway:', fly.landed, 'flights,', fly.cxl, 'cancelled', fly.issues.length ? '| ' + fly.issues.join('; ') : '');
   check('aircraft use the moved runway: none cancelled, no design issue', fly.cxl === 0 && fly.landed > 0 && fly.issues.length === 0);
   await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
+  // v0.54: a roundabout moved by its ring, the roads on it stretching to stay on it
+  const rbx = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select'); const r = [...g.sim.world.rounds].sort((a, b) => a.x - b.x)[0];
+    g.ren.selected = { kind: 'round', id: r.id }; g.ren.cam.x = r.x; g.ren.cam.y = r.y; g.ren.cam.zoom = 1.2;
+    const [sx, sy] = g.ren.P(r.x + 10, r.y); const [tx, ty] = g.ren.P(r.x - 20, r.y); return { id: r.id, sx, sy, tx, ty }; });
+  await p.waitForTimeout(300);
+  const rbs = () => p.evaluate(id => { const g = window.__game, w = g.sim.world; const r = w.rounds.find(q => q.id === id);
+    return { x: r.x, on: w.ways.filter(q => q.kind === 'road' && [q.a, q.b].some(e => Math.hypot(e.x - r.x, e.y - r.y) < 2)).length, live: !!g.ui.live, open: g.sim.d.terminals[0].active,
+      entries: (g.sim.d.issues || []).filter(i => i.level !== 'info').length }; }, rbx.id);
+  const b0 = await rbs();
+  const pullB = async () => { await p.mouse.move(rbx.sx, rbx.sy); await p.mouse.down(); for (let k = 1; k <= 8; k++) { await p.mouse.move(rbx.sx + (rbx.tx - rbx.sx) * k / 8, rbx.sy); await p.waitForTimeout(40); } await p.waitForTimeout(200); };
+  await pullB(); const b1 = await rbs();
+  console.log('west roundabout moved: x', b0.x, '→', b1.x, '| roads on it', b0.on, '→', b1.on, '| Terminal 1', b1.open ? 'open' : 'closed');
+  check('a roundabout moves while its ring is dragged, its roads staying on it', b1.live && b1.x === b0.x - 30 && b1.on === b0.on && b0.on > 0 && b1.open);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(250);
+  const thru = await p.evaluate(id => { const g = window.__game, w = g.sim.world; const r = w.rounds.find(q => q.id === id);
+    const road = { id: w.nextId++, kind: 'road', a: { x: r.x - 120, y: r.y - 160 }, b: { x: r.x + 120, y: r.y + 160 }, cls: 0, lanes: 2 }; w.ways.push(road);
+    const res = g.ui.slideRound(r, { x: r.x, y: r.y }, { x: -30, y: 0 }, false); w.ways = w.ways.filter(q => q !== road); return res; }, rbx.id);
+  console.log('a road through the roundabout:', thru.ok ? 'MOVED' : 'refused: ' + thru.reason);
+  check('a roundabout with a road running through it does not move', !thru.ok && /runs through/.test(thru.reason ?? ''));
+  const b2 = await rbs();
+  check('Esc puts the roundabout back', !b2.live && b2.x === b0.x && b2.on === b0.on);
+  await pullB(); await p.mouse.up(); await p.waitForTimeout(300); const b3 = await rbs();
+  const drive = await p.evaluate(() => { const g = window.__game, sim = g.sim; const s0 = sim.stats.stranded, m0 = sim.stats.missed;
+    for (let i = 0; i < 1200; i++) sim.step(0.25); return { stranded: sim.stats.stranded - s0, missed: sim.stats.missed - m0, issues: sim.d.issues.filter(i => i.level !== 'info').map(i => i.text) }; });
+  console.log('5 hours with the roundabout moved:', drive.stranded, 'stranded,', drive.missed, 'missed', drive.issues.length ? '| ' + drive.issues.join('; ') : '');
+  check('letting go keeps it; cars use it: none stranded, no design issue', !b3.live && b3.x === b0.x - 30 && b3.on === b0.on && b3.open && drive.stranded === 0 && drive.issues.length === 0);
+  await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
   // v0.49: in 3D, the selected building is grabbed by its roof and moved whole, with everything following
   const m = await p.evaluate(() => { const g = window.__game; g.ui.setTool('select');
     const z = g.sim.world.zones.find(q => q.type === 'concourse'); g.ren.cam.x = z.x + z.w / 2; g.ren.cam.y = z.y + z.h / 2 + 60; g.ren.cam.zoom = 0.8;
