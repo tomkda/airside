@@ -1286,7 +1286,7 @@ export class UI {
   /** v0.43: in 3D, whether a left drag orbits (it does not over a grip, or while one is dragged). */
   orbit3d(on: boolean) { if (this.ren.mode3d && this.ren.r3) this.ren.r3.controls.enabled = on; }
   cancelDrag() {
-    this.orbit3d(true);
+    this.orbit3d(true); this.click3d = null; if (this.ren.mode3d) this.ren.setOrbitLeft(this.tool === 'select');   // (v0.54: a 3D press given up does not select on release)
     if (this.path) { this.path = null; this.pathLast = null; this.endLive(false); this.settle(); this.ren.ghost = null; this.hint(this.toolHint()); return true; }
     if (!this.drag) return false;
     this.endLive(false); this.settle(); this.drag = null; this.ren.ghost = null; this.ren.canvas.style.cursor = 'default';
@@ -1370,6 +1370,7 @@ export class UI {
       const m = dr.rbm, r = dr.rb;
       const fin = m.ok ? this.slideRound(r, { x: r.x, y: r.y }, m.d, true) : m;
       if (fin.ok) {
+        this.sim.roundMoved(dr.rb0!, roundOuter(r) + 6, m.d);   // (cars on its ring go with it)
         if (fin.cost) this.sim.spend(fin.cost);
         this.changed(); this.ren.selected = { kind: 'round', id: r.id };
         this.toast(`Roundabout moved ${n0(Math.hypot(m.d.x, m.d.y))} m${fin.n ? ` · ${fin.n} road${fin.n > 1 ? 's' : ''} stretched to stay on it` : ''}`);
@@ -1723,24 +1724,35 @@ export class UI {
    * gained is charged (moving the roundabout itself is free). With `apply`, a move that passes is made.
    */
   slideRound(r: Round, o: Pt, d: Pt, apply: boolean) {
-    const to = { x: o.x + d.x, y: o.y + d.y }, reach = roundOuter(r) + 6;
+    const to = { x: o.x + d.x, y: o.y + d.y }, R = roundOuter(r), reach = R + 6;
+    const roads = this.world.ways.filter(w => w.kind === 'road');
     const ends: { way: Way; end: 'a' | 'b'; from: Pt }[] = [];
-    for (const w of this.world.ways) if (w.kind === 'road') for (const end of ['a', 'b'] as const) if (dist(w[end], o) < reach) ends.push({ way: w, end, from: { ...w[end] } });
-    const ways = [...new Set(ends.map(x => x.way))];
-    const res = (reason?: string, cost = 0) => ({ n: ways.length, cost, reason, ok: !reason && (d.x !== 0 || d.y !== 0) && this.sim.canAfford(cost) });
+    for (const w of roads) for (const end of ['a', 'b'] as const) if (dist(w[end], o) < reach) ends.push({ way: w, end, from: { ...w[end] } });
+    const carried = [...new Set(ends.map(x => x.way))];
+    const res = (reason?: string, cost = 0) => ({ n: carried.length, cost, reason, ok: !reason && (d.x !== 0 || d.y !== 0) && this.sim.canAfford(cost) });
+    // (a road that runs through it, rather than ending on it, holds it where it is; so does one with both ends on it)
+    if (roads.some(w => !carried.includes(w) && waySegs(w).some(([p, q]) => segDist(o, p, q) < R))) return res('a road runs through it: move or bend that road instead');
+    if (carried.some(w => ends.filter(x => x.way === w).length === 2)) return res('a road has both ends on it');
     const chk = canPlaceRound(this.world, to, r.size, this.aprons, r.id);
     if (!chk.ok) return res(chk.reason);
+    // (nor onto the generated curbs, which the world does not hold)
+    for (const z of this.sim.d.zones) if (z.auto && z.level === 0 && rectSegDist(zoneBox(z), to, to) < R - 1) return res('Overlaps a curb');
+    // carry the ends, then let the roads meeting a carried road part way along follow it (as a way moved whole does)
+    const before = new Map(roads.map(w => [w, { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined }]));
+    for (const x of ends) x.way[x.end] = { x: x.from.x + d.x, y: x.from.y + d.y };
+    for (const w of carried) followBend(this.world, w, before.get(w)!, true);
     let cost = 0, reason: string | undefined;
-    for (const w of ways) {
-      const mine = ends.filter(x => x.way === w);
-      if (mine.length === 2) { if (!reason) reason = 'a road with both ends on it'; continue; }
-      const na = mine[0].end === 'a' ? { x: w.a.x + d.x, y: w.a.y + d.y } : w.a, nb = mine[0].end === 'b' ? { x: w.b.x + d.x, y: w.b.y + d.y } : w.b;
-      const rr = canPlaceWay(this.world, 'road', na, nb, this.aprons, w.c, w.cls);
+    const changed = roads.filter(w => { const g = before.get(w)!; return w.a.x !== g.a.x || w.a.y !== g.a.y || w.b.x !== g.b.x || w.b.y !== g.b.y; });
+    const now = new Map(changed.map(w => [w, { a: { ...w.a }, b: { ...w.b } }]));
+    const back = () => { for (const [w, g] of before) { w.a = g.a; w.b = g.b; if (g.c) w.c = g.c; else delete w.c; } };
+    back();   // (each one checked against the world as it was)
+    for (const w of changed) {
+      const n = now.get(w)!; const rr = canPlaceWay(this.world, 'road', n.a, n.b, this.aprons, w.c, w.cls);
       if (!rr.ok && !reason) reason = `a road on it: ${rr.reason}`;
-      cost += Math.max(0, wayLen({ a: na, b: nb, c: w.c }) - wayLen(w)) * wayCostPerM('road', w.cls, w.lanes);
+      cost += Math.max(0, wayLen({ a: n.a, b: n.b, c: w.c }) - wayLen(w)) * wayCostPerM('road', w.cls, w.lanes);
     }
     const out = res(reason, cost);
-    if (apply && out.ok) { for (const x of ends) x.way[x.end] = { x: x.from.x + d.x, y: x.from.y + d.y }; r.x = to.x; r.y = to.y; }
+    if (apply && out.ok) { for (const [w, n] of now) { w.a = n.a; w.b = n.b; } r.x = to.x; r.y = to.y; }
     return out;
   }
   /** v0.53: is the point on the runway's own pavement (to grab it and move it whole)? */
