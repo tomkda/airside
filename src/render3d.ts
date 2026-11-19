@@ -17,7 +17,7 @@ import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
-import { turn, centreOf, shaped, hallPts, barPieces } from './shapes';
+import { turn, centreOf, shaped, hallPts, barPieces, zonePts } from './shapes';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -751,6 +751,16 @@ export class Renderer3D {
     const col = gh.ok ? PAL.select : PAL.bad;
     if (gh.kind === 'zone' && gh.rect) {
       const L = LEVELS[this.ren.level];
+      const r = gh.rect as Rect & { rot?: number; sides?: number; bend?: number; taper?: number; poly?: Pt[]; twist?: number };
+      if (r.rot || r.sides || r.bend || r.taper || r.poly || r.twist) {
+        // (v0.51: a turned, bent, tapered, round or free-drawn shape as its true outline, at floor and roof with its corners joined)
+        const pts = zonePts(r), lm = new THREE.LineBasicMaterial({ color: col });
+        const loop = (z: number) => new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts.map(q => new THREE.Vector3(q.x, z, q.y))), lm);
+        const posts: THREE.Vector3[] = []; const step = Math.max(1, Math.floor(pts.length / 12));
+        for (let i = 0; i < pts.length; i += step) posts.push(new THREE.Vector3(pts[i].x, L.z0 + 0.3, pts[i].y), new THREE.Vector3(pts[i].x, L.z1, pts[i].y));
+        this.ghostG.add(loop(L.z0 + 0.3), loop(L.z1), new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(posts), lm));
+        return;
+      }
       const m = new THREE.Mesh(boxGeo({ ...gh.rect, z0: L.z0, z1: L.z1 }), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.28, depthWrite: false }));
       this.ghostG.add(m, outline(gh.rect, L.z0 + 0.3, col));
     } else if (gh.a && gh.b) {

@@ -123,6 +123,23 @@ const path = require('path');
   const after = await p.evaluate(() => ({ sel: JSON.stringify(window.__game.ren.selected), drag: !!window.__game.ui.drag, live: !!window.__game.ui.live }));
   console.log('click on the roof: selection', selBefore, '→', after.sel);
   check('a click on the roof is a click: no move left hanging, and it picks again', !after.drag && !after.live && after.sel !== 'null');
+  // v0.51: in 3D, a satellite concourse being drawn stands there with its stands before the mouse is let go
+  await p.keyboard.press('Escape'); await p.waitForTimeout(100);
+  await p.evaluate(() => { const g = window.__game; g.ui.set3d(false); g.ren.cam.x = 4100; g.ren.cam.y = 2700; g.ren.cam.zoom = 0.8; g.ui.set3d(true); });
+  await p.waitForTimeout(1500);
+  const sat = await p.evaluate(() => { const g = window.__game; g.ren.selected = null; g.ui.setTool('satellite');
+    const [ax, ay] = g.ren.P(3900, 2620, 9); const [bx, by] = g.ren.P(4300, 2680, 9);
+    return { ax, ay, bx, by, n: g.sim.world.zones.length, aprons: g.sim.d.aprons.length }; });
+  await p.waitForTimeout(400);
+  await p.mouse.move(sat.ax, sat.ay); await p.mouse.down();
+  for (let k = 1; k <= 10; k++) { await p.mouse.move(sat.ax + (sat.bx - sat.ax) * k / 10, sat.ay + (sat.by - sat.ay) * k / 10); await p.waitForTimeout(60); }
+  await p.waitForTimeout(400);
+  const sd = await p.evaluate(() => { const g = window.__game; return { live: !!g.ui.live, zones: g.sim.world.zones.length, aprons: g.sim.d.aprons.length, hint: document.querySelector('.hint, #hint')?.textContent ?? '' }; });
+  console.log('3D: drawing a satellite:', sat.aprons, '→', sd.aprons, 'aprons mid-draw |', sd.hint.slice(0, 90));
+  check('in 3D a module being drawn stands there, with its stands, before the mouse is let go', sd.live && sd.zones === sat.n + 1 && sd.aprons > sat.aprons);
+  await p.keyboard.press('Escape'); await p.mouse.up(); await p.waitForTimeout(300);
+  const se = await p.evaluate(() => ({ live: !!window.__game.ui.live, zones: window.__game.sim.world.zones.length }));
+  check('Esc leaves nothing drawn', !se.live && se.zones === sat.n);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();

@@ -636,7 +636,10 @@ export class UI {
         if (grip || roof) this.hoverHint = true; else if (this.hoverHint) { this.hoverHint = false; this.hint(this.toolHint()); }
         if (z && !grip && roof) this.hint(`Drag to move ${z.type === 'concourse' ? 'the concourse' : ZONES[z.type].short.toLowerCase()} · everything follows · Esc puts it back · drag elsewhere to orbit`);
       }
-      if (this.tool !== 'select') { const p = this.wpt(e); if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; } }
+      if (this.tool !== 'select') {
+        const p = this.wpt(e); if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; }
+        if (this.path) this.pathPreview(p);   // (v0.51: a path of piers, a free area or a cut-out follows the pointer in 3D too)
+      }
       return;
     }
     if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
@@ -921,7 +924,7 @@ export class UI {
   liftDraft() { const lv = this.live; if (lv?.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z)); }
   /** Zones that exist only while the mouse is down: what a drawing tool is about to build. Call `liftDraft` first. */
   liveDraft(zs: Zone[]) {
-    if (this.ren.mode3d) return;
+    // (v0.51: in 3D too: the model is rebuilt a few times a second while it is drawn, as for a grip)
     if (!this.live) { if (!zs.length) return; this.beginLive([]); }
     const lv = this.live!;
     if (!zs.length && !lv.temp.length) return;
@@ -935,7 +938,6 @@ export class UI {
   /** v0.48: ways that exist only while the mouse is down, so gates, stands, holdrooms and curbs follow a way being
    *  drawn as they follow a building. Call `liftDraftWays` first. */
   liveDraftWays(ws: Way[]) {
-    if (this.ren.mode3d) return;
     if (!this.live) { if (!ws.length) return; this.beginLive([]); }
     const lv = this.live!;
     if (!ws.length && !lv.tempWays.length) return;
