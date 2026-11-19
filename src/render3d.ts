@@ -17,7 +17,7 @@ import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
-import { turn, centreOf, shaped, hallPts, barPieces } from './shapes';
+import { turn, centreOf, shaped, hallPts, barPieces, zonePts } from './shapes';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -186,7 +186,7 @@ export class Renderer3D {
   draw(sim: Sim, night: number) {
     this.controls.update();
     const now = performance.now();
-    if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; this.noteBirths(sim, now); }
+    if (sim.d !== this.dRef) { this.dRef = sim.d; this.dGen++; if (!this.ren.liveEdit) this.noteBirths(sim, now); }   // (v0.51: a draft is not built yet: it does not rise)
     const rising = [...this.born.entries()].filter(([, t]) => now - t < RISE_MS).map(([id]) => id);
     const key = [this.dGen, this.ren.lod, this.ren.focus, this.ren.level, JSON.stringify(this.ren.selected), this.ren.commerce, sim.world.sites?.length, rising.join(',')].join('|');
     // (v0.43: while a grip is dragged the layout changes every frame; the model follows at most every LIVE_3D_MS, and at
@@ -750,7 +750,17 @@ export class Renderer3D {
     if (!gh) return;
     const col = gh.ok ? PAL.select : PAL.bad;
     if (gh.kind === 'zone' && gh.rect) {
-      const L = LEVELS[this.ren.level];
+      const L = LEVELS[(gh.level ?? this.ren.level) as 0 | 1];
+      const r = gh.rect as Rect & { rot?: number; sides?: number; bend?: number; taper?: number; poly?: Pt[]; twist?: number };
+      if (r.rot || r.sides || r.bend || r.taper || r.poly || r.twist) {
+        // (v0.51: a turned, bent, tapered, round or free-drawn shape as its true outline, at floor and roof with its corners joined)
+        const pts = zonePts(r), lm = new THREE.LineBasicMaterial({ color: col });
+        const loop = (z: number) => new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts.map(q => new THREE.Vector3(q.x, z, q.y))), lm);
+        const posts: THREE.Vector3[] = []; const step = Math.max(1, Math.floor(pts.length / 12));
+        for (let i = 0; i < pts.length; i += step) posts.push(new THREE.Vector3(pts[i].x, L.z0 + 0.3, pts[i].y), new THREE.Vector3(pts[i].x, L.z1, pts[i].y));
+        this.ghostG.add(loop(L.z0 + 0.3), loop(L.z1), new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(posts), lm));
+        return;
+      }
       const m = new THREE.Mesh(boxGeo({ ...gh.rect, z0: L.z0, z1: L.z1 }), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.28, depthWrite: false }));
       this.ghostG.add(m, outline(gh.rect, L.z0 + 0.3, col));
     } else if (gh.a && gh.b) {

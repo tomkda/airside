@@ -400,6 +400,8 @@ export class UI {
   floorZ() {
     // (v0.43: a grip in 3D stands on the roof of its level, and is dragged across that height)
     if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move') && this.drag.zone) return LEVELS[this.drag.zone.level].z1;   // (v0.49: and a building moved whole, across its roof)
+    // (v0.51: piers, hubs, satellites, free areas and cut-outs are built on Level 1, and are drawn on its floor; a hall too)
+    if (this.ren.mode3d && ['pier', 'hub', 'satellite', 'area', 'cut', 'checkin'].includes(this.tool)) return LEVELS[1].z0;
     if (this.ren.mode3d) return (this.tool in ZONES && !ZONES[this.tool as ZoneType].groundOnly) || (this.tool === 'select' && this.ren.lod === 'terminal') ? LEVELS[this.ren.level].z0 : 0;
     return this.ren.tilt > 0.02 && !isWay(this.tool) && this.tool !== 'runway' ? LEVELS[this.ren.level].z1 : 0;
   }
@@ -598,8 +600,9 @@ export class UI {
       if (k && vi >= 0) { this.ren.gripHot = `v${vi}` as Grip; this.beginLive([], [k]); this.drag = { mode: 'cutgrip', ...base, cut: k, vi, pts0: k.pts.map(q => ({ ...q })), liveOk: true }; this.ren.canvas.style.cursor = 'grabbing'; return; }
     }
     if (t === 'satellite') { this.drag = { mode: 'zone', ...base, start: this.magnet(p, 1) }; return; }
-    if (t === 'pier' && this.opt.pierPath && !this.ren.mode3d) { this.pathClick(p, e.offsetX, e.offsetY); return; }
-    if ((t === 'area' || t === 'cut') && !this.ren.mode3d) {
+    if (t === 'pier' && this.opt.pierPath) {   // (v0.51: in 3D too)
+      this.pathClick(p, e.offsetX, e.offsetY); return; }
+    if (t === 'area' || t === 'cut') {   // (v0.51: in 3D too)
       // (v0.32: with nothing drawn yet, a click inside a cut-out with the cut-out tool fills it back in)
       const k = t === 'cut' && !this.path ? (this.world.cuts ?? []).find(c => pointInPoly(p, c.pts)) : undefined;
       if (k) { this.world.cuts = this.world.cuts!.filter(c => c !== k); if (this.ren.selected?.kind === 'cut' && this.ren.selected.id === k.id) this.ren.selected = null; if (this.ren.hover?.kind === 'cut') this.ren.hover = null; this.nextSound = 'demolish'; this.changed(); this.toast('Cut-out filled back in'); return; }
@@ -636,7 +639,10 @@ export class UI {
         if (grip || roof) this.hoverHint = true; else if (this.hoverHint) { this.hoverHint = false; this.hint(this.toolHint()); }
         if (z && !grip && roof) this.hint(`Drag to move ${z.type === 'concourse' ? 'the concourse' : ZONES[z.type].short.toLowerCase()} · everything follows · Esc puts it back · drag elsewhere to orbit`);
       }
-      if (this.tool !== 'select') { const p = this.wpt(e); if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; } }
+      if (this.tool !== 'select') {
+        const p = this.wpt(e); if (isWay(this.tool)) { const s = this.snapFor(this.tool, p); this.ren.cursor = s.snapped ? s.p : null; }
+        if (this.path) this.pathPreview(p);   // (v0.51: a path of piers, a free area or a cut-out follows the pointer in 3D too)
+      }
       return;
     }
     if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
@@ -744,7 +750,7 @@ export class UI {
       const z = isHub ? this.hubFrom(dr.start, p) : this.pierFrom(dr.start, p); const chk = z ? canPlacePier(this.world, z) : { ok: false, reason: `Drag the pier's length: ${PIER.minLen} m at least` };
       const cost = z ? (isHub ? polyArea(zonePts(z)) : z.w * z.h) * ZONES.concourse.costPerM2 : 0; const ok = chk.ok && this.sim.canAfford(cost);
       dr.pier = z ? { z, ok, cost, reason: chk.reason } : undefined;
-      this.ren.ghost = z ? { kind: 'zone', rect: z, ok } : null;
+      this.ren.ghost = z ? { kind: 'zone', rect: z, ok, level: 1 } : null;
       // v0.19: it stands there as you draw it, with its stands and taxilanes, before you let go
       this.liveDraft(z && ok ? [{ id: this.world.nextId, type: 'concourse', level: 1, x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, tier: 0, cls: this.opt.conc }] : []);
       if (z) {
@@ -858,7 +864,7 @@ export class UI {
       const cost = area(r) * (ZONES[t].costPerM2 + (hall ? ZONES.claim.costPerM2 : 0));
       const near = sat ? this.nearestConcourse(r) : null;
       const ok = chk.ok && this.sim.canAfford(cost);
-      this.ren.ghost = { kind: 'zone', rect: r, ok };
+      this.ren.ghost = { kind: 'zone', rect: r, ok, level };
       this.liveDraft(ok ? this.draftZones(t, r, sat) : []);
       this.hint(chk.ok ? (ok ? `${hall ? 'Check-in over baggage claim' : ZONES[t].label} · ${n0(r.w)} × ${n0(r.h)} m · ${this.estimateUnits(t, r)}${hall ? ` · ${this.estimateUnits('claim', r)}` : ''}${sat ? (near && near.d < 1.5 ? ' · touching a concourse: it joins that building' : near && near.d <= MOVER.reach ? ` · people mover to ${near.name}: ${n0(near.d)} m, about ${(near.d / (TUNE.walkSpeed * MOVER.speed) + MOVER.wait).toFixed(1)} min` : ` · no concourse within ${n0(MOVER.reach)} m: it will stand alone until one is`) : ''} · ${money(cost)}` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok);
       return;
@@ -921,7 +927,7 @@ export class UI {
   liftDraft() { const lv = this.live; if (lv?.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z)); }
   /** Zones that exist only while the mouse is down: what a drawing tool is about to build. Call `liftDraft` first. */
   liveDraft(zs: Zone[]) {
-    if (this.ren.mode3d) return;
+    // (v0.51: in 3D too: the model is rebuilt a few times a second while it is drawn, as for a grip)
     if (!this.live) { if (!zs.length) return; this.beginLive([]); }
     const lv = this.live!;
     if (!zs.length && !lv.temp.length) return;
@@ -935,7 +941,6 @@ export class UI {
   /** v0.48: ways that exist only while the mouse is down, so gates, stands, holdrooms and curbs follow a way being
    *  drawn as they follow a building. Call `liftDraftWays` first. */
   liveDraftWays(ws: Way[]) {
-    if (this.ren.mode3d) return;
     if (!this.live) { if (!ws.length) return; this.beginLive([]); }
     const lv = this.live!;
     if (!ws.length && !lv.tempWays.length) return;
@@ -1059,7 +1064,7 @@ export class UI {
     const all = leg ? [...pts, leg.end] : pts;
     const { zones, cost } = this.pathZones(all); const chk = zones.length ? this.pathCheck(zones, cost, all) : { ok: false as const, reason: `Move out to where the first leg ends: ${PIER.minLen} m at least` };
     this.liveDraft(chk.ok ? zones : this.pathZones(pts).zones);
-    this.ren.ghost = leg ? { kind: 'zone', rect: leg.z, ok: chk.ok } : null;
+    this.ren.ghost = leg ? { kind: 'zone', rect: leg.z, ok: chk.ok, level: 1 } : null;
     const legs = all.length - 1; const total = zones.filter(z => !z.sides).reduce((t, z) => t + z.w, 0);
     this.hint(chk.ok ? `${legs} leg${legs > 1 ? 's' : ''} · ${n0(total)} m in all · ${money(cost)} · click to set this corner, click it again or press Enter to build` : chk.reason!, !chk.ok);
   }
@@ -1126,7 +1131,7 @@ export class UI {
     const pts = [...this.path!, { x: snap(p.x, 5), y: snap(p.y, 5) }]; const cut = this.tool === 'cut';
     const chk = this.polyCheck(pts);
     if (!cut) { this.liftDraft(); this.liveDraft(chk.ok ? [this.polyZone(pts)] : []); }
-    this.ren.ghost = pts.length >= 2 ? { kind: 'zone', rect: { ...polyBox(pts), poly: pts }, ok: chk.ok || pts.length < 3 } : null;
+    this.ren.ghost = pts.length >= 2 ? { kind: 'zone', rect: { ...polyBox(pts), poly: pts }, ok: chk.ok || pts.length < 3, level: 1 } : null;
     this.hint(chk.ok ? `${cut ? 'Cut-out' : 'Free area'} · ${pts.length} corners · ${n0(polyArea(pts))} m² · ${money(chk.cost)} · click the first corner or press Enter to ${cut ? 'cut it out' : 'build'}` : pts.length < 3 ? 'Click the next corner' : chk.reason!, !chk.ok && pts.length >= 3);
   }
   polyClick(p: Pt, sx: number, sy: number) {
@@ -1135,7 +1140,7 @@ export class UI {
     const pts = this.path;
     // the first corner (or the last one) clicked again: finish
     const again = !!this.pathLast && Math.hypot(this.pathLast.x - sx, this.pathLast.y - sy) < 8;
-    const first = pts.length >= 3 && dist(q, pts[0]) * this.ren.cam.zoom < 12;
+    const first = pts.length >= 3 && (this.ren.mode3d ? dist(q, pts[0]) < 8 : dist(q, pts[0]) * this.ren.cam.zoom < 12);   // (v0.51: in 3D the plan's zoom means nothing)
     if (again || first) { this.polyBuild(); return; }
     this.pathLast = { x: sx, y: sy };
     if (pts.some(o => dist(o, q) < 1)) return;

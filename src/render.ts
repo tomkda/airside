@@ -32,6 +32,8 @@ export interface Ghost {
   extras?: { a: Pt; b: Pt; cls: number }[];
   /** v0.15: the modules a new terminal would be laid out with. */
   parts?: Rect[];
+  /** v0.51: the level the shape is built on, where it is not the level shown (the 3D ghost stands on it) */
+  level?: number;
 }
 export type Sel = { kind: 'zone' | 'runway' | 'way' | 'gate' | 'site' | 'round' | 'cut'; id: number; key?: string };
 
