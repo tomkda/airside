@@ -83,7 +83,7 @@ export class UI {
   tab: 'inspect' | 'ops' | 'report' = 'ops';
   opt = { taxi: 2, lanes: 2, conc: 2 as Cls, auto: 1, shape: 0, oneway: 0, round: 0, layout: 0, pierW: 50, hub: 32, pierPath: 0 };
   private drag: null | {
-    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip' | 'cutgrip' | 'cutmove';
+    mode: 'pan' | 'runway' | 'zone' | 'move' | 'way' | 'extend' | 'site' | 'bend' | 'pier' | 'grip' | 'cutgrip' | 'cutmove' | 'waymove';
     /** v0.35: a cut-out being reshaped by a corner (`vi`) or moved, and its corners when the drag began */
     cut?: Cut; vi?: number; pts0?: Pt[];
     /** v0.19: a grip on a built shape, the shape as it was when the drag began, and whether where it is now is allowed */
@@ -93,6 +93,8 @@ export class UI {
     cam?: Pt; zone?: Zone; off?: Pt; moved?: boolean;
     rw?: Runway; end?: 'a' | 'b'; orig?: { a: Pt; b: Pt }; extras?: WaySpec[];
     pend?: { a: Pt; b: Pt; ok: boolean; cost: number; delta: number; follow: ReturnType<typeof followRunwayEnd> | null };
+    /** v0.52: a way moved whole: its new line, and the ends of the ways joined to its ends that stretch to follow */
+    wm?: { a: Pt; b: Pt; c?: Pt; ends: { way: Way; end: 'a' | 'b'; to: Pt }[]; ok: boolean; cost: number; reason?: string };
   } = null;
   private pointers = new Map<number, { x: number; y: number }>();
   private pinch: { d: number; zoom: number; mid: Pt; cam: Pt } | null = null;
@@ -398,6 +400,7 @@ export class UI {
   }
 
   floorZ() {
+    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove')) return 0;   // (v0.52: a way is dragged on the ground)
     // (v0.43: a grip in 3D stands on the roof of its level, and is dragged across that height)
     if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move') && this.drag.zone) return LEVELS[this.drag.zone.level].z1;   // (v0.49: and a building moved whole, across its roof)
     // (v0.51: piers, hubs, satellites, free areas and cut-outs are built on Level 1, and are drawn on its floor; a hall too)
@@ -562,6 +565,18 @@ export class UI {
         this.click3d = { x: e.offsetX, y: e.offsetY };   // (a press that never becomes a move is a click: it still selects, a lot inside for one)
         return;
       }
+      // v0.52: and a selected way, by its bend and end handles or by its body, as in the plan
+      const w3 = this.tool === 'select' && e.button === 0 && this.ren.selected?.kind === 'way' ? this.world.ways.find(q => q.id === this.ren.selected!.id) : undefined;
+      const gp = w3 ? this.ren.r3?.hit(e.offsetX, e.offsetY, 0) : null;
+      const h3 = w3 && gp ? this.wayHandleAt(w3, e.offsetX, e.offsetY) : null;
+      if (w3 && gp && (h3 || this.onWay(w3, gp))) {
+        this.orbit3d(false); this.ren.canvas.setPointerCapture(e.pointerId); this.pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+        const orig3 = { a: { ...w3.a }, b: { ...w3.b }, c: w3.c ? { ...w3.c } : undefined };
+        this.drag = h3 ? { mode: 'bend', sx: e.offsetX, sy: e.offsetY, start: gp, way: w3, handle: h3, orig3 } : { mode: 'waymove', sx: e.offsetX, sy: e.offsetY, start: gp, way: w3, moved: false, orig3 };
+        this.ren.canvas.style.cursor = 'grabbing';
+        if (!h3) this.click3d = { x: e.offsetX, y: e.offsetY };
+        return;
+      }
       if (e.button === 0) this.click3d = { x: e.offsetX, y: e.offsetY };
       return;
     }
@@ -584,6 +599,8 @@ export class UI {
       const w = this.world.ways.find(q => q.id === this.ren.selected!.id);
       const h = w && this.wayHandleAt(w, e.offsetX, e.offsetY);
       if (w && h) { this.drag = { mode: 'bend', ...base, way: w, handle: h, orig3: { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined } }; return; }
+      // v0.52: grabbed by its body, the selected way moves whole
+      if (w && this.onWay(w, p)) { this.drag = { mode: 'waymove', ...base, way: w, moved: false, orig3: { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined } }; return; }
     }
     if (t === 'select' && this.ren.selected?.kind === 'zone') {
       const z = this.world.zones.find(q => q.id === this.ren.selected!.id);
@@ -637,6 +654,12 @@ export class UI {
         this.ren.canvas.style.cursor = grip ? 'grab' : roof ? 'move' : '';
         if (z && grip) this.hint(this.gripHint(z, grip));
         if (grip || roof) this.hoverHint = true; else if (this.hoverHint) { this.hoverHint = false; this.hint(this.toolHint()); }
+        const w = this.ren.selected?.kind === 'way' ? this.world.ways.find(q => q.id === this.ren.selected!.id) : undefined;
+        if (w) {   // (v0.52: a selected way's handles and body grab the pointer in 3D too)
+          const gp = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); const h = gp ? this.wayHandleAt(w, e.offsetX, e.offsetY) : null; const on = !!gp && !h && this.onWay(w, gp);
+          this.ren.setOrbitLeft(!h && !on); this.ren.canvas.style.cursor = h ? 'grab' : on ? 'move' : '';
+          if (h || on) { this.hoverHint = true; this.hint(h ? 'Drag to bend or move this end' : `Drag to move the ${wayName(w.kind).toLowerCase()} whole · Esc puts it back · drag elsewhere to orbit`); }
+        }
         if (z && !grip && roof) this.hint(`Drag to move ${z.type === 'concourse' ? 'the concourse' : ZONES[z.type].short.toLowerCase()} · everything follows · Esc puts it back · drag elsewhere to orbit`);
       }
       if (this.tool !== 'select') {
@@ -661,6 +684,7 @@ export class UI {
       const q = this.ren.r3?.hit(e.offsetX, e.offsetY, LEVELS[this.drag.zone.level].z1);
       if (!q || dist(q, this.drag.start) > 3000) return;
     }
+    if (this.ren.mode3d && (this.drag?.mode === 'bend' || this.drag?.mode === 'waymove')) { const q = this.ren.r3?.hit(e.offsetX, e.offsetY, 0); if (!q || dist(q, this.drag.start) > 3000) return; }
     const p = this.wpt(e);
     const dr = this.drag;
     if (!dr && this.path) { this.pathPreview(p); return; }
@@ -681,6 +705,7 @@ export class UI {
       if (this.tool === 'select' && this.ren.selected?.kind === 'way') {
         const w = this.world.ways.find(q => q.id === this.ren.selected!.id);
         if (w && this.wayHandleAt(w, e.offsetX, e.offsetY)) { this.ren.canvas.style.cursor = 'grab'; this.ren.hover = null; }
+        else if (w && this.onWay(w, p)) { this.ren.canvas.style.cursor = 'move'; this.ren.hover = null; this.hint(`Drag to move the ${wayName(w.kind).toLowerCase()} whole · the ${w.kind === 'road' ? 'roads' : w.kind === 'taxi' ? 'taxiways' : 'sidewalks'} joined to it follow · Esc puts it back`); }
       }
       if (this.tool === 'select' && this.ren.selected?.kind === 'zone') {
         const z = this.world.zones.find(q => q.id === this.ren.selected!.id);
@@ -723,6 +748,33 @@ export class UI {
       const size = size0 + ends;
       const count = z.type === 'concourse' ? ` · ${u?.count ?? 0} gates` : u ? ` · ${u.max} ${ZONES[z.type].unit}` : '';
       this.hint(ok ? `${size}${count}${cost > 0 ? ` · ${money(cost)}` : cost < 0 ? ` · ${money(-cost * 0.4)} back` : ''} · release to keep, Esc to put it back` : dr.reason!, !ok);
+      return;
+    }
+    if (dr.mode === 'waymove' && dr.way && dr.orig3) {
+      // v0.52: the way moves whole under the cursor; the ways joined end to end with it stretch to stay joined, those
+      // joined to it part way along follow onto its new line (`followBend`), and everything that hangs off them follows
+      const w = dr.way, o = dr.orig3;
+      if (!dr.moved) { if (Math.hypot(e.offsetX - dr.sx, e.offsetY - dr.sy) < 5) return; dr.moved = true; this.click3d = null; }
+      if (!this.live) this.beginLive([], [], this.world.ways.filter(q => q.kind === w.kind));
+      this.liveWaysBack();   // (checked against the world as it was)
+      const d = { x: snap(p.x - dr.start.x, 5), y: snap(p.y - dr.start.y, 5) }, mv = (q: Pt) => ({ x: q.x + d.x, y: q.y + d.y });
+      const a = mv(o.a), b = mv(o.b), c = o.c ? mv(o.c) : undefined;
+      const ends: { way: Way; end: 'a' | 'b'; to: Pt }[] = [];
+      for (const q of this.world.ways) if (q !== w && q.kind === w.kind) for (const end of ['a', 'b'] as const) {
+        if (dist(q[end], o.a) < 1) ends.push({ way: q, end, to: a }); else if (dist(q[end], o.b) < 1) ends.push({ way: q, end, to: b });
+      }
+      let chk = canPlaceWay(this.world, w.kind, a, b, this.aprons, c, w.cls); let cost = 0;
+      for (const x of ends) {
+        const q = x.way, other = x.end === 'a' ? q.b : q.a, na = x.end === 'a' ? x.to : other, nb = x.end === 'a' ? other : x.to;
+        if (chk.ok) { const r = canPlaceWay(this.world, q.kind, na, nb, this.aprons, q.c, q.cls); if (!r.ok) chk = { ok: false, reason: `${wayName(q.kind)} joined to it: ${r.reason}` }; }
+        cost += Math.max(0, wayLen({ a: na, b: nb, c: q.c }) - wayLen(q)) * wayCostPerM(q.kind, q.cls, q.lanes);
+      }
+      const ok = chk.ok && (d.x !== 0 || d.y !== 0) && this.sim.canAfford(cost);
+      dr.wm = { a, b, c, ends, ok, cost, reason: chk.reason };
+      if (ok && this.live) { w.a = a; w.b = b; if (c) w.c = c; else delete w.c; for (const x of ends) x.way[x.end] = x.to; followBend(this.world, w, o, true); }
+      if (this.live) this.live.dirty = true;
+      this.ren.ghost = { kind: 'way', a, b, c, ok: ok || (d.x === 0 && d.y === 0), way: { kind: w.kind, cls: w.cls, lanes: w.lanes } };
+      this.hint(chk.ok ? (this.sim.canAfford(cost) ? `Move the ${wayName(w.kind).toLowerCase()} · ${n0(Math.hypot(d.x, d.y))} m${ends.length ? ` · ${ends.length} joined to it stretch${ends.length > 1 ? '' : 'es'} to follow` : ''}${cost ? ` · ${money(cost)}` : ' · free'} · release to keep, Esc to put it back` : `Not enough money: ${money(cost)}`) : chk.reason!, !ok && (d.x !== 0 || d.y !== 0));
       return;
     }
     if (dr.mode === 'bend' && dr.way && dr.orig3) {
@@ -1177,8 +1229,8 @@ export class UI {
   }
 
   up(e: PointerEvent) {
-    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
-    if (this.ren.mode3d && this.drag?.mode === 'move') { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
+    if (this.ren.mode3d && (this.drag?.mode === 'grip' || this.drag?.mode === 'move' || this.drag?.mode === 'bend' || this.drag?.mode === 'waymove')) { if (!this.pointers.has(e.pointerId)) return; this.orbit3d(true); this.ren.setOrbitLeft(this.tool === 'select'); }
+    if (this.ren.mode3d && (this.drag?.mode === 'move' || this.drag?.mode === 'waymove')) { if (this.drag.moved) this.click3d = null; else { this.drag = null; this.ren.canvas.style.cursor = ''; } }   // (v0.49: a roof pressed but not dragged is a click)
     if (this.click3d) {
       const c = this.click3d; this.click3d = null;
       if (Math.hypot(e.offsetX - c.x, e.offsetY - c.y) < 5) { const h = this.hitTest(this.wpt(e)); this.select(h); }
@@ -1246,6 +1298,19 @@ export class UI {
         if (bd.cost) { this.sim.spend(bd.cost); this.ren.float(`− ${money(bd.cost)}`, wayMid(w), PAL_BAD); }
         this.changed(); this.ren.selected = { kind: 'way', id: w.id };
       } else this.toast(bd.reason ?? 'Not enough money', 'bad');
+    } else if (dr.mode === 'waymove' && !dr.moved) {
+      this.select(this.hitTest(this.wpt(e)));   // (pressed and let go without moving: a click)
+    } else if (dr.mode === 'waymove' && dr.way && dr.wm && dr.moved && dr.orig3) {
+      const wm = dr.wm, w = dr.way;
+      if (wm.ok) {
+        const old = { a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined };
+        w.a = wm.a; w.b = wm.b; if (wm.c) w.c = wm.c; else delete w.c;
+        for (const x of wm.ends) x.way[x.end] = x.to;
+        followBend(this.world, w, old, true);
+        if (wm.cost) { this.sim.spend(wm.cost); this.ren.float(`− ${money(wm.cost)}`, wayMid(w), PAL_BAD); }
+        this.changed(); this.ren.selected = { kind: 'way', id: w.id };
+      } else if (wm.reason) this.toast(`Cannot move it there: ${wm.reason}`, 'bad');
+      else if (!this.sim.canAfford(wm.cost)) this.toast('Not enough money', 'bad');
     } else if (dr.mode === 'extend' && dr.rw && dr.pend) {
       const pd = dr.pend;
       if (pd.ok && (pd.a.x !== dr.orig!.a.x || pd.a.y !== dr.orig!.a.y || pd.b.x !== dr.orig!.b.x || pd.b.y !== dr.orig!.b.y)) {
@@ -1515,6 +1580,8 @@ export class UI {
   }
 
   /** Which handle of a selected way is under the pointer: an end, or the middle (drag it to bend a road). */
+  /** v0.52: is the point on the way's own surface (to grab it and move it whole)? */
+  onWay(w: Way, p: Pt) { return segDistWay(p, w) < wayWidth(w.kind, w.cls, w.lanes) / 2 + 3; }
   wayHandleAt(w: Way, sx: number, sy: number): 'a' | 'b' | 'm' | null {
     const near = (p: Pt) => { const [x, y] = this.ren.P(p.x, p.y); return Math.hypot(x - sx, y - sy) < 11; };
     if (near(wayMid(w))) return 'm';   // (v0.46: a taxiway or sidewalk bends too)

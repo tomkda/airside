@@ -383,8 +383,8 @@ export function canPlaceRunway(world: World, a: Pt, b: Pt, ignoreId = -1): Place
 
 /** v0.46: a taxiway or sidewalk `w` has just been bent from `old` (its ends fixed): the ends of the others of its kind
  *  that joined it part way along (a taxiway's exits) move to the nearest point of the new curve, so they still join. */
-export function followBend(world: World, w: Way, old: { a: Pt; b: Pt; c?: Pt }) {
-  if (w.kind === 'road') return;
+export function followBend(world: World, w: Way, old: { a: Pt; b: Pt; c?: Pt }, roads = false) {
+  if (w.kind === 'road' && !roads) return;   // (v0.52: a road moved whole takes the roads that meet it part way along)
   const segs = waySegs(w);
   for (const o of world.ways) if (o !== w && o.kind === w.kind) for (const end of ['a', 'b'] as const) {
     const e = o[end]; if (!(wayDist(e, old) < 4 && dist(e, old.a) > 4 && dist(e, old.b) > 4)) continue;
