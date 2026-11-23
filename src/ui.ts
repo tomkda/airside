@@ -20,6 +20,7 @@ import type { Cut } from './shell';
 const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
 import { AREA, CURVE_MIN } from './config';
 import { Los, losKind, losDay, losNow, losFix } from './los';
+import { Advice, advise } from './advisor';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { parallelTaxi, canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
@@ -1634,13 +1635,13 @@ export class UI {
   // ------------------------------------------------------------ undo (v0.10): every edit can be taken back
   private idleN = 0;
   private undoStack: string[] = []; private redoStack: string[] = []; private snap = '';
-  snapshot() { return JSON.stringify({ w: this.sim.world, m: this.sim.money }); }
+  snapshot() { return JSON.stringify({ w: this.sim.world, m: this.sim.money, st: this.sim.staff }); }   // (v0.59: and the staff roll, so a hire is undone with what it was hired for)
   restore(s: string) {
     this.endLive(false); this.drag = null;
-    const o = JSON.parse(s) as { w: World; m: number };
+    const o = JSON.parse(s) as { w: World; m: number; st?: Record<string, number> };
     // (the optional lists go first: a snapshot taken before the first cut-out, say, has none to put back)
     const ws = this.sim.world; delete ws.cuts; delete ws.rounds; delete ws.sites;
-    Object.assign(ws, o.w); this.sim.money = o.m;
+    Object.assign(ws, o.w); this.sim.money = o.m; if (o.st) Object.assign(this.sim.staff, o.st);
     this.ren.selected = null; this.ren.hover = null;
     if (this.ren.focus !== null && !this.world.sites?.some(q => q.id === this.ren.focus)) this.setLod('landside', null);
     this.sim.relayout(); const ad = this.adopt(); this.refresh(true); this.ctl.save(); this.snap = ad ? this.snapshot() : s;
@@ -2426,6 +2427,105 @@ export class UI {
     return `${rows}${lost}<dt></dt><dd class="muted small">Stands are built, not given: click a dashed outline on the map to build one there, or build a whole side here. A wall with no stands is a window wall with seating and shops.</dd>`;
   }
 
+  // ------------------------------------------------------------ the advisor (v0.59)
+  /** What an upgrade would cost and do, or why it cannot be done here. `run` lays it. */
+  resolveAdvice(a: Advice): { label: string; cost: number; per?: string; run: () => void } | { why: string } | null {
+    const s = this.sim; const z = a.zone !== undefined ? this.world.zones.find(q => q.id === a.zone) : undefined;
+    if (a.kind === 'stands') {
+      // the places beside stands already built first, so runs grow and share a taxilane; only those that would be
+      // gates the schedule can use (tried once on a copy of the layout)
+      const doors = s.d.gates.map(g => g.door); const near = (sl: GateSlot) => Math.min(1e9, ...doors.map(q => dist(q, sl.door)));
+      const open = new Set(s.d.terminals.filter(T => T.active).flatMap(T => T.zones.map(q => q.id)));
+      const offers = s.d.gateSlots.filter(sl => !sl.on && sl.zone.stands && (open.has(sl.zone.id) || !open.size)).sort((p, q) => near(p) - near(q)).slice(0, a.n ?? 1);
+      const mk = offers.map(sl => ({ sl, q: { x: sl.door.x, y: sl.door.y, paid: 0, cls: sl.cls as number } }));
+      for (const m of mk) m.sl.zone.stands!.push(m.q);
+      let good: GateSlot[] = [];
+      try { const d = derive(this.world); good = mk.filter(m => d.gates.some(g => dist(g.door, m.sl.door) < 1 && d.gateUsable(g, g.cls))).map(m => m.sl); }
+      finally { for (const m of mk) m.sl.zone.stands = m.sl.zone.stands!.filter(q => q !== m.q); }
+      if (!good.length) return this.resolveAdvice({ ...a, kind: 'extend' });   // (no usable place left: lengthen instead)
+      const cost = good.reduce((t, sl) => t + STAND.cost[sl.cls], 0);
+      return { label: `Build ${good.length}`, cost, run: () => { this.buildStands(good, true); } };
+    }
+    if (a.kind === 'extend') {
+      // a straight concourse of an open terminal, the advised one first: two stand widths on at whichever end opens
+      // new places for stands (so never into the building it joins)
+      const open = new Set(s.d.terminals.filter(T => T.active).flatMap(T => T.zones.map(q => q.id)));
+      const cs = this.world.zones.filter(q => q.type === 'concourse' && !q.poly && !q.sides && !q.bend && !q.taper && !q.twist && (open.has(q.id) || !open.size)).sort((p, q) => (q.id === a.zone ? 1 : 0) - (p.id === a.zone ? 1 : 0) || q.w * q.h - p.w * p.h);
+      let why = 'no straight concourse has room at either end';
+      for (const c of cs) {
+        const by = 2 * CLASSES[c.cls ?? 2].gateSpacing; const g0 = geomOf(c); const ctr = centreOf(c);
+        // the long axis, and for each end the new shape and which way it grew
+        const tall = !c.rot && c.h > c.w; const e: Pt = c.rot ? { x: Math.cos(c.rot), y: Math.sin(c.rot) } : tall ? { x: 0, y: 1 } : { x: 1, y: 0 }; const half = (tall ? c.h : c.w) / 2, wide = (tall ? c.w : c.h) / 2;
+        const ends = [1, -1].map(k => ({ k, g: (c.rot ? { ...g0, x: c.x - by / 2 + k * (by / 2) * e.x, y: c.y + k * (by / 2) * e.y, w: c.w + by } : tall ? { ...g0, y: k > 0 ? c.y : c.y - by, h: c.h + by } : { ...g0, x: k > 0 ? c.x : c.x - by, w: c.w + by }) as Geom }));
+        const before = s.d.gateSlots.filter(sl => !sl.on).length;
+        for (const { k, g } of ends) {
+          const chk = this.placeGeom(c, g); if (!chk.ok) { why = chk.reason ?? why; continue; }
+          // its stands stay where they are, but one on the end wall that moves goes out with it
+          const carry = (st: NonNullable<Zone['stands']>) => st.map(q => { const r = { x: q.x - ctr.x, y: q.y - ctr.y }; const u = (r.x * e.x + r.y * e.y) * k, v = Math.abs(-r.x * e.y + r.y * e.x);
+            return u > half - 9 && v < wide - 8 ? { ...q, x: q.x + e.x * k * by, y: q.y + e.y * k * by } : { ...q }; });
+          const st0 = c.stands?.map(q => ({ ...q })); let more = 0;
+          setGeom(c, g); if (st0) c.stands = carry(st0);
+          try { more = derive(this.world).gateSlots.filter(sl => !sl.on).length - before; } finally { setGeom(c, g0); if (st0) c.stands = st0; }
+          if (more <= 0) { why = 'lengthening it would open no new place for a stand'; continue; }
+          const cost = this.geomCost(c, g) - this.geomCost(c, g0);
+          return { label: `Lengthen ${n0(by)} m`, cost, run: () => {
+            if (!this.sim.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return; }
+            setGeom(c, g); if (st0) c.stands = carry(st0);
+            this.sim.spend(cost); const site = siteOf(this.world, c); if (site && c.site !== undefined) fitSite(this.world, site);
+            this.changed(); this.toast(`Concourse lengthened ${n0(by)} m: ${more} new place${more > 1 ? 's' : ''} for stands along it`); } };
+        }
+      }
+      return { why };
+    }
+    if (a.kind === 'parallel') {
+      const w = this.world.ways.find(q => q.id === a.way); if (!w) return null;
+      const par = parallelTaxi(this.world, w, s.d.aprons); if ('why' in par) return par.has ? null : { why: par.why.toLowerCase() };
+      return { label: 'Lay it', cost: par.len * TAXI_CLASSES[w.cls >= 3 ? 1 : 0].costPerM, run: () => this.layParallel(w) };
+    }
+    if (a.kind === 'staff' && z && a.pool) {
+      const pool = a.pool; const cap = { agents: 200, screeners: 240, handlers: 160, officers: 80 }[pool];
+      const n = Math.min(a.n ?? 0, cap - (s.staff[pool] ?? 0));
+      if ((a.n ?? 0) > 0 && n <= 0) return { why: `the roll of ${pool} is full` };
+      return { label: n ? `Hire ${n}` : 'Staff them', cost: n * TUNE.wagePerDay, per: 'a day', run: () => {
+        s.staff[pool] = (s.staff[pool] ?? 0) + n;
+        // (its dial is raised where it has one, and set where several modules share the pool, so the people go to it)
+        const same = [...s.procs.values()].filter(p => p.type === z.type); const p = s.procs.get(z.id);
+        if (p && a.need !== undefined && pool !== 'handlers' && (z.staff !== undefined || same.length > 1)) z.staff = Math.min(p.maxServers, a.need);
+        this.changed(); this.toast(n ? `${n} ${pool === 'handlers' ? 'baggage handlers' : pool} hired for ${ZONES[z.type].short.toLowerCase()}` : `${ZONES[z.type].short}: ${a.need} ${ZONES[z.type].unit} staffed`); } };
+    }
+    if (a.kind === 'desks' && z && a.n) {
+      const u = s.d.units.get(z.id); if (!u) return null; const to = Math.min(u.max, u.count + a.n);
+      return { label: `Fit ${to - u.count}`, cost: 0, run: () => { z.units = to; this.changed(); this.toast(`${ZONES[z.type].short}: ${to} ${ZONES[z.type].unit} fitted. Staff them in Operations.`); } };
+    }
+    return null;
+  }
+  layParallel(w: Way) {
+    const par = parallelTaxi(this.world, w, this.sim.d.aprons); if ('why' in par) { this.toast(`No room for a parallel taxiway: ${par.why}`, 'warn'); return; }
+    const cost = par.len * TAXI_CLASSES[w.cls >= 3 ? 1 : 0].costPerM;
+    if (!this.sim.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return; }
+    this.sim.spend(cost);
+    for (const q of par.ways) { const nw: Way = { id: this.world.nextId++, kind: 'taxi', a: q.a, b: q.b, cls: q.cls, lanes: 0 }; if (q.c) nw.c = q.c; this.world.ways.push(nw); }
+    this.changed(); this.toast('Parallel taxiway laid: aircraft bound opposite ways now take one each');
+  }
+  /** Upgrades taken today (by card): the day's figures do not move when the player acts, so a card acted on is put away until tomorrow's are in. */
+  private advDone = new Map<string, number>();
+  /** (worked out once per state of the world: the checks lay each upgrade out on a copy) */
+  private advCache = new Map<string, { rev: string; r: ReturnType<UI['resolveAdvice']> }>();
+  private advOf(a: Advice) {
+    const rev = `${this.snap.length}:${this.undoStack.length}:${this.sim.day}:${Math.round(this.sim.money / 1e5)}`;
+    const c = this.advCache.get(a.key); if (c && c.rev === rev) return c.r;
+    const r = this.resolveAdvice(a); this.advCache.set(a.key, { rev, r }); return r;
+  }
+  advList() { return advise(this.sim).filter(a => this.advDone.get(a.key) !== this.sim.day); }
+  /** The advisor's cards (Operations): what holds the airport back, worst first, each with its upgrade. */
+  advisorHTML() {
+    const list = advise(this.sim).filter(a => this.advDone.get(a.key) !== this.sim.day && !(a.kind === 'parallel' && this.advOf(a) === null));
+    if (!list.length) return `<p class="muted small">Nothing is holding the airport back today: no flight turned away, no aircraft kept standing, no queue past its limit. Lower the slot fee or win a route to bring more flights.</p>`;
+    return `<ul class="advice">${list.map(a => { const r = this.advOf(a);
+      return `<li data-adv="${esc(a.key)}"><b>${esc(a.title)}</b><span class="muted small">${esc(a.why)}</span>
+        <span class="row">${r && 'run' in r ? `<button class="btn small" data-advrun="${esc(a.key)}">${esc(r.label)}${r.cost ? ` · ${money(r.cost)}${r.per ? ' ' + r.per : ''}` : ''}</button>` : r ? `<span class="muted small">Cannot be done in one step: ${esc(r.why)}.</span>` : ''}
+        ${a.at ? `<button class="btn small ghost" data-advshow="${esc(a.key)}">Show</button>` : ''}</span></li>`; }).join('')}</ul>`;
+  }
   /** v0.58: what aircraft went through on a taxiway: minutes stood and head-on stand-offs, today or the last day. */
   groundHTML(id: number) {
     const s = this.sim; const g = s.ground.get(id) ?? s.groundLast.get(id); const today = s.ground.has(id);
@@ -2518,6 +2618,8 @@ export class UI {
       <h2>Terminals</h2>
       ${terms ? `<ul class="terms">${terms}</ul>` : '<p class="muted">No terminal yet. Connect check-in, security, a concourse and baggage claim, with a curb served by a road.</p>'}
       <p class="muted small">A terminal opens when check-in, security, a concourse with working gates and baggage claim connect on foot, with a road-served curb. Only open terminals get flights.</p>
+      <h2>What holds the airport back</h2>
+      ${this.advisorHTML()}
       <h2>Level of service</h2>
       ${this.airfieldHTML()}
       ${this.losTableHTML()}
@@ -2649,6 +2751,18 @@ export class UI {
     const s = this.sim; const body = $('#panelBody');
     body.querySelectorAll<HTMLElement>('[data-act]').forEach(b => b.addEventListener('click', () => this.act(b.dataset.act!)));
     // (v0.57: a row of the level-of-service table opens its module, with the overlay on)
+    // (v0.59: the advisor's cards)
+    body.querySelectorAll<HTMLElement>('[data-advrun]').forEach(b => b.addEventListener('click', ev => { ev.stopPropagation();
+      const a = this.advList().find(q => q.key === b.dataset.advrun); const r = a && this.resolveAdvice(a);
+      if (a && r && 'run' in r) { const m = this.sim.money, sn = this.snap; r.run(); if (this.snap !== sn || this.sim.money !== m) this.advDone.set(a.key, this.sim.day); this.advCache.clear(); this.refresh(true); } }));
+    body.querySelectorAll<HTMLElement>('[data-advshow]').forEach(b => b.addEventListener('click', () => {
+      const a = advise(this.sim).find(q => q.key === b.dataset.advshow); if (!a?.at) return;
+      if (this.ren.mode3d) this.set3d(false); if (!this.ren.overlay) this.setHeat('queues');
+      this.ren.cam.x = a.at.x; this.ren.cam.y = a.at.y; if (this.ren.cam.zoom < 0.7) this.ren.cam.zoom = 0.9;
+      if (this.ren.lod === 'airfield') this.setLod('landside', null);
+      const z = a.zone !== undefined ? this.sim.d.zones.find(q => q.id === a.zone) : undefined; if (z) this.setLevel(z.level);
+      this.ren.selected = a.way !== undefined ? { kind: 'way', id: a.way } : z ? { kind: 'zone', id: z.id } : null; this.refresh(true);
+    }));
     body.querySelectorAll<HTMLElement>('.lostab [data-way]').forEach(b => b.addEventListener('click', () => {
       const w = this.world.ways.find(q => q.id === Number(b.dataset.way)); if (!w) return;
       if (!this.ren.overlay) this.setHeat('queues');
@@ -2724,11 +2838,7 @@ export class UI {
       { const n = s.d.units.get(z.id)?.count ?? 0, idle = this.idleStands(z).length; this.toast(`Concourse sized for ${CLASSES[c].example}: ${n} gate${n === 1 ? '' : 's'}${idle ? ` · ${idle} smaller stand${idle > 1 ? 's' : ''} no longer fit: build stands of the new size` : ''}`); }
     } else if (a === 'taxiPar' && w && w.kind === 'taxi') {
       // v0.58: one click lays a second taxiway beside this one
-      const par = parallelTaxi(this.world, w, this.sim.d.aprons); if ('why' in par) { this.toast(`No room for a parallel taxiway: ${par.why}`, 'warn'); return; }
-      if (!pay(par.len * TAXI_CLASSES[w.cls >= 3 ? 1 : 0].costPerM)) return;
-      for (const q of par.ways) { const nw: Way = { id: this.world.nextId++, kind: 'taxi', a: q.a, b: q.b, cls: q.cls, lanes: 0 }; if (q.c) nw.c = q.c; this.world.ways.push(nw); }
-      this.changed(); this.ren.selected = { kind: 'way', id: w.id }; this.refresh(true);
-      this.toast('Parallel taxiway laid: aircraft bound opposite ways now take one each');
+      this.layParallel(w); this.ren.selected = { kind: 'way', id: w.id }; this.refresh(true);
     } else if (a === 'taxiF' && w && w.cls < 3) {
       // (v0.46: by its length round the curve; and a curve too tight for Code F stays as it is)
       if (w.c && !curveOK(w, CURVE_MIN.taxi[3])) { this.toast(`Too tight a curve for Code F: ${CURVE_MIN.taxi[3]} m radius at least. Ease the bend first.`, 'warn'); return; }
