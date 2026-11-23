@@ -298,3 +298,11 @@ ul.goals li.done .tick { background: var(--ink); border-color: var(--ink); color
 .lostab li { padding: 4px 2px; border-bottom: 1px solid var(--rule); cursor: pointer; line-height: 1.5; }
 .lostab li:hover { background: rgba(40, 36, 30, 0.05); }
 .lostab li .muted { display: block; }
+
+/* v0.59: the advisor */
+.advice { list-style: none; margin: 4px 0 10px; padding: 0; }
+.advice li { padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--rule); border-left: 3px solid #C2852E; border-radius: 3px; background: rgba(255, 255, 255, 0.35); }
+.advice li b { display: block; margin-bottom: 2px; }
+.advice li .muted { display: block; line-height: 1.45; }
+.advice li .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.btn.ghost { background: transparent; }
