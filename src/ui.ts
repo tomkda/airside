@@ -361,15 +361,15 @@ export class UI {
     if (t === 'area') return 'Click each corner of a free area: open floor with stands round its walls · overlap a concourse or pier and it joins that building · click the first corner or press Enter to build · Backspace undoes a corner · Esc gives up';
     if (t === 'cut') return 'Click each corner of a cut-out over a building: a courtyard or notch taken out of its floor · click the first corner or press Enter · click inside a cut-out to fill it back in';
     if (t === 'pier') return this.opt.pierPath ? 'Click the start, then each corner · click the last corner again or press Enter to build · Backspace undoes a corner · Esc gives up'
-      : 'Drag a pier at any angle, from where it starts to where it ends · start inside a concourse and it becomes part of that building · every open side lays its own stands';
-    if (t === 'satellite') return `Drag a satellite concourse anywhere on the airfield · within ${n0(MOVER.reach)} m of a terminal's concourse it links itself by people mover · every open side lays its own stands and taxilane, and links itself to the nearest taxiway`;
+      : 'Drag a pier at any angle, from where it starts to where it ends · start inside a concourse and it becomes part of that building · every open side offers places for stands';
+    if (t === 'satellite') return `Drag a satellite concourse anywhere on the airfield · within ${n0(MOVER.reach)} m of a terminal's concourse it links itself by people mover · every open side offers places for stands (built one by one, each with its taxilane), and links itself to the nearest taxiway`;
     if (t === 'round') return 'Click to place a roundabout · on a junction, a road end or anywhere along a road: every road that reaches it joins the ring · traffic keeps moving where a crossroads would stop it';
     if (t === 'road' && this.opt.shape) return `Drag to draw a curved road · it leaves in line with the road it starts from, or sweeps round a corner on open ground · ${this.opt.oneway ? 'one-way, in the direction you draw · ' : ''}select a road later and drag its middle handle to bend it`;
     if (t === 'road') return `Drag to draw a road (for cars)${this.opt.oneway ? ', one-way in the direction you draw' : ''} · bring one within ${FRONTAGE.reach} m of a hall and the hall lays its own forecourt to it · run it along a terminal face, ${FRONTAGE.minGap}–${FRONTAGE.maxGap} m out, and a curb grows there; where departures sit over arrivals it becomes a two-level road · snaps to the dashed guides`;
     if (t === 'site') return `Drag to allocate a terminal site (at least ${SITES.minW} × ${SITES.minH} m) · then lay out check-in, security, a concourse and bag claim inside it · the site grows to fit`;
     if (t === 'walk') return 'Drag to draw a sidewalk (for people) · links ground-level modules, curbs and lots · can cross roads';
     if (t === 'demolish') return 'Click anything to demolish it (40% refund)';
-    if (t === 'concourse') return `Concourse on ${LEVELS[this.ren.level].short} · drag a rectangle · every open side lays its own stands and taxilane (a taxiway drawn alongside takes over); the rest of the width becomes shops, restaurants and lounges`;
+    if (t === 'concourse') return `Concourse on ${LEVELS[this.ren.level].short} · drag a rectangle · every open side offers places for stands, built one by one (a taxiway drawn alongside is their taxilane); the rest of the width becomes shops, restaurants and lounges`;
     const d = ZONES[t];
     return `${d.label} on ${LEVELS[this.ren.level].short} · drag a rectangle · ${d.blurb}`;
   }
@@ -1501,7 +1501,7 @@ export class UI {
       const C = CLASSES[this.opt.conc]; const long = Math.max(r.w, r.h), wide = Math.min(r.w, r.h);
       const sw = spineWidth(long), hd = holdDepth(this.opt.conc);
       const one = (wide - sw) / 2 - hd, none = (wide - sw) / 2;
-      return `${Math.floor(long / C.gateSpacing)} ${C.example} gates per long side · ${Math.round(sw * 10) / 10} m spine · behind gates: ${one < 1.5 ? 'no room for shops' : `${Math.round(one)} m, ${depthClass(one)}`} · ungated side: ${Math.round(none)} m, ${depthClass(none)}`;
+      return `${Math.floor(long / C.gateSpacing)} ${C.example} stands fit per long side · ${Math.round(sw * 10) / 10} m spine · behind gates: ${one < 1.5 ? 'no room for shops' : `${Math.round(one)} m, ${depthClass(one)}`} · ungated side: ${Math.round(none)} m, ${depthClass(none)}`;
     }
     if (t === 'curb') return `${Math.floor(Math.max(r.w, r.h) / 9) * 2} car bays`;
     return `${Math.max(1, Math.floor(area(r) / d.m2PerUnit))} ${d.unit}`;
