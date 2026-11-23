@@ -19,18 +19,21 @@ export type SideKey = string;
  *  could be built); one without it (older saves, test worlds) has every slot but those switched off. */
 /** How near a built stand's point must be to a slot's door to be that slot: under half the smallest spacing. */
 export const STAND_TOL = 15;
-let pool: { x: number; y: number; used: boolean }[] = [];
-/** (One pool of built stands per layout: each claims the one nearest slot, on whichever piece of the building it now is.) */
-const slotOn = (z: Zone, key: string, door: Pt) => {
-  if (!z.stands) return !(z.off ?? []).includes(key);
+let pool: { x: number; y: number; cls?: number; z: number; i: number; used: boolean }[] = [];
+/** (One pool of built stands per layout: each is claimed once, by the nearest slot it is big enough for, on whichever
+ *  piece of the building that now is. `st` says which stand it was: the zone's id and its place in that zone's list.) */
+const slotOn = (z: Zone, key: string, door: Pt, cls: number): { on: boolean; st?: { z: number; i: number } } => {
+  if (!z.stands) return { on: !(z.off ?? []).includes(key) };
   let best = -1, bd = STAND_TOL;
-  for (let i = 0; i < pool.length; i++) { const q = pool[i]; if (q.used) continue; const d = Math.hypot(q.x - door.x, q.y - door.y); if (d < bd) { bd = d; best = i; } }
-  if (best < 0) return false;
-  pool[best].used = true; return true;
+  for (let i = 0; i < pool.length; i++) { const q = pool[i]; if (q.used || (q.cls ?? 3) < cls) continue; const d = Math.hypot(q.x - door.x, q.y - door.y); if (d < bd) { bd = d; best = i; } }
+  if (best < 0) return { on: false };
+  pool[best].used = true; return { on: true, st: { z: pool[best].z, i: pool[best].i } };
 };
 export interface GateSlot {
   key: string; id: string; zone: Zone; side: SideKey; i: number; cls: Cls; on: boolean;
   door: Pt; stand: Pt; front: Pt; ang: number; outward: Pt; cell: Pt[];
+  /** v0.56: the built stand this slot stands on (zone id, index in its `stands`), where its concourse keeps a list. */
+  st?: { z: number; i: number };
 }
 export interface SideGuide {
   zone: Zone; side: SideKey; a: Pt; b: Pt; out: Pt; ideal: number; reach: number;
@@ -101,7 +104,7 @@ interface Count { k: number; n: number }
 
 export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, opts: GateOpts = {}) {
   const gates: Gate[] = [], aprons: Apron[] = [], slots: GateSlot[] = [], guides: SideGuide[] = [];
-  pool = world.zones.flatMap(z => (z.stands ?? []).map(q => ({ x: q.x, y: q.y, used: false })));
+  pool = world.zones.flatMap(z => (z.stands ?? []).map((q, i) => ({ x: q.x, y: q.y, cls: q.cls, z: z.id, i, used: false })));
   const pending: Pending[] = []; const counts = new Map<number, Count>();
   const letters = new Map<number, string>();
   const units = new Map<number, { max: number; count: number }>();
@@ -196,7 +199,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
         const h = mul(al, sp / 2);
         const cell = [sub(ep, h), add(ep, h), add(add(ep, h), mul(sd.out, D)), add(sub(ep, h), mul(sd.out, D))];
         const sl: GateSlot = {
-          key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: cls as Cls, on: slotOn(z, key, add(ep, mul(sd.out, -7))),
+          key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: cls as Cls, ...slotOn(z, key, add(ep, mul(sd.out, -7)), cls),
           door: add(ep, mul(sd.out, -7)), stand: add(ep, mul(sd.out, C.length / 2 + 8)), front, ang: Math.atan2(-sd.out.y, -sd.out.x), outward: sd.out, cell,
         };
         slots.push(sl); nSlots++; guide.served = true;
@@ -355,7 +358,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       else { const q = toLocal(z, door), F = frameOf(z); const u = side === 'n' ? q.x - F.x : side === 's' ? F.x + F.w - q.x : side === 'e' ? q.y - F.y : F.y + F.h - q.y; i = Math.max(0, Math.floor(u / (CLASSES[0].gateSpacing / 2))); }
       while (per.has(`${z.id}:${side}${i}`)) i++;
       per.set(`${z.id}:${side}${i}`, 1); per.set(`${z.id}:${side}`, i + 1); const key = `${side}${i}`;
-      const sl: Slot = { key, id: `${z.id}-${key}`, zone: z, side, i, cls: zc, on: slotOn(z, key, door), door, stand: add(wm, mul(nc, C.length / 2 + APRON.nose + dist(wm, m))), front, ang: Math.atan2(-nc.y, -nc.x), outward: nc, cell, tan, s: s0, w, drawn: !!via, box: cb };
+      const sl: Slot = { key, id: `${z.id}-${key}`, zone: z, side, i, cls: zc, ...slotOn(z, key, door, zc), door, stand: add(wm, mul(nc, C.length / 2 + APRON.nose + dist(wm, m))), front, ang: Math.atan2(-nc.y, -nc.x), outward: nc, cell, tan, s: s0, w, drawn: !!via, box: cb };
       slots.push(sl); const cnt = counts.get(z.id)!; cnt.n++;
       if (!(z.stands && !sl.on)) got.push(sl);   // (v0.56: a stand not built yet is offered, not paved)
       prev = cell; s0 += w; down = null;
@@ -493,7 +496,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       if (!c.free) { flush(); continue; }
       const key = `${sd.side}${c.i}`;
       const sl = {
-        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i: c.i, cls: zc, on: slotOn(z, key, add(c.ep, mul(c.out, -7))),
+        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i: c.i, cls: zc, ...slotOn(z, key, add(c.ep, mul(c.out, -7)), zc),
         door: add(c.ep, mul(c.out, -7)), stand: add(c.ep, mul(c.out, C.length / 2 + APRON.nose)), front: c.front, ang: Math.atan2(-c.out.y, -c.out.x), outward: c.out, cell: c.cell, tan: c.tan,
       };
       slots.push(sl); cnt.n++; guide.served = true; guide.self = true; guide.d = D; guide.cls = zc;
@@ -722,7 +725,9 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
     for (const r of runs) {
       if (!r.stray || r.stray > 2 || lanes.some((l, k) => l.run === r && ok[k])) continue;
       const dead = new Set(gates.filter(g => g.apron === r.ap).map(g => g.id));
-      for (let i = slots.length - 1; i >= 0; i--) if (r.ap.pts.length && slots[i].zone && pointInPoly(slots[i].stand, r.ap.pts)) { const c = counts.get(slots[i].zone.id); if (c) { c.n--; if (dead.has(slots[i].id)) c.k--; } slots.splice(i, 1); }
+      for (let i = slots.length - 1; i >= 0; i--) if (r.ap.pts.length && slots[i].zone && pointInPoly(slots[i].stand, r.ap.pts)) { const c = counts.get(slots[i].zone.id); const built = !!slots[i].zone.stands; if (c) { if (!built) c.n--; if (dead.has(slots[i].id)) c.k--; }
+        /* (v0.56: where stands are built one by one the place is still offered: it may have a way out once its neighbours are built) */
+        if (built) { slots[i].on = false; delete slots[i].st; } else slots.splice(i, 1); }
       for (let i = gates.length - 1; i >= 0; i--) if (gates[i].apron === r.ap) gates.splice(i, 1);
       const ai = aprons.indexOf(r.ap); if (ai >= 0) aprons.splice(ai, 1);
       for (let i = lanes.length - 1; i >= 0; i--) if (lanes[i].run === r) lanes.splice(i, 1);

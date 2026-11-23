@@ -19,7 +19,7 @@ import type { Cut } from './shell';
 /** v0.35: a cut-out as a shape, for overlap tests. */
 const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
 import { AREA, CURVE_MIN } from './config';
-import { inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
+import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
@@ -109,7 +109,7 @@ export class UI {
   private path: Pt[] | null = null;
   private pathLast: Pt | null = null;   // where on screen the last corner was clicked
   /** v0.19: a live edit in progress: the layout as it was, the shapes as they were, and a zone that exists only while dragging. */
-  private live: null | { d0: Derived; saved: { z: Zone; g: Geom }[]; temp: Zone[]; dirty: boolean; touched: boolean;
+  private live: null | { d0: Derived; saved: { z: Zone; g: Geom; st?: NonNullable<Zone['stands']> }[]; temp: Zone[]; dirty: boolean; touched: boolean;
     /** v0.35: cut-outs changed during the edit, with their corners from before it; and those carried along by a moved building */
     cuts: { k: Cut; pts: Pt[] }[]; carry?: { z: Zone; x: number; y: number; ks: { k: Cut; pts: Pt[] }[] };
     /** v0.48: ways changed during the edit, with their line from before it; and ways that exist only while drawing */
@@ -1032,7 +1032,7 @@ export class UI {
   beginLive(zs: Zone[], cuts: Cut[] = [], ways: Way[] = [], rws: Runway[] = [], rnds: Round[] = []) {
     if (this.live) return;   // (v0.43: in 3D too, for a grip: the model is rebuilt a few times a second meanwhile)
     this.ren.liveEdit = true;
-    this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })),
+    this.live = { d0: this.sim.d, saved: zs.map(z => ({ z, g: geomOf(z), st: z.stands?.map(q => ({ ...q })) })), temp: [], dirty: false, touched: false, cuts: cuts.map(k => ({ k, pts: k.pts.map(p => ({ ...p })) })),
       ways: ways.map(w => ({ w, a: { ...w.a }, b: { ...w.b }, c: w.c ? { ...w.c } : undefined })), tempWays: [],
       rws: rws.map(rw => ({ rw, a: { ...rw.a }, b: { ...rw.b } })), rnds: rnds.map(r => ({ r, x: r.x, y: r.y })) };
     this.ctl.hold = true; holdScenery(this.world, this.sim.d);
@@ -1042,6 +1042,8 @@ export class UI {
     if (!this.live) return;
     const tw = this.twin(z); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h, rot: g.rot, bend: g.bend, twist: g.twist });   // (v0.41: and its twist)   // (v0.29: angle and all; v0.34: and its bend)
     setGeom(z, g); this.live.dirty = true;
+    // (v0.56: its built stands follow their walls, worked out from where they were when the drag began)
+    { const sv = this.live.saved.find(q => q.z === z); if (sv?.st) z.stands = carryStands(sv.g, g, sv.st); }
     // (v0.35: a building being moved takes its cut-outs with it)
     const cr = this.live.carry; if (cr && cr.z === z) for (const c of cr.ks) c.k.pts = c.pts.map(p => ({ x: p.x + z.x - cr.x, y: p.y + z.y - cr.y }));
   }
@@ -1092,7 +1094,7 @@ export class UI {
     if (lv.temp.length) this.world.zones = this.world.zones.filter(z => !lv.temp.includes(z));
     if (lv.tempWays.length) this.world.ways = this.world.ways.filter(w => !lv.tempWays.includes(w));
     if (lv.hidden?.length) this.unhide(lv);   // (v0.55: put back where they were; release takes them out for good if kept)
-    if (!keep) { for (const q of lv.rnds ?? []) { q.r.x = q.x; q.r.y = q.y; } for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; } for (const s of lv.saved) setGeom(s.z, s.g); for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
+    if (!keep) { for (const q of lv.rnds ?? []) { q.r.x = q.x; q.r.y = q.y; } for (const r of lv.rws ?? []) { r.rw.a = r.a; r.rw.b = r.b; } for (const s of lv.saved) { setGeom(s.z, s.g); if (s.st) s.z.stands = s.st; } for (const c of lv.cuts) c.k.pts = c.pts; for (const s0 of lv.ways) { s0.w.a = s0.a; s0.w.b = s0.b; if (s0.c) s0.w.c = s0.c; else delete s0.w.c; } }
     this.sim.d = lv.d0;
     if (lv.touched) this.liveStale = true;
   }
@@ -1622,7 +1624,7 @@ export class UI {
     this.snap = this.snapshot();
     // v0.56: a built stand that has lost its place is kept, and said once
     { let idle = 0; for (const z of this.world.zones) if (z.stands?.length) idle += this.idleStands(z).length;
-      if (idle > this.idleN) this.toast(`${idle - this.idleN} built stand${idle - this.idleN > 1 ? 's have' : ' has'} no place now: kept for when there is room again, or refund ${idle - this.idleN > 1 ? 'them' : 'it'} in the concourse's panel`, 'warn');
+      if (idle > this.idleN) this.toast(`${idle - this.idleN} built stand${idle - this.idleN > 1 ? 's have' : ' has'} no place now: kept for when there is room again, or take ${idle - this.idleN > 1 ? 'them' : 'it'} up in the concourse's panel`, 'warn');
       this.idleN = idle; }
     if (this.nextSound === 'place') this.snd.place(); else if (this.nextSound === 'demolish') this.snd.demolish();
     this.nextSound = 'place';
@@ -2011,58 +2013,60 @@ export class UI {
   private adopt() {
     let any = false;
     for (const z of this.world.zones) if (z.type === 'concourse' && !z.stands) {
-      z.stands = this.sim.d.gateSlots.filter(sl => sl.zone.id === z.id && sl.on).map(sl => ({ x: sl.door.x, y: sl.door.y, paid: 0 })); delete z.off; any = true;
+      z.stands = this.sim.d.gateSlots.filter(sl => sl.zone.id === z.id && sl.on).map(sl => ({ x: sl.door.x, y: sl.door.y, paid: 0, cls: sl.cls })); delete z.off; any = true;
     }
     if (any) this.sim.relayout();
     return any;
   }
   adoptStands() { if (this.adopt()) { this.refresh(true); this.ctl.save(); this.snap = this.snapshot(); } }
-  /** The built stand that a slot stands on: the nearest one within reach, on any piece of the building. */
+  /** The built stand that a slot stands on (the layout says which). */
   standOf(sl: GateSlot) {
-    let best: { z: Zone; i: number; paid: number } | null = null, bd = STAND_TOL;
-    for (const z of this.world.zones) (z.stands ?? []).forEach((q, i) => { const d = Math.hypot(q.x - sl.door.x, q.y - sl.door.y); if (d < bd) { bd = d; best = { z, i, paid: q.paid }; } });
-    return best as { z: Zone; i: number; paid: number } | null;
+    const z = sl.st && this.world.zones.find(q => q.id === sl.st!.z); const q = z?.stands?.[sl.st!.i];
+    return z && q ? { z, i: sl.st!.i, paid: q.paid } : null;
   }
-  /** Built stands of a concourse that are no gate as things stand: their wall has moved, something is in the way, or
-   *  they have no way to a runway. They are kept (and come back when there is room), or can be refunded in full. */
+  /** Built stands of a concourse that are no gate as things stand: their wall has moved away, something is in the
+   *  way, the stands there are now a size larger, or alone they have no way to a runway. They are kept (and come back
+   *  when there is room), or can be taken up like any other stand. */
   idleStands(z: Zone) {
-    const doors = this.sim.d.gates.map(g => ({ p: g.door, used: false }));
-    // (every building's stands claim their gates, so two stands never count on one)
-    const idle: number[] = [];
-    for (const o of this.world.zones) (o.stands ?? []).forEach((q, i) => {
-      let best = -1, bd = STAND_TOL;
-      doors.forEach((g, k) => { if (g.used) return; const d = Math.hypot(q.x - g.p.x, q.y - g.p.y); if (d < bd) { bd = d; best = k; } });
-      if (best >= 0) doors[best].used = true; else if (o === z) idle.push(i);
-    });
-    return idle;
+    const gates = new Set(this.sim.d.gates.map(g => g.id)); const live = new Set<number>();
+    for (const sl of this.sim.d.gateSlots) if (sl.on && sl.st?.z === z.id && gates.has(sl.id)) live.add(sl.st.i);
+    return (z.stands ?? []).map((_, i) => i).filter(i => !live.has(i));
   }
   refundIdle(z: Zone) {
     const idle = new Set(this.idleStands(z)); if (!idle.size || !z.stands) return;
-    const back = z.stands.reduce((t, q, i) => t + (idle.has(i) ? q.paid : 0), 0);
+    const back = z.stands.reduce((t, q, i) => t + (idle.has(i) ? q.paid * STAND.refund : 0), 0);
     z.stands = z.stands.filter((_, i) => !idle.has(i));
     if (this.sim.moneyOn) this.sim.money += back;
     this.nextSound = 'demolish'; this.changed();
     this.toast(`${idle.size} stand${idle.size > 1 ? 's' : ''} with no place taken up · ${money(back)} back`, 'warn');
   }
-  /** v0.56: build stands (paid) or take them away (part of what was paid back). All of `sls` or none. */
+  /** v0.56: build stands (paid) or take them away (part of what was paid back). A stand that would be no gate where
+   *  it is (alone in a pocket with no way to the airfield) is not built or charged. */
   buildStands(sls: GateSlot[], on: boolean) {
     sls = sls.filter(sl => sl.on !== on); if (!sls.length) return false;
-    let sum = 0;
+    let sum = 0, n = 0, dud = 0;
     if (on) {
-      sum = sls.reduce((t, sl) => t + STAND.cost[sl.cls], 0);
-      if (!this.sim.canAfford(sum)) { this.toast(`Not enough money: ${money(sum)}`, 'bad'); return false; }
-      for (const sl of sls) (sl.zone.stands ??= []).push({ x: sl.door.x, y: sl.door.y, paid: this.sim.moneyOn ? STAND.cost[sl.cls] : 0 });
+      if (this.live) { this.endLive(false); this.drag = null; this.ren.ghost = null; }
+      const full = sls.reduce((t, sl) => t + STAND.cost[sl.cls], 0);
+      if (!this.sim.canAfford(full)) { this.toast(`Not enough money: ${money(full)}`, 'bad'); return false; }
+      const mk = sls.map(sl => ({ z: sl.zone, q: { x: sl.door.x, y: sl.door.y, paid: this.sim.moneyOn ? STAND.cost[sl.cls] : 0, cls: sl.cls as number } }));
+      for (const m of mk) (m.z.stands ??= []).push(m.q);
+      // try it: which of them are gates now?
+      const d = derive(this.world); const gates = new Set(d.gates.map(g => g.id));
+      const ok = new Set<unknown>(); for (const sl of d.gateSlots) if (sl.on && sl.st && gates.has(sl.id)) { const q = this.world.zones.find(o => o.id === sl.st!.z)?.stands?.[sl.st.i]; if (q) ok.add(q); }
+      for (const m of mk) if (ok.has(m.q)) { sum += m.q.paid; n++; } else { m.z.stands = m.z.stands!.filter(q => q !== m.q); dud++; }
+      if (!n) { this.toast(sls.length > 1 ? 'No stand built: from there they have no way out to a taxiway or runway. Build the stands beside them too, or draw a taxiway past.' : 'Not built: a stand alone there has no way out to a taxiway or runway. Build the side it is on, or draw a taxiway past.', 'warn'); return false; }
       this.sim.spend(sum);
     } else {
-      let n = 0;
-      for (const sl of sls) { const q = this.standOf(sl); if (!q) continue; sum += q.paid * STAND.refund; q.z.stands!.splice(q.i, 1); n++; }
+      // (highest index first, so the others' places in the list hold while these go)
+      const qs = sls.map(sl => this.standOf(sl)).filter((q): q is { z: Zone; i: number; paid: number } => !!q).sort((a, b) => b.i - a.i);
+      for (const q of qs) { sum += q.paid * STAND.refund; q.z.stands!.splice(q.i, 1); n++; }
       if (!n) return false;
       if (this.sim.moneyOn) this.sim.money += sum;
     }
     this.nextSound = on ? 'place' : 'demolish';
     this.changed();
-    const n = sls.length;
-    this.toast(on ? `${n} stand${n > 1 ? 's' : ''} built · ${money(sum)}` : `${n} stand${n > 1 ? 's' : ''} removed · ${money(sum)} back`, on ? 'info' : 'warn');
+    this.toast(on ? `${n} stand${n > 1 ? 's' : ''} built · ${money(sum)}${dud ? ` · ${dud} left out: no way out from there yet` : ''}` : `${n} stand${n > 1 ? 's' : ''} removed · ${money(sum)} back`, on ? 'info' : 'warn');
     return true;
   }
   toggleGate(sl: GateSlot, on: boolean) { this.buildStands([sl], on); }
@@ -2411,8 +2415,8 @@ export class UI {
         : g.land ? 'landside: no stands against the hall or security' : g.note ? g.note : 'no room for stands: built against, or too near a road, taxiway or runway';
       return `<dt>${sideName(g.side)}</dt><dd class="${n.length ? '' : 'muted'}">${txt}</dd>`;
     }).join('');
-    const idle = this.idleStands(z), back = idle.reduce((t, i) => t + (z.stands?.[i]?.paid ?? 0), 0);
-    const lost = idle.length ? `<dt>No place</dt><dd class="bad">${idle.length} built stand${idle.length > 1 ? 's have' : ' has'} no place now (the wall moved, something is in the way, or no way to a runway). Kept for when there is room again. <button class="btn small" data-act="standsIdle">Refund · ${money(back)}</button></dd>` : '';
+    const idle = this.idleStands(z), back = idle.reduce((t, i) => t + (z.stands?.[i]?.paid ?? 0) * STAND.refund, 0);
+    const lost = idle.length ? `<dt>No place</dt><dd class="bad">${idle.length} built stand${idle.length > 1 ? 's have' : ' has'} no place now (the wall moved, something is in the way, the stands here are now a size larger, or there is no way out). Kept for when there is room again. <button class="btn small" data-act="standsIdle">Take up · ${money(back)} back</button></dd>` : '';
     return `${rows}${lost}<dt></dt><dd class="muted small">Stands are built, not given: click a dashed outline on the map to build one there, or build a whole side here. A wall with no stands is a window wall with seating and shops.</dd>`;
   }
 
@@ -2644,7 +2648,7 @@ export class UI {
       const c = Number(a.slice(3)) as Cls; const cur = (z.cls ?? 2) as number;
       if (c > cur && !pay((c - cur) * floorArea(z) * 350)) return;
       z.cls = c; z.units = undefined; this.changed();
-      this.toast(`Gates resized for ${CLASSES[c].example}: ${s.d.units.get(z.id)?.count ?? 0} gates`);
+      { const n = s.d.units.get(z.id)?.count ?? 0, idle = this.idleStands(z).length; this.toast(`Concourse sized for ${CLASSES[c].example}: ${n} gate${n === 1 ? '' : 's'}${idle ? ` · ${idle} smaller stand${idle > 1 ? 's' : ''} no longer fit: build stands of the new size` : ''}`); }
     } else if (a === 'taxiF' && w && w.cls < 3) {
       // (v0.46: by its length round the curve; and a curve too tight for Code F stays as it is)
       if (w.c && !curveOK(w, CURVE_MIN.taxi[3])) { this.toast(`Too tight a curve for Code F: ${CURVE_MIN.taxi[3]} m radius at least. Ease the bend first.`, 'warn'); return; }

@@ -21,7 +21,7 @@ export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
   /** v0.56: the stands built on this concourse: where each one's gate door is, and what was paid for it. Absent on
    *  older saves and test worlds: every slot not in `off` is a gate. */
-  stands?: { x: number; y: number; paid: number }[];
+  stands?: { x: number; y: number; paid: number; cls?: number }[];
   /** v0.32: a free-drawn area (a concourse piece): its outline. x, y, w, h are its bounding box. */
   poly?: Pt[];
   /** Concourses (v0.7): walk-through duty free at the security exit, who holds each lot, and the running footfall count. */
@@ -85,7 +85,7 @@ export function migrateWorld(w: World): World {
   // v0.56: built stands are points with the price paid; anything else is dropped (the concourse then has what it had).
   for (const z of w.zones) if (z.stands !== undefined) {
     if (z.type !== 'concourse' || !Array.isArray(z.stands)) delete z.stands;
-    else z.stands = z.stands.filter(q => q && isFinite(q.x) && isFinite(q.y)).map(q => ({ x: q.x, y: q.y, paid: isFinite(q.paid) && q.paid > 0 ? q.paid : 0 }));
+    else z.stands = z.stands.filter(q => q && isFinite(q.x) && isFinite(q.y)).map(q => ({ x: q.x, y: q.y, paid: isFinite(q.paid) && q.paid > 0 ? q.paid : 0, ...(q.cls! >= 0 && q.cls! <= 3 ? { cls: Math.round(q.cls!) } : {}) }));
   }
   // v0.6: separate gate areas and concourses become one concourse type.
   for (const z of w.zones) if ((z.type as string) === 'gates') { z.type = 'concourse'; z.leased = undefined; }

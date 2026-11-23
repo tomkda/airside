@@ -71,8 +71,25 @@ const path = require('path');
   const rf = await p.evaluate(a => { const g = window.__game, w = g.sim.world; const c = w.zones.find(z => z.id === a.cid); const m = g.sim.money;
     g.ui.refundIdle(c); return { n: c.stands.length, back: g.sim.money - m, idle: g.ui.idleStands(c).length }; }, pr);
   check('stands with no place can be taken up (the sample\'s were paid for by nobody: nothing back)', rf.n === 14 - pr.idle && rf.idle === 0 && rf.back === 0);
+  // every place the joined building offers, built one at a time: charged only where a gate comes of it
+  const lone = await p.evaluate(a => { const g = window.__game; let built = 0, refused = 0, wrong = 0;
+    const doors = g.sim.d.gateSlots.filter(s => !s.on && (s.zone.id === a.id || s.zone.id === a.cid)).map(s => s.door);
+    for (const dr of doors.slice(0, 14)) { const sl = g.sim.d.gateSlots.find(s => !s.on && Math.hypot(s.door.x - dr.x, s.door.y - dr.y) < 1); if (!sl) continue;
+      const m = g.sim.money, n = g.sim.d.gates.length; const ok = g.ui.buildStands([sl], true);
+      if (ok) { built++; if (g.sim.d.gates.length !== n + 1 || g.sim.money >= m) wrong++; } else { refused++; if (g.sim.money !== m || g.sim.d.gates.length !== n) wrong++; } }
+    const idle = g.sim.world.zones.reduce((t, z) => t + (z.stands ? g.ui.idleStands(z).length : 0), 0);
+    return { built, refused, wrong, idle, offers: doors.length }; }, pr);
+  console.log('one at a time on the joined building:', lone.built, 'built,', lone.refused, 'refused with nothing charged, of', lone.offers, 'offered');
+  check('a stand is charged only where it becomes a gate, and none is left without a place', lone.wrong === 0 && lone.idle === 0 && lone.built + lone.refused > 0);
+  // a larger aircraft size: smaller stands do not serve it for nothing
+  const cl = await p.evaluate(a => { const g = window.__game, w = g.sim.world; const z = w.zones.find(q => q.id === a.id);
+    const mine = () => g.sim.d.gates.filter(q => q.zone.id === z.id).length; const n0 = mine(), st0 = z.stands.length;
+    z.cls = 3; g.ui.changed(); const n1 = mine(), idle = g.ui.idleStands(z).length; const m = g.sim.money; g.ui.refundIdle(z);
+    return { n0, st0, n1, idle, back: g.sim.money - m, paid: 0.4 }; }, pr);
+  console.log('the pier resized for the A380:', cl.n0, '→', cl.n1, 'gates,', cl.idle, 'smaller stands idle, taken up for $' + Math.round(cl.back).toLocaleString());
+  check('smaller stands are not gates at a larger size, and are taken up at the usual part of their price', cl.n1 === 0 && cl.idle === cl.st0 && (cl.st0 === 0 || cl.back > 0));
   // undo right back to the start, then remove one of the sample's stands: the others stay
-  for (let k = 0; k < 12; k++) { await p.keyboard.press('Control+z'); await p.waitForTimeout(120); }
+  for (let k = 0; k < 50; k++) { await p.keyboard.press('Control+z'); await p.waitForTimeout(60); }
   const u = await p.evaluate(() => { const g = window.__game, c = g.sim.world.zones.find(z => z.type === 'concourse');
     const before = g.sim.d.gates.length, n0 = (c.stands || []).length, m = g.sim.money;
     g.ui.buildStands([g.sim.d.gateSlots.find(s => s.zone.id === c.id && s.on)], false);
