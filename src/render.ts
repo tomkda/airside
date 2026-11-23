@@ -190,7 +190,7 @@ export class Renderer {
     this.drawDecks(sim);
     this.drawTrain(sim);
     this.drawStands(sim);
-    if (lod !== 'landside') this.drawGateSlots(sim);
+    this.drawGateSlots(sim);   // (v0.56: at every level of detail: the places a stand could be built are the invitation)
     this.drawGateGuides(sim, this.showGuides);
     this.drawSites(sim);
     this.drawBuildings(sim);
@@ -1225,8 +1225,10 @@ export class Renderer {
       const sel = this.selected?.kind === 'gate' && this.selected.key === sl.key && this.selected.id === sl.zone.id;
       const hov = this.hover?.kind === 'gate' && this.hover.key === sl.key && this.hover.id === sl.zone.id;
       if (!sl.on) {
-        g.setLineDash([4, 4]); g.strokeStyle = 'rgba(40,36,30,0.35)'; g.lineWidth = 1; this.path(sl.cell); g.stroke(); g.setLineDash([]);
-        if (z > 0.4) this.label('+', lerp2(sl.door, sl.front, 0.45), 0, 14, 'rgba(40,36,30,0.45)', { weight: 600, spacing: 0 });
+        // (v0.56: a place a stand could be built: a faint wash and a dashed outline, with a + to click)
+        this.path(sl.cell); g.fillStyle = 'rgba(58,95,128,0.05)'; g.fill();
+        g.setLineDash([5, 4]); g.strokeStyle = 'rgba(58,95,128,0.5)'; g.lineWidth = 1; g.stroke(); g.setLineDash([]);
+        if (z > 0.4) this.label('+', lerp2(sl.door, sl.front, 0.45), 0, 15, 'rgba(58,95,128,0.75)', { weight: 600, spacing: 0 });
       }
       if (sel || hov) { g.strokeStyle = PAL.select; g.lineWidth = sel ? 2 : 1; g.setLineDash(sel ? [] : [4, 3]); this.path(sl.cell); g.stroke(); g.setLineDash([]); }
     }

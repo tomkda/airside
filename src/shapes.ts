@@ -371,6 +371,48 @@ export const zonesOverlap = (a: Shaped, b: Shaped, min = 1) => !!overlapOf(a, b,
 export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm' | 'ta' | 'tb' | 't' | 'k' | `v${number}`;
 export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; off?: string[]; poly?: Pt[]; twist?: number }
 export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, twist: z.twist, poly: z.poly ? z.poly.map(p => ({ ...p })) : undefined, off: z.off ? [...z.off] : undefined });
+/** v0.56: where a building's built stands (points just inside its wall) go when it is reshaped from `z0` to `g`. They
+ *  follow their wall: a move or a turn carries them rigidly, a stretch keeps them their distance from the end that
+ *  stayed, a bend or taper carries them through the building's straight frame. Always worked out from the shape and
+ *  stands the drag began with, never step by step, so putting the shape back puts them back. (A frame may come back
+ *  re-expressed, turned a half or quarter turn about itself: of the readings that fit, the one that moves the stands
+ *  least is the building's own.) */
+export function carryStands<T extends Pt>(z0: Geom, g: Geom, pts: T[]): T[] {
+  if (!pts.length) return pts;
+  if (z0.poly || g.poly) {
+    if (!z0.poly || !g.poly) return pts;
+    const b0 = polyBox(z0.poly), b1 = polyBox(g.poly);
+    if (Math.abs(b0.w - b1.w) > 1e-6 || Math.abs(b0.h - b1.h) > 1e-6 || z0.poly.length !== g.poly.length) return pts;   // a corner dragged: they stay
+    return pts.map(q => ({ ...q, x: q.x + g.x - z0.x, y: q.y + g.y - z0.y }));
+  }
+  if (z0.sides || g.sides) {
+    if (!z0.sides || !g.sides) return pts;
+    const c0 = { x: z0.x + z0.w / 2, y: z0.y + z0.h / 2 }, c1 = { x: g.x + g.w / 2, y: g.y + g.h / 2 };
+    // (pushed out or drawn in with the wall, which is 7 m beyond the door)
+    return pts.map(q => { const r = Math.hypot(q.x - c0.x, q.y - c0.y) || 1, r1 = Math.max(1, r + (g.w - z0.w) / 2); const p = turn({ x: c0.x + (q.x - c0.x) * r1 / r, y: c0.y + (q.y - c0.y) * r1 / r }, c0, (g.rot ?? 0) - (z0.rot ?? 0)); return { ...q, x: p.x + c1.x - c0.x, y: p.y + c1.y - c0.y }; });
+  }
+  const a = z0 as Shaped, b = g as Shaped; const f0 = frameOf(a), f1 = frameOf(b);
+  const loc = pts.map(q => { const l = toLocal(a, q); return { du: l.x - f0.x, dv: l.y - (f0.y + f0.h / 2) }; });
+  // across the building a stand keeps its distance from its own wall
+  const across = (dv: number, h1: number) => Math.sign(dv || 1) * Math.max(0, h1 / 2 - (f0.h / 2 - Math.abs(dv)));
+  const cands: ((l: { du: number; dv: number }) => Pt)[] = [
+    l => ({ x: f1.x + l.du, y: f1.y + f1.h / 2 + across(l.dv, f1.h) }),                        // the west end stayed
+    l => ({ x: f1.x + f1.w - (f0.w - l.du), y: f1.y + f1.h / 2 + across(l.dv, f1.h) }),        // the east end stayed
+    l => ({ x: f1.x + f1.w - l.du, y: f1.y + f1.h / 2 - across(l.dv, f1.h) }),                 // the frame turned end for end
+    l => ({ x: f1.x + (f0.w - l.du), y: f1.y + f1.h / 2 - across(l.dv, f1.h) }),
+  ];
+  if (Math.abs(f0.w - f1.h) < 1e-6 && Math.abs(f0.h - f1.w) < 1e-6 && Math.abs(f0.w - f0.h) > 1e-6) {
+    // the frame came back a quarter turn round (its long side is now its height)
+    const m = (l: { du: number; dv: number }) => ({ a: l.du - f0.w / 2, b: l.dv });
+    cands.push(l => ({ x: f1.x + f1.w / 2 - m(l).b, y: f1.y + f1.h / 2 + m(l).a }), l => ({ x: f1.x + f1.w / 2 + m(l).b, y: f1.y + f1.h / 2 - m(l).a }));
+  }
+  let best: Pt[] = pts, bd = Infinity;
+  for (const c of cands) {
+    const out = loc.map(l => toWorld(b, c(l))); const d = out.reduce((t, p, i) => t + Math.hypot(p.x - pts[i].x, p.y - pts[i].y), 0);
+    if (d < bd - 1e-9) { bd = d; best = out; }
+  }
+  return pts.map((q, i) => ({ ...q, x: best[i].x, y: best[i].y }));
+}
 export function setGeom(z: Geom, g: Geom) {
   // v0.32: a free area's outline goes where its box is put (so moving the box moves the outline)
   if (g.poly) { const b = polyBox(g.poly); const dx = g.x - b.x, dy = g.y - b.y; z.poly = g.poly.map(p => ({ x: p.x + dx, y: p.y + dy })); z.x = g.x; z.y = g.y; z.w = b.w; z.h = b.h; }

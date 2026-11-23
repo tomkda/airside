@@ -48,7 +48,7 @@ export const ZONES: Record<ZoneType, ZoneDef> = {
     type: 'concourse', label: 'Concourse', short: 'Concourse', key: '5', terminal: true, groundOnly: false,
     costPerM2: 3100, upkeepPerM2: 0.48, unit: 'gates', m2PerUnit: 0, minW: 40, minH: 24,
     tierNames: ['Standard fit-out', 'Flagship dining & lounges'], tierCostPerM2: 800,
-    blurb: 'Every open side lays its own stands and taxilane, each gate with a holdroom behind it. Drag the handles to reshape it. A spine runs down the middle; shops, restaurants and lounges fill what is left.',
+    blurb: 'A building first: a spine down the middle, with seating, shops, restaurants and lounges along window walls. Each open side offers places for aircraft stands; build the ones you want, and each becomes a gate with a holdroom behind it. Drag the handles to reshape it.',
   },
   claim: {
     type: 'claim', label: 'Baggage claim', short: 'Claim', key: '7', terminal: true, groundOnly: false,
@@ -254,6 +254,9 @@ export const TUNE = {
 // passengers on the best day so far. In sandbox mode (money off) everything is unlocked.
 export type UnlockId = 'bus' | 'rideshare' | 'garage' | 'rental' | 'mezz' | 'hotel' | 'intl' | 'train';
 export interface Unlock { id: UnlockId; at: number; title: string; why: string }
+/** v0.56: a stand is built, not given: the apron slab for one aircraft with its fuel pit, markings and (at the wall) a
+ *  jet bridge. Game tuning, by aircraft size, about a tenth of the concourse floor behind it; 40% back when removed. */
+export const STAND = { cost: [1_200_000, 1_800_000, 2_600_000, 5_500_000], refund: 0.4 };
 export const UNLOCKS: Unlock[] = [
   { id: 'bus', at: 3000, title: 'Bus station', why: 'The curb is filling with cars. City buses carry passengers without one.' },
   { id: 'rideshare', at: 3300, title: 'Rideshare pickup', why: 'App-hailed cars are crowding the arrivals curb. Give them their own lot.' },

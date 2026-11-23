@@ -7,7 +7,7 @@ import { derive, canPlacePier } from './src/world';
 import * as W0 from './src/world';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
-import { inZone, zonePts, arcOf, frameOf, toLocal, toWorld, polyArea, regrip, gripsOf, maxBend, minBendRadius, heart, endWidths } from './src/shapes';
+import { inZone, zonePts, arcOf, frameOf, toLocal, toWorld, polyArea, regrip, gripsOf, maxBend, minBendRadius, heart, endWidths, carryStands, geomOf } from './src/shapes';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
 const lim = { minLen: 60, minWide: 30, maxWide: 120, minDia: 60, maxDia: 400, snapDeg: 5 };
@@ -159,6 +159,24 @@ for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 
   check('every flight uses the bent pier', used.size >= st.flights && st.flights > 10);
   check('nobody stranded and nobody outside a building', st.stranded === 0 && outside === 0 && seen > 1000);
   check('nobody misses a flight', st.missed === 0); }
+{ // v0.56: built stands follow their walls through a reshape, worked out from where the drag began
+  const z0 = { x: 900, y: 980, w: 200, h: 40, rot: 80 * Math.PI / 180 };
+  const st = [toWorld(z0, { x: 950, y: 987 }), toWorld(z0, { x: 1050, y: 1013 })].map(p => ({ ...p, paid: 1 }));
+  const A = toWorld(z0, { x: 900, y: 1000 }); const dA = st.map(q => Math.hypot(q.x - A.x, q.y - A.y));
+  let worst = 0, wall = 0;
+  for (const deg of [85, 90, 95, 100, 120]) { const p = { x: A.x + 200 * Math.cos(deg * Math.PI / 180), y: A.y + 200 * Math.sin(deg * Math.PI / 180) };
+    const g = regrip(z0, 'b', p, true, lim); const out = carryStands(z0, g, st);
+    out.forEach((q, i) => { worst = Math.max(worst, Math.abs(Math.hypot(q.x - A.x, q.y - A.y) - dA[i])); const l = toLocal(g, q), F = frameOf(g); wall = Math.max(wall, Math.abs(Math.min(l.y - F.y, F.y + F.h - l.y) - 7)); }); }
+  console.log('built stands: a pier swung through upright keeps them', worst.toFixed(2), 'm from where they were along it,', wall.toFixed(2), 'm off their 7 m from the wall');
+  check('a swing through upright carries the stands with the pier', worst < 0.5 && wall < 0.01);
+  const back = carryStands(z0, geomOf(z0), st); check('the shape put back puts them back exactly', back.every((q, i) => Math.hypot(q.x - st[i].x, q.y - st[i].y) < 1e-9));
+  const up = { x: 900, y: 980, w: 200, h: 40 }; const us = [{ x: 950, y: 987, paid: 1 }];
+  const longer = carryStands(up, regrip(up, 'b', { x: 1160, y: 1000 }, true, lim), us); check('a stretch from the east end leaves them where they are', Math.hypot(longer[0].x - 950, longer[0].y - 987) < 1e-6);
+  const wider = carryStands(up, { ...up, y: 970, h: 60 }, us); check('widening keeps them 7 m inside their wall', Math.abs(wider[0].y - 977) < 1e-6 && Math.abs(wider[0].x - 950) < 1e-6);
+  const bent = { ...up, bend: 30 }; const bs = carryStands(up, bent, us); const bl = toLocal(bent, bs[0]);
+  check('bending carries them onto the curve, 7 m inside the wall', Math.abs(bl.y - frameOf(bent).y - 7) < 1e-6 && inZone(bs[0], bent));
+  const moved = carryStands(up, { ...up, x: 1000, y: 900 }, us); check('a move carries them rigidly', Math.abs(moved[0].x - 1050) < 1e-9 && Math.abs(moved[0].y - 907) < 1e-9);
+}
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
