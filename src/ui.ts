@@ -1,6 +1,6 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND, LOS } from './config';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND, LOS, GROUND } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GOALS, Goal, nextGoals, rating } from './goals';
 import { GateSlot, slotAt, SIDE_NAMES, sideName, standDepth, sideReach, STAND_TOL } from './gates';
@@ -21,7 +21,7 @@ const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
 import { AREA, CURVE_MIN } from './config';
 import { Los, losKind, losDay, losNow, losFix } from './los';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
-import { canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
+import { parallelTaxi, canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
 import { canPlaceRound, Round } from './world';
 import { wayLen, wayMid, waySegs, bendThrough, roundOuter, roundDef, ringRef, isRingRef, chordWays, curveOK } from './ways';
@@ -2222,7 +2222,10 @@ export class UI {
         const C = TAXI_CLASSES[w.cls >= 3 ? 1 : 0];
         const up = L * (TAXI_CLASSES[1].costPerM - TAXI_CLASSES[0].costPerM);
         return `<h2><span class="des">${esc(letter)}</span> Taxiway</h2>
-          <dl class="kv"><dt>Length</dt><dd>${n0(L)} m</dd><dt>Class</dt><dd>${C.name} · ${C.width} m wide</dd><dt>Takes</dt><dd>${C.note}</dd></dl>
+          <dl class="kv"><dt>Length</dt><dd>${n0(L)} m</dd><dt>Class</dt><dd>${C.name} · ${C.width} m wide</dd><dt>Takes</dt><dd>${C.note}</dd>
+          ${this.groundHTML(w.id)}</dl>
+          ${(() => { const par = parallelTaxi(this.world, w, this.sim.d.aprons); return 'why' in par ? `<p class="muted small">No parallel taxiway can be added: ${esc(par.why.toLowerCase())}.</p>`
+            : `<button class="btn" data-act="taxiPar">Add a parallel taxiway · ${money(par.len * C.costPerM)}</button><p class="muted small">Laid ${GROUND.par[w.cls] ?? 44} m alongside and joined at its ends, so aircraft bound opposite ways each have their own.</p>`; })()}
           ${w.cls < 3 ? `<button class="btn" data-act="taxiF">Widen to Code F · ${money(up)}</button>` : ''}
           <p class="muted">A380s only use routes where every taxiway is Code F.</p>
           <button class="btn danger" data-act="demolish">Demolish (${money(L * C.costPerM * 0.4)} back)</button>`;
@@ -2423,6 +2426,22 @@ export class UI {
     return `${rows}${lost}<dt></dt><dd class="muted small">Stands are built, not given: click a dashed outline on the map to build one there, or build a whole side here. A wall with no stands is a window wall with seating and shops.</dd>`;
   }
 
+  /** v0.58: what aircraft went through on a taxiway: minutes stood and head-on stand-offs, today or the last day. */
+  groundHTML(id: number) {
+    const s = this.sim; const g = s.ground.get(id) ?? s.groundLast.get(id); const today = s.ground.has(id);
+    if (!g || (g.min < 0.05 && !g.so)) return `<dt>Ground traffic</dt><dd class="muted small">Nobody has had to stop on it.</dd>`;
+    return `<dt>Ground traffic</dt><dd class="${g.so || g.min > 10 ? 'bad' : ''}">Aircraft stood ${g.min.toFixed(0)} min here ${today ? 'today' : 'last day'}${g.so ? ` · ${g.so} head-on stand-off${g.so > 1 ? 's' : ''}` : ''}</dd>
+      ${g.so ? '<dt></dt><dd class="bad small">It carries aircraft both ways at once. A parallel taxiway, or a second link to the runway, lets them pass.</dd>' : g.min > 10 ? '<dt></dt><dd class="bad small">Aircraft queue on it. A parallel taxiway or another runway exit spreads them out.</dd>' : ''}`;
+  }
+  /** The airfield's day in a line (Operations): minutes held per movement, graded. */
+  airfieldHTML() {
+    const s = this.sim; const cur = s.stats.ground; const last = s.history[s.history.length - 1]?.stats.ground;
+    const g = cur.moves >= 6 || !last ? cur : last; if (!g || !g.moves) return '';
+    const per = (g.hold + g.gate) / g.moves; const b = per <= GROUND.bands[0] ? 0 : per <= GROUND.bands[1] ? 1 : per <= GROUND.bands[2] ? 2 : 3;
+    const worst = [...(g === cur ? s.ground : s.groundLast)].filter(([id]) => id > 0).sort((a, b) => b[1].min + b[1].so * 3 - a[1].min - a[1].so * 3)[0];
+    return `<ul class="lostab"><li ${worst ? `data-way="${worst[0]}"` : ''}><span class="los" style="background:${LOS.colors[b]}">${['Free-flowing', 'Flowing', 'Congested', 'Jammed'][b]}</span> <b>Airfield</b>
+      <span class="muted small">${per.toFixed(1)} min held per movement · taxi ${(g.taxi / g.moves).toFixed(1)} min · ${g.standoffs} stand-off${g.standoffs === 1 ? '' : 's'} ${g.tows ? ` · ${g.tows} towed clear after a long hold` : ''} · ${g.gate.toFixed(0)} min held on stand${worst && (worst[1].min > 1 || worst[1].so) ? ` · worst: taxiway ${esc(s.d.taxiLetter.get(worst[0]) ?? '')} (${worst[1].min.toFixed(0)} min)` : ''}</span></li></ul>`;
+  }
   /** v0.57: a module's level of service: the day's band, the two counts behind it, and what would lift it. */
   losHTML(z: Zone) {
     const kind = losKind(z); if (!kind) return '';
@@ -2500,6 +2519,7 @@ export class UI {
       ${terms ? `<ul class="terms">${terms}</ul>` : '<p class="muted">No terminal yet. Connect check-in, security, a concourse and baggage claim, with a curb served by a road.</p>'}
       <p class="muted small">A terminal opens when check-in, security, a concourse with working gates and baggage claim connect on foot, with a road-served curb. Only open terminals get flights.</p>
       <h2>Level of service</h2>
+      ${this.airfieldHTML()}
       ${this.losTableHTML()}
       ${this.offerHTML()}
       <h2>Airlines and slots</h2>
@@ -2629,6 +2649,11 @@ export class UI {
     const s = this.sim; const body = $('#panelBody');
     body.querySelectorAll<HTMLElement>('[data-act]').forEach(b => b.addEventListener('click', () => this.act(b.dataset.act!)));
     // (v0.57: a row of the level-of-service table opens its module, with the overlay on)
+    body.querySelectorAll<HTMLElement>('.lostab [data-way]').forEach(b => b.addEventListener('click', () => {
+      const w = this.world.ways.find(q => q.id === Number(b.dataset.way)); if (!w) return;
+      if (!this.ren.overlay) this.setHeat('queues');
+      const c = wayMid(w); this.ren.cam.x = c.x; this.ren.cam.y = c.y; this.ren.selected = { kind: 'way', id: w.id }; this.tab = 'inspect'; this.refresh(true);
+    }));
     body.querySelectorAll<HTMLElement>('.lostab [data-zone]').forEach(b => b.addEventListener('click', () => {
       const z = this.sim.d.zones.find(q => q.id === Number(b.dataset.zone)); if (!z) return;
       if (!this.ren.overlay) this.setHeat('queues');
@@ -2697,6 +2722,13 @@ export class UI {
       if (c > cur && !pay((c - cur) * floorArea(z) * 350)) return;
       z.cls = c; z.units = undefined; this.changed();
       { const n = s.d.units.get(z.id)?.count ?? 0, idle = this.idleStands(z).length; this.toast(`Concourse sized for ${CLASSES[c].example}: ${n} gate${n === 1 ? '' : 's'}${idle ? ` · ${idle} smaller stand${idle > 1 ? 's' : ''} no longer fit: build stands of the new size` : ''}`); }
+    } else if (a === 'taxiPar' && w && w.kind === 'taxi') {
+      // v0.58: one click lays a second taxiway beside this one
+      const par = parallelTaxi(this.world, w, this.sim.d.aprons); if ('why' in par) { this.toast(`No room for a parallel taxiway: ${par.why}`, 'warn'); return; }
+      if (!pay(par.len * TAXI_CLASSES[w.cls >= 3 ? 1 : 0].costPerM)) return;
+      for (const q of par.ways) { const nw: Way = { id: this.world.nextId++, kind: 'taxi', a: q.a, b: q.b, cls: q.cls, lanes: 0 }; if (q.c) nw.c = q.c; this.world.ways.push(nw); }
+      this.changed(); this.ren.selected = { kind: 'way', id: w.id }; this.refresh(true);
+      this.toast('Parallel taxiway laid: aircraft bound opposite ways now take one each');
     } else if (a === 'taxiF' && w && w.cls < 3) {
       // (v0.46: by its length round the curve; and a curve too tight for Code F stays as it is)
       if (w.c && !curveOK(w, CURVE_MIN.taxi[3])) { this.toast(`Too tight a curve for Code F: ${CURVE_MIN.taxi[3]} m radius at least. Ease the bend first.`, 'warn'); return; }

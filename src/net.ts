@@ -58,7 +58,9 @@ export function nearestNode(net: Net, p: Pt, max = Infinity): number {
  * Shortest paths from a set of sources. `ok` filters edges (e.g. by aircraft class).
  * `dir` says how one-way edges count: 0 ignores them, 1 is travel away from the sources, -1 travel towards them.
  */
-export function dijkstra(net: Net, sources: { n: number; c: number }[], ok: (e: Edge) => boolean = () => true, w: (e: Edge) => number = e => e.len, dir: -1 | 0 | 1 = 0): DJ {
+export function dijkstra(net: Net, sources: { n: number; c: number }[], ok: (e: Edge) => boolean = () => true, w: (e: Edge) => number = e => e.len, dir: -1 | 0 | 1 = 0,
+  /** v0.58: where the search runs out from a target, the cost of travelling an edge `from` one end `to` the other (towards the target) */
+  travel?: (e: Edge, from: number, to: number) => number): DJ {
   const N = net.nodes.length;
   const d = new Float64Array(N).fill(Infinity);
   const prev = new Int32Array(N).fill(-1);
@@ -90,7 +92,7 @@ export function dijkstra(net: Net, sources: { n: number; c: number }[], ok: (e: 
       if (!ok(e)) continue;
       if (e.ow && dir && (dir === 1 ? e.u !== u : e.v !== u)) continue;
       const v = e.u === u ? e.v : e.u;
-      const nc = c + w(e);
+      const nc = c + (travel ? travel(e, v, u) : w(e));
       if (nc < d[v]) { d[v] = nc; prev[v] = eid; push(nc, v); }
     }
   }

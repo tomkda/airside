@@ -492,6 +492,14 @@ export class Renderer {
         g.fillStyle = PAL.select; g.fill();
       }
     }
+    // v0.58: with the level-of-service overlay on, taxiways where aircraft stood are tinted, with the minutes lost
+    if (this.overlay) {
+      const G = sim.ground.size ? sim.ground : sim.groundLast;
+      for (const w of d.wayPieces) { if (w.kind !== 'taxi') continue; const q = G.get(w.id); if (!q || (q.min < 1 && !q.so)) continue;
+        this.line(w.a, w.b, wayWidth('taxi', w.cls, 0) + 10, q.so || q.min > 10 ? 'rgba(176,71,43,0.6)' : 'rgba(194,133,46,0.5)', 0, 'round', 3); }
+      for (const [id, q] of G) { if (id <= 0 || (q.min < 1 && !q.so)) continue; const w = sim.world.ways.find(o => o.id === id); if (!w) continue;
+        this.label(`${q.min.toFixed(0)} MIN HELD${q.so ? ` · ${q.so} STAND-OFF${q.so > 1 ? 'S' : ''}` : ''}`, wayMid(w), 0, 10, '#fff', { weight: 700, spacing: 0.3, bg: q.so || q.min > 10 ? LOS.colors[3] : LOS.colors[2] }); }
+    }
     // Taxiway letters, like an airport diagram
     if (z > 0.14) for (const l of d.taxiLabels) {
       const n = { x: -Math.sin(l.ang), y: Math.cos(l.ang) };
@@ -1361,6 +1369,8 @@ export class Renderer {
       if (alt > 0.02) this.plane(f, f.x + 160 * alt, f.y + 120 * alt, 0, 'rgba(40,36,30,0.18)', 1);
       this.plane(f, f.x, f.y, alt * 260, PAL.ink, 1 + alt * 0.5);
       if (z > 0.45) this.tail(f, f.x, f.y, alt * 260, 1 + alt * 0.5);
+      // (v0.58: an aircraft standing for another on a taxiway wears a ring: amber, rust once it has stood two minutes)
+      if (f.held && (f.state === 'taxiIn' || f.state === 'taxiOut')) this.ring({ x: f.x, y: f.y }, f.ac.length * 0.75, 2.2, sim.t - (f.heldT ?? sim.t) > 2 ? 'rgba(176,71,43,0.9)' : 'rgba(194,133,46,0.9)');
       if (f.state === 'stand' && z > 0.9 && sim.t - f.standT > 3 && f.readyT - sim.t > 6) this.turnaround(f);
       if (z > 1.3 && (f.state === 'stand' || f.state === 'taxiIn' || f.state === 'waitGate'))
         this.label(f.code, add({ x: f.x, y: f.y }, mul(norm(sub(f.gate.stand, f.gate.door)), f.ac.length / 2 + 10)), 0, 9, PAL.ink2, { weight: 600, spacing: 0.5 });

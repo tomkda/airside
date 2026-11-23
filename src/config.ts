@@ -468,3 +468,13 @@ export const LOS = {
   names: ['Over-design', 'Optimum', 'Sub-optimum', 'Under-provided'],
   colors: ['#6E8FA8', '#5E8C61', '#C2852E', '#B0472B'],
 };
+
+/** v0.58: aircraft on the ground keep clear of each other. Game tuning, loosely after apron practice: `gap` metres
+ *  nose to tail on top of the aircraft's own length, `reach` the half-width within which another aircraft is in the
+ *  way (under the 44 m between Code C taxiway centre lines, ICAO Annex 14, so parallel taxiways never conflict).
+ *  A head-on meeting on one taxiway is a stand-off: after `standoff` minutes a tug clears it. A departure is held
+ *  on its stand up to `gateHold` minutes rather than pushed into opposing traffic. Routing treats a stretch another
+ *  aircraft is about to use the other way as `oppCost` times its length plus `oppFlat` metres. Anything held
+ *  `maxHold` minutes is towed through. `par` is the taxiway centre-line separation a parallel is laid at, by class
+ *  (Annex 14 Table 3-1: 44 m Code C, 91 m Code F). `bands` grade the day's minutes held per movement. */
+export const GROUND = { gap: 40, reach: 32, standoff: 2.5, gateHold: 6, oppCost: 3, oppFlat: 400, maxHold: 8, par: [44, 44, 44, 91], bands: [0.5, 2, 5] };
