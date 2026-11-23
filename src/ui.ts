@@ -1,6 +1,6 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND, LOS, GROUND, BANK } from './config';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND, LOS, GROUND, BANK, STYLES } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GOALS, Goal, nextGoals, rating } from './goals';
 import { GateSlot, slotAt, SIDE_NAMES, sideName, standDepth, sideReach, STAND_TOL } from './gates';
@@ -2402,6 +2402,7 @@ export class UI {
     return `<h2>${T?.name ?? 'Terminal'} <span class="lvl">${T?.active ? 'open' : 'closed'}</span></h2>
       <dl class="kv">
         <dt>Site</dt><dd>${n0(st.w)} × ${n0(st.h)} m · grows as you add modules</dd>
+        <dt>Architecture</dt><dd><div class="styles">${STYLES.map((q, i) => `<button class="btn small${(st.style ?? 0) === i ? ' on' : ''}" data-act="style:${i}" title="${esc(q.note)}"><i style="background:${q.roofC};border-color:${q.edgeC}"></i>${esc(q.name)}</button>`).join('')}</div><span class="muted small">${esc(STYLES[st.style ?? 0].note)}. Seen in the 3D view (press T).</span></dd>
         ${T && !T.active ? `<dt>Status</dt><dd class="bad">${esc(T.problems.join('; '))}</dd>` : ''}
         ${row('checkin', 'Check-in')}${row('security', 'Security')}${row('concourse', 'Concourses')}${row('claim', 'Bag claim')}
         <dt>Gates</dt><dd>${T?.gates ?? 0}</dd>
@@ -2812,6 +2813,8 @@ export class UI {
     const w = sel?.kind === 'way' ? s.world.ways.find(q => q.id === sel.id) : undefined;
     const pay = (cost: number) => { if (!s.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return false; } s.spend(cost); return true; };
     if (a === 'offerYes') { s.acceptOffer(); this.toast('Deal signed. It applies from tomorrow\'s schedule.'); this.refresh(true); this.ctl.save(); return; }
+    if (a.startsWith('style:') && sel?.kind === 'site') { const st = this.world.sites?.find(q => q.id === sel.id); const i = Number(a.split(':')[1]);
+      if (st && STYLES[i] && (st.style ?? 0) !== i) { if (i) st.style = i; else delete st.style; this.changed(); this.ren.selected = { kind: 'site', id: st.id }; this.refresh(true); this.toast(`${this.siteName(st)}: ${STYLES[i].name.toLowerCase()}`); } return; }
     if (a.startsWith('bankAsk:')) { const [, id, i] = a.split(':'); const sl = BANK.slots[Number(i)]; if (!sl) return;
       if (!s.addBank(id, sl.hour)) return; this.toast(`${AIRLINES.find(q => q.id === id)?.name}: a ${sl.name.toLowerCase()} bank from tomorrow's schedule`); this.refresh(true); this.ctl.save(); return; }
     if (a.startsWith('bankEnd:')) { s.endBank(Number(a.split(':')[1])); this.toast('Bank ended: its flights leave the schedule tomorrow'); this.refresh(true); this.ctl.save(); return; }

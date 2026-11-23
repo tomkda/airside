@@ -10,14 +10,14 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Pt, Rect, dist, sub, norm, add, mul, lerpPt, polyLen, sliceLine, offsetLine } from './geom';
-import { PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE } from './config';
+import { STYLES, Style, PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE } from './config';
 import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
 import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
-import { turn, centreOf, shaped, hallPts, barPieces, zonePts } from './shapes';
+import { inZone, turn, centreOf, shaped, hallPts, barPieces, zonePts } from './shapes';
 import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyTexture, PlaneGeo } from './models3d';
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
@@ -483,8 +483,17 @@ export class Renderer3D {
     const openSite = (z: Zone) => lod === 'terminal' && (focus === null || siteOf(sim.world, z)?.id === focus || d.termOf.get(z.id)?.site?.id === focus);
     // (v0.32: a building with a free area in it, or a cut-out taken from it, is modelled from its outline alone:
     // a plinth, glass walls round every ring, courtyards included, and the roof, with no boxes of its pieces)
+    // (v0.61: a building takes the architecture of the terminal it belongs to)
+    // (its own site's where it has one, else that of the terminal it joins)
+    const styleOf = (z?: Zone): Style => STYLES[(z && ((z.site !== undefined ? sim.world.sites?.find(q => q.id === z.site)?.style : undefined) ?? d.termOf.get(z.id)?.site?.style)) || 0] ?? STYLES[0];
+    // which walls of an upright or turned building another building or a curb on its level stands against
+    const touching = (z: Zone) => { const c = centreOf(z); const at = (dx: number, dy: number) => (z.rot ? turn({ x: c.x + dx, y: c.y + dy }, c, z.rot) : { x: c.x + dx, y: c.y + dy });
+      const hit = (p: Pt) => d.zones.some(o => o.id !== z.id && o.level === z.level && (ZONES[o.type].terminal || o.type === 'curb') && inZone(p, o, 0.5));
+      const side = (nx: number, ny: number) => [-0.3, 0, 0.3].some(k => hit(at(nx * (z.w / 2 + 1.5) + ny * z.w * k, ny * (z.h / 2 + 1.5) + nx * z.h * k)));
+      return { n: side(0, -1), s: side(0, 1), w: side(-1, 0), e: side(1, 0) }; };
     const freeIds = new Set<number>();
     for (const sh of d.shells) {
+      const S = styleOf(d.zones.find(z => z.id === sh.ids[0]));
       if (sh.ids.some(id => rising.has(id))) continue;
       const L1 = LEVELS[sh.level as 0 | 1];
       const free = sh.cut || sh.ids.some(id => d.zones.find(z => z.id === id)?.poly);
@@ -492,14 +501,15 @@ export class Renderer3D {
         sh.ids.forEach(id => freeIds.add(id));
         const open = sh.ids.some(id => { const q = d.zones.find(z => z.id === id); return !!q && openSite(q); });
         // (opened up: the floor to the outline, no roof, so the fit-out shows)
-        add3(extrudeShape(sh.rings, L1.z0, L1.z0 + (open ? 0.5 : 0.7), open ? MOD_COL.concourse : PLINTH));
+        add3(extrudeShape(sh.rings, L1.z0, L1.z0 + (open ? 0.5 : 0.7), open ? MOD_COL.concourse : S.plinth));
         for (const r of sh.rings) add3(prism(r, L1.z0 + 0.7, L1.z1 - 1.1, GLASS.concourse, this.glassMat, false));   // (walls only: a fan cap is wrong on a concave outline)
-        if (!open) add3(extrudeShape(sh.rings, L1.z1 - 1.1, L1.z1 - 0.3, ROOF));
-      } else if (sh.ids.length > 1) add3(extrudeShape(sh.rings, L1.z1 - 0.5, L1.z1 + 0.25, ROOF));
+        if (!open) add3(extrudeShape(sh.rings, L1.z1 - 1.1, L1.z1 - 0.3, S.roofC));
+      } else if (sh.ids.length > 1 && !sh.ids.every(id => styleOf(d.zones.find(z => z.id === id)).roof === 'vault')) add3(extrudeShape(sh.rings, L1.z1 - 0.5, L1.z1 + 0.25, S.roofC));
     }
     // ---- buildings: a glazed box under a white roof, or opened up (glass walls, floor and fit-out)
     const solid: Box[] = []; const glazing: Box[] = []; const see: Box[] = []; const fit: Box[] = []; const roofs: Box[] = [];
     for (const z of d.zones) {
+      const S = styleOf(z);
       if (!ZONES[z.type].terminal || rising.has(z.id)) continue;
       if (freeIds.has(z.id) && !openSite(z)) continue;   // (its envelope is the outline's; opened up, its floor and fit-out are its own)
       const L = LEVELS[z.level];
@@ -507,24 +517,25 @@ export class Renderer3D {
       if (z.sides) {
         // a round or polygonal hall: plinth, a glazed drum, the roof, and a lantern over the atrium
         const top = L.z1 - 0.4; const c0 = centreOf(z); const R = Math.min(z.w, z.h) / 2;
-        add3(prism(hallPts(z), L.z0, L.z0 + 0.7, PLINTH));
-        const gl = prism(hallPts(z, -0.6), L.z0 + 0.7, top - 1.1, sel ? '#8FB0C6' : GLASS[z.type], this.glassMat); add3(gl);
-        add3(prism(hallPts(z, 0.8), top - 1.1, top, sel ? '#CFE0EA' : ROOF));
+        add3(prism(hallPts(z), L.z0, L.z0 + 0.7, S.plinth));
+        const gl = prism(hallPts(z, -0.6), L.z0 + 0.7, top - 1.1, sel ? '#8FB0C6' : S.glass ?? GLASS[z.type], this.glassMat); add3(gl);
+        add3(prism(hallPts(z, Math.max(0.8, S.eave)), top - 1.1, top, sel ? '#CFE0EA' : S.roofC));
         add3(prism(hallPts({ ...z, x: c0.x - R * 0.42, y: c0.y - R * 0.42, w: R * 0.84, h: R * 0.84 }), top, top + 3.2, GLASS.concourse, this.glassMat));
         continue;
       }
       if (z.bend || z.taper || z.twist) {
         // v0.20: a bent pier is modelled as a row of short straight lengths, each turned to the curve
-        for (const q of barPieces(z)) {
+        const P = barPieces(z), total = P.reduce((t, q) => t + q.w, 0); let off = 0;
+        for (const q of P) {
           const n0 = [solid.length, glazing.length, roofs.length];
-          massing({ ...z, x: q.x, y: q.y, w: q.w, h: q.h, rot: undefined, bend: undefined, taper: undefined, twist: undefined }, L.z0, L.z1, sel, solid, glazing, roofs, true);
+          massing({ ...z, x: q.x, y: q.y, w: q.w, h: q.h, rot: undefined, bend: undefined, taper: undefined, twist: undefined }, L.z0, L.z1, sel, solid, glazing, roofs, true, { S, off, total }); off += q.w;
           const pv = centreOf(q); [solid, glazing, roofs].forEach((arr, k) => { for (let i = n0[k]; i < arr.length; i++) { arr[i].rot = q.rot; arr[i].px = pv.x; arr[i].py = pv.y; } });
         }
         continue;
       }
       if (!openSite(z) || z.rot) {
         const n0 = [solid.length, glazing.length, roofs.length];
-        massing(z, L.z0, L.z1, sel, solid, glazing, roofs);
+        massing(z, L.z0, L.z1, sel, solid, glazing, roofs, false, { S, touch: S.eave > 1.2 || S.fins ? touching(z) : undefined });
         // a turned building: every piece of its massing turns about the building's centre
         if (z.rot) { const pv = centreOf(z); [solid, glazing, roofs].forEach((arr, k) => { for (let i = n0[k]; i < arr.length; i++) { arr[i].rot = z.rot; arr[i].px = pv.x; arr[i].py = pv.y; } }); }
         continue;
@@ -548,7 +559,7 @@ export class Renderer3D {
     }
     add3(instancedBoxes([...solid, ...misc, ...fit], true));
     if (glazing.length) add3(instancedBoxes(glazing, true, this.glassMat));
-    if (roofs.length) { add3(instancedBoxes(roofs, true)); add3(edgeLines(roofs.filter(b => b.w > 12 && b.h > 12 && b.z1 - b.z0 < 1.2), 0.35)); }
+    if (roofs.length) { add3(instancedBoxes(roofs, true)); add3(edgeLines(roofs.filter(b => !b.plain && b.w > 12 && b.h > 12 && b.z1 - b.z0 < 1.2), 0.35)); }
     if (see.length) add3(instancedBoxes(see, false, undefined, 0.22));
 
     // ---- trees, lamps, floodlight masts, the control tower
@@ -773,7 +784,9 @@ export class Renderer3D {
 
 // ------------------------------------------------------------ geometry helpers
 /** `rot` turns the box about (px, py), or about its own centre (v0.17: turned zones and their parts). */
-interface Box extends Rect { z0: number; z1: number; c: string; rot?: number; px?: number; py?: number }
+interface Box extends Rect { z0: number; z1: number; c: string; rot?: number; px?: number; py?: number; /** (a course of a vault: no outline of its own) */ plain?: boolean }
+/** v0.61: what `massing` needs to know beyond the box: its style, which of its walls another building stands against (in its own frame: north, south, west, east), and for one length of a bent pier where it starts along the whole and how long the whole is. */
+interface Ctx { S: Style; touch?: { n?: boolean; s?: boolean; w?: boolean; e?: boolean }; off?: number; total?: number }
 interface Strip { a: Pt; b: Pt; w: number; z: number; c: string }
 
 const hashN = (a: number, b: number) => { const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453; return h - Math.floor(h); };
@@ -796,26 +809,65 @@ function mergeTwo(a: THREE.BufferGeometry, b: THREE.BufferGeometry) {
  * A module as an architectural model: a dark plinth, a glazed band with mullions every 7.5 m, a white roof slab
  * with a slight overhang, and on top either a clerestory along a concourse's spine or a couple of plant enclosures.
  */
-function massing(z: Zone, z0: number, z1: number, sel: boolean, solid: Box[], glazing: Box[], roofs: Box[], piece = false) {
+function massing(z: Zone, z0: number, z1: number, sel: boolean, solid: Box[], glazing: Box[], roofs: Box[], piece = false, C: Ctx = { S: STYLES[0] }) {
+  const S = C.S, tc = C.touch ?? {};
   const top = z1 - 0.4;
   // v0.29: a turned hall or security block: every part of it turns about the zone's centre
   if (z.rot && z.type !== 'concourse') {
     const tw = { rot: z.rot, px: z.x + z.w / 2, py: z.y + z.h / 2 }; const T = (arr: Box[]) => ({ push: (...bs: Box[]) => arr.push(...bs.map(q => ({ ...q, ...tw }))) }) as unknown as Box[];
-    return massing({ ...z, rot: undefined }, z0, z1, sel, T(solid), T(glazing), T(roofs), piece);
+    return massing({ ...z, rot: undefined }, z0, z1, sel, T(solid), T(glazing), T(roofs), piece, C);
   }
-  solid.push({ ...z, z0, z1: z0 + 0.7, c: PLINTH });
-  glazing.push({ x: z.x + 0.6, y: z.y + 0.6, w: z.w - 1.2, h: z.h - 1.2, z0: z0 + 0.7, z1: top - 1.1, c: sel ? '#8FB0C6' : GLASS[z.type] });
-  roofs.push({ x: z.x - 0.8, y: z.y - 0.8, w: z.w + 1.6, h: z.h + 1.6, z0: top - 1.1, z1: top, c: sel ? '#CFE0EA' : ROOF });
-  const mull = (x: number, y: number) => solid.push({ x: x - 0.18, y: y - 0.18, w: 0.36, h: 0.36, z0: z0 + 0.7, z1: top - 1.1, c: MULLION });
+  const roofC = sel ? '#CFE0EA' : S.roofC, e = S.eave;
+  // (one length of a bent pier runs end to end to meet the next: its long axis is its own x)
+  const horiz = piece || z.w >= z.h; const long = horiz ? z.w : z.h, across = horiz ? z.h : z.w;
+  // (where another building stands against a wall the roof stops at it: no deep eave, fascia or fins into the neighbour)
+  const eW = tc.w ? 0.8 : e, eE = tc.e ? 0.8 : e, eN = tc.n ? 0.8 : e, eS = tc.s ? 0.8 : e;
+  const off = C.off ?? 0, total = C.total ?? long;
+  // a rectangle given along and across the building's long axis, from its own corner
+  const along = (s0: number, s1: number, t0: number, t1: number): Rect => (horiz ? { x: z.x + s0, y: z.y + t0, w: s1 - s0, h: t1 - t0 } : { x: z.x + t0, y: z.y + s0, w: t1 - t0, h: s1 - s0 });
+  solid.push({ ...z, z0, z1: z0 + 0.7, c: S.plinth });
+  glazing.push({ x: z.x + 0.6, y: z.y + 0.6, w: z.w - 1.2, h: z.h - 1.2, z0: z0 + 0.7, z1: top - 1.1, c: sel ? '#8FB0C6' : S.glass ?? GLASS[z.type] });
+  // (v0.61: a spandrel band under ribbon glazing)
+  if (S.band) solid.push({ x: z.x + 0.35, y: z.y + 0.35, w: z.w - 0.7, h: z.h - 0.7, z0: z0 + 0.7, z1: z0 + 0.7 + S.band, c: S.bandC });
+  roofs.push({ x: z.x - eW, y: z.y - eN, w: z.w + eW + eE, h: z.h + eN + eS, z0: top - 1.1, z1: top, c: roofC });
+  // (a deep eave shows its edge: a fascia of the roof's own timber or concrete under the slab)
+  if (e > 1.2 && S.edgeC !== S.roofC && !sel) solid.push({ x: z.x - eW + 0.15, y: z.y - eN + 0.15, w: z.w + eW + eE - 0.3, h: z.h + eN + eS - 0.3, z0: top - 1.45, z1: top - 1.1, c: S.edgeC });
+  const mull = (x: number, y: number) => solid.push({ x: x - 0.18, y: y - 0.18, w: 0.36, h: 0.36, z0: z0 + 0.7, z1: top - 1.1, c: S.mullion });
   for (let x = z.x + 0.6; x <= z.x + z.w - 0.5; x += 7.5) { mull(x, z.y + 0.6); mull(x, z.y + z.h - 0.6); }
   if (!piece) for (let y = z.y + 0.6 + 7.5; y < z.y + z.h - 0.6; y += 7.5) { mull(z.x + 0.6, y); mull(z.x + z.w - 0.6, y); }
+  // v0.61: fins: blades standing off the long walls at half-bay centres, the height of the glass
+  // (set out from the building's own start, so the rhythm runs unbroken through the lengths of a bent pier)
+  if (S.fins) { const lo = piece ? 0 : 1.5, hi = piece ? long : long - 1.5; const first = Math.ceil((off + lo - 1.5) / 3.75) * 3.75 + 1.5 - off;
+    const walls = [horiz ? tc.n : tc.w, horiz ? tc.s : tc.e];
+    for (let q = first; q <= hi; q += 3.75) [-1.3, across + 0.2].forEach((t, k) => { if (!walls[k]) solid.push({ ...along(q - 0.13, q + 0.13, t, t + 1.1), z0: z0 + 0.7, z1: top - 1.1, c: S.finC }); }); }
+  // ---- the roof's form
+  const big = z.type === 'concourse' || z.type === 'checkin';
+  // (a concourse with a mezzanine keeps its flat roof: the mezzanine is the roof's form there)
+  if (S.roof === 'vault' && big && across >= 18 && !z.mezz) {
+    // a barrel vault along the long axis, built as stepped courses, with a glazed ridge
+    const a = across / 2 + e * 0.5, rise = Math.min(8, across * 0.17), N = 7, in0 = piece ? -0.2 : 1.5;
+    for (let k = 0; k < N; k++) { const t0 = (k / N) * Math.PI / 2, t1 = ((k + 1) / N) * Math.PI / 2; const hw = a * Math.cos(t0);
+      roofs.push({ ...along(in0, long - in0, across / 2 - hw, across / 2 + hw), z0: top + rise * Math.sin(t0), z1: top + rise * Math.sin(t1) + 0.05, c: roofC, plain: k > 0 }); }
+    const rw = Math.min(3, across * 0.08); const r0 = piece ? in0 : in0 + 2; glazing.push({ ...along(r0, long - r0, across / 2 - rw, across / 2 + rw), z0: top + rise, z1: top + rise + 0.9, c: GLASS.concourse });
+    return;
+  }
+  if (S.roof === 'monitors' && big && across >= 18 && total >= 30) {
+    // roof lights across the building every other bay: a glazed upstand under its own cap (set out along the whole
+    // building, so a bent pier's lengths each take the ones that fall on them)
+    const wM = across * 0.62, n = Math.max(1, Math.floor((total - 12) / 15)), step = (total - 12) / n;
+    for (let i = 0; i < n; i++) { const q = 6 + step * (i + 0.5) - off; if (q < (piece ? 0 : 2.1) || q >= (piece ? long : long - 2.1)) continue;
+      glazing.push({ ...along(q - 1.6, q + 1.6, across / 2 - wM / 2, across / 2 + wM / 2), z0: top, z1: top + 1.9, c: GLASS.concourse });
+      roofs.push({ ...along(q - 2.1, q + 2.1, across / 2 - wM / 2 - 0.5, across / 2 + wM / 2 + 0.5), z0: top + 1.9, z1: top + 2.3, c: roofC, plain: true }); }
+    if (z.type === 'concourse' && z.mezz) { const r = along(8, long - 8, across / 2 - 6, across / 2 + 6); glazing.push({ ...r, z0: top, z1: top + 4.2, c: GLASS.concourse }); roofs.push({ x: r.x - 0.7, y: r.y - 0.7, w: r.w + 1.4, h: r.h + 1.4, z0: top + 4.2, z1: top + 4.8, c: roofC }); }
+    return;
+  }
   if (z.type === 'concourse') {
     // one length of a bent pier: its clerestory runs along it whatever its proportions, end to end, to meet the next
-    const horiz = piece || z.w >= z.h; const wC = Math.min(12, (horiz ? z.h : z.w) * 0.28);
+    const wC = Math.min(12, across * 0.28);
     const r: Rect = piece ? { x: z.x - 0.2, y: z.y + z.h / 2 - wC / 2, w: z.w + 0.4, h: wC } : horiz ? { x: z.x + 8, y: z.y + z.h / 2 - wC / 2, w: z.w - 16, h: wC } : { x: z.x + z.w / 2 - wC / 2, y: z.y + 8, w: wC, h: z.h - 16 };
-    if (z.mezz) { const m: Rect = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; glazing.push({ ...m, z0: top, z1: top + 4.2, c: GLASS.concourse }); roofs.push({ x: m.x - 0.7, y: m.y - 0.7, w: m.w + 1.4, h: m.h + 1.4, z0: top + 4.2, z1: top + 4.8, c: ROOF }); return; }
+    if (z.mezz) { const m: Rect = horiz ? { x: r.x - 2, y: r.y - 5, w: r.w + 4, h: r.h + 10 } : { x: r.x - 5, y: r.y - 2, w: r.w + 10, h: r.h + 4 }; glazing.push({ ...m, z0: top, z1: top + 4.2, c: GLASS.concourse }); roofs.push({ x: m.x - 0.7, y: m.y - 0.7, w: m.w + 1.4, h: m.h + 1.4, z0: top + 4.2, z1: top + 4.8, c: roofC }); return; }
     glazing.push({ ...r, z0: top, z1: top + 2.2, c: GLASS.concourse });
-    roofs.push({ x: r.x - 0.5, y: r.y - 0.5, w: r.w + 1, h: r.h + 1, z0: top + 2.2, z1: top + 2.7, c: ROOF });
+    roofs.push({ x: r.x - 0.5, y: r.y - 0.5, w: r.w + 1, h: r.h + 1, z0: top + 2.2, z1: top + 2.7, c: roofC });
   } else {
     const k = hashN(z.x, z.y);
     for (let i = 0; i < 2; i++) {
@@ -947,8 +999,10 @@ function lineLoop(pts: Pt[], z: number, c: string) {
 function edgeLines(bs: Box[], opacity: number) {
   const p: number[] = [];
   for (const b of bs) {
-    const x0 = b.x, x1 = b.x + b.w, y0 = b.y, y1 = b.y + b.h, z = b.z1 + 0.02;
-    p.push(x0, z, y0, x1, z, y0, x1, z, y0, x1, z, y1, x1, z, y1, x0, z, y1, x0, z, y1, x0, z, y0);
+    const z = b.z1 + 0.02;
+    // (v0.61: a turned box's outline turns with it)
+    const c = [{ x: b.x, y: b.y }, { x: b.x + b.w, y: b.y }, { x: b.x + b.w, y: b.y + b.h }, { x: b.x, y: b.y + b.h }].map(q => (b.rot ? turn(q, { x: b.px ?? b.x + b.w / 2, y: b.py ?? b.y + b.h / 2 }, b.rot) : q));
+    for (let i = 0; i < 4; i++) p.push(c[i].x, z, c[i].y, c[(i + 1) % 4].x, z, c[(i + 1) % 4].y);
   }
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
   return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: '#7C725F', transparent: true, opacity }));

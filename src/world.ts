@@ -6,7 +6,7 @@ import {
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
   polyLen, along,
 } from './geom';
-import { GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
+import { STYLES, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, wayPts, curveOK, roundOuter, roundDef, chordWays } from './ways';
@@ -49,7 +49,7 @@ export interface Zone {
   pair?: number;
 }
 /** A terminal site (v0.8): land allocated with New Terminal before its modules are laid out inside it. */
-export interface Site { id: number; x: number; y: number; w: number; h: number }
+export interface Site { id: number; x: number; y: number; w: number; h: number; /** v0.61: its architecture (an index into `STYLES`; absent: the first) */ style?: number }
 /** Footfall along a concourse's long axis, one entry per COMMERCE.binM: weighted passers, raw passers, and spare minutes summed. */
 export interface Flow { w: number[]; n: number[]; s: number[] }
 export interface Runway { id: number; a: Pt; b: Pt }
@@ -138,6 +138,7 @@ export function migrateWorld(w: World): World {
     }
   }
   w.sites = w.sites.filter(st => st && isFinite(st.x) && isFinite(st.w) && st.w > 0 && st.h > 0);
+  for (const st of w.sites) if (st.style !== undefined && !(Number.isInteger(st.style) && st.style > 0 && st.style < STYLES.length)) delete st.style;   // (v0.61)
   for (const z of w.zones) if (z.site !== undefined && !w.sites.some(st => st.id === z.site)) delete z.site;
   return w;
 }

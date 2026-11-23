@@ -311,3 +311,9 @@ ul.goals li.done .tick { background: var(--ink); border-color: var(--ink); color
 .bankask .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
 .bankask .row span { flex: 1; }
 .lostab.banks li { cursor: default; }
+
+/* v0.61: architecture */
+.styles { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 4px; }
+.styles .btn { display: flex; align-items: center; gap: 6px; text-align: left; }
+.styles .btn i { width: 14px; height: 14px; border: 2px solid; border-radius: 2px; flex: none; }
+.styles .btn.on { background: var(--ink, #28241E); color: #F4EDDF; }
