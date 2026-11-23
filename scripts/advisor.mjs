@@ -20,7 +20,8 @@ const show = (name, list) => console.log(name + ':', list.length ? list.map(a =>
 // 2. only four stands built: flights are turned away for gates, and there is room for more
 { const w = sampleWorld(); const d = derive(w); const c = w.zones.find(z => z.type === 'concourse');
   c.stands = d.gateSlots.filter(s => s.zone.id === c.id && s.on).slice(0, 4).map(s => ({ x: s.door.x, y: s.door.y, paid: 0, cls: s.cls }));
-  const sim = day(w); const A = advise(sim); show('four stands built', A);
+  // (and a bank asked for, so that whatever the day's dice, more aircraft want stands at once than there are)
+  const sim = day(w, q => { q.addBank('meridian', 7); }); const A = advise(sim); show('four stands built, and a bank of eight', A);
   console.log('   gates', sim.d.gates.length, '| turned away for gates', sim.plan.rejectedGates, '| places left', sim.d.gateSlots.filter(s => !s.on).length);
   const st = A.find(a => a.kind === 'stands');
   check('flights turned away for gates bring the advice to build stands, first in the list', sim.plan.rejectedGates > 0 && !!st && A[0] === st && st.n >= 1 && st.n <= sim.d.gateSlots.filter(s => !s.on).length); }
