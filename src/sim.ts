@@ -57,7 +57,7 @@ export interface Flight {
    *  `path`); `held` it is standing for another aircraft, since `heldT`; `hold` minutes lost so far this leg;
    *  `pass` aircraft it has been cleared past; `faceT` since when it has faced one head-on; `freeT` towed until then;
    *  `released` its departure is counted and it waits only for the taxiway (`gateT` since when). */
-  route?: number[]; held?: boolean; heldT?: number; hold?: number; pass?: Set<number>; faceT?: number; freeT?: number; released?: boolean; gateT?: number; taxiT?: number;
+  route?: number[]; held?: boolean; /** (the aircraft it stands for) */ heldBy?: number; heldT?: number; hold?: number; pass?: Set<number>; faceT?: number; freeT?: number; released?: boolean; gateT?: number; taxiT?: number;
 }
 
 type WaitKey = 'curb' | 'checkin' | 'security' | 'claim' | 'passport';
@@ -72,7 +72,7 @@ export interface DayStats {
   cost: { staff: number; upkeep: number };
   lotFull: number;
   /** v0.58: the airfield's day: aircraft movements that taxied, their taxi minutes, minutes held for other aircraft, held on stand, and head-on stand-offs. */
-  ground: { moves: number; taxi: number; hold: number; gate: number; standoffs: number };
+  ground: { moves: number; taxi: number; hold: number; gate: number; standoffs: number; /** towed through after standing `GROUND.maxHold` minutes */ tows: number };
 }
 export interface PlanInfo {
   demand: number; byAirline: { airline: Airline; requested: number; scheduled: number }[];
@@ -85,7 +85,7 @@ const emptyStats = (): DayStats => ({
   paxDep: 0, paxArr: 0, missed: 0, stranded: 0, satSum: 0, satN: 0,
   waits: { curb: { sum: 0, n: 0, max: 0 }, checkin: { sum: 0, n: 0, max: 0 }, security: { sum: 0, n: 0, max: 0 }, claim: { sum: 0, n: 0, max: 0 }, passport: { sum: 0, n: 0, max: 0 } },
   walkSum: 0, walkN: 0, flights: 0, delayed: 0, cancelled: 0, delaySum: 0,
-  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, dutyfree: 0, rent: 0, parking: 0, curb: 0, hotel: 0, rental: 0, rideshare: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0, ground: { moves: 0, taxi: 0, hold: 0, gate: 0, standoffs: 0 },
+  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, dutyfree: 0, rent: 0, parking: 0, curb: 0, hotel: 0, rental: 0, rideshare: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0, ground: { moves: 0, taxi: 0, hold: 0, gate: 0, standoffs: 0, tows: 0 },
 });
 
 /** All revenue lines for a day. rent is the top-up when a lot's sales share falls short of its minimum guarantee. */
@@ -535,7 +535,7 @@ export class Sim {
   // ---------------------------------------------------------------- aircraft
   updateFlights(dt: number) {
     const t = this.t;
-    this.onGround = this.flights.filter(o => o.state === 'taxiIn' || o.state === 'taxiOut' || o.state === 'holdDep' || o.state === 'waitGate' || (o.state === 'takeoff' && t < o.landT));
+    this.onGround = this.flights.filter(o => o.state === 'taxiIn' || o.state === 'taxiOut' || o.state === 'holdDep' || (o.state === 'takeoff' && t < o.landT));   // (one waiting for its stand is passed, as before: it waits off the lane)
     for (const f of this.flights) {
       switch (f.state) {
         case 'pending':
@@ -621,7 +621,7 @@ export class Sim {
     for (const e of this.d.air.edges) { if (e.kind !== 'taxi' || e.ref <= 0) continue; const d = segDist(p, this.d.air.nodes[e.u], this.d.air.nodes[e.v]); if (d < bd) { bd = d; ref = e.ref; } }
     let g = this.ground.get(ref); if (!g) { g = { min: 0, so: 0 }; this.ground.set(ref, g); } return g;
   }
-  private taxiStart(f: Flight) { f.held = false; f.heldT = undefined; f.faceT = undefined; f.hold = 0; f.taxiT = this.t; }
+  private taxiStart(f: Flight) { f.held = false; f.heldBy = undefined; f.heldT = undefined; f.faceT = undefined; f.hold = 0; f.taxiT = this.t; }
   private taxiDone(f: Flight) {
     if (f.taxiT === undefined) return;
     const g = this.stats.ground; g.moves++; g.taxi += this.t - f.taxiT; f.taxiT = undefined; f.held = false; f.route = undefined;
@@ -659,10 +659,11 @@ export class Sim {
     const gap = GROUND.gap + f.ac.length, look = want + gap + 30, R = GROUND.reach;
     const taxi = (o: Flight) => o.state === 'taxiIn' || o.state === 'taxiOut';
     const prio = (o: Flight) => (o.state === 'taxiIn' ? 0 : 1e6) + o.id;
-    let lim = want, facing: Flight | null = null;
+    let lim = want, facing: Flight | null = null, by = -1;
     for (const o of this.onGround) {
       if (o === f || f.pass?.has(o.id)) continue;
-      if (o.state === 'waitGate' && o.gate === f.gate) continue;            // (it waits for the stand this one is leaving)
+      // (the one leaving a stand and the one that waited for it pass each other: the swap is the stand's own business)
+      if (o.gate === f.gate && (!o.route || !f.route)) continue;
       const dx = o.x - f.x, dy = o.y - f.y; if (dx * dx + dy * dy > (look + R) * (look + R)) continue;
       let hit = -1, ang = 0;
       for (let q = 8; q <= look; q += 8) {
@@ -671,15 +672,16 @@ export class Sim {
       }
       if (hit < 0) continue;
       const dot = Math.cos(ang - o.ang); const room = Math.max(0, hit - gap);
-      if (taxi(o) && dot < -0.3) { if (room < lim) { lim = room; facing = o; } }
-      else if (!taxi(o) || o.held || dot > 0.5 || prio(o) < prio(f)) { if (room < lim) { lim = room; facing = null; } }
+      if (taxi(o) && dot < -0.3) { if (room < lim) { lim = room; facing = o; by = o.id; } }
+      // (one that stands because of this aircraft is not given way to in turn)
+      else if (!taxi(o) || (o.held && o.heldBy !== f.id) || dot > 0.5 || prio(o) < prio(f)) { if (room < lim) { lim = room; facing = null; by = o.id; } }
     }
-    if (lim >= want) { f.held = false; f.heldT = undefined; f.faceT = undefined; return want; }
+    if (lim >= want) { f.held = false; f.heldBy = undefined; f.heldT = undefined; f.faceT = undefined; return want; }
     const lost = (want - lim) / Math.max(1, f.speed);
     f.hold = (f.hold ?? 0) + lost; this.stats.ground.hold += lost; this.groundAt(f).min += lost;
     void dt;
-    if (lim > 0.01) { f.held = false; f.heldT = undefined; return lim; }
-    f.held = true; f.heldT ??= t;
+    if (lim > 0.01) { f.held = false; f.heldBy = undefined; f.heldT = undefined; return lim; }
+    f.held = true; f.heldBy = by; f.heldT ??= t;
     if (facing) {
       f.faceT ??= t;
       if (t - f.faceT >= GROUND.standoff) {
@@ -688,7 +690,7 @@ export class Sim {
         this.noteOnce(`${f.code} and ${facing.code} met head-on on a taxiway: a tug cleared them after ${GROUND.standoff} min. A second taxiway would let them pass.`, 'warn');
       }
     } else f.faceT = undefined;
-    if (t - f.heldT >= GROUND.maxHold) { f.freeT = t + 1.5; f.heldT = undefined; this.stats.ground.standoffs++; this.groundAt(f).so++; }
+    if (t - f.heldT >= GROUND.maxHold) { f.freeT = t + 1.5; f.heldT = undefined; f.heldBy = undefined; this.stats.ground.tows++; }
     return 0;
   }
 

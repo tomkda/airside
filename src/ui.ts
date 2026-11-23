@@ -2440,7 +2440,7 @@ export class UI {
     const per = (g.hold + g.gate) / g.moves; const b = per <= GROUND.bands[0] ? 0 : per <= GROUND.bands[1] ? 1 : per <= GROUND.bands[2] ? 2 : 3;
     const worst = [...(g === cur ? s.ground : s.groundLast)].filter(([id]) => id > 0).sort((a, b) => b[1].min + b[1].so * 3 - a[1].min - a[1].so * 3)[0];
     return `<ul class="lostab"><li ${worst ? `data-way="${worst[0]}"` : ''}><span class="los" style="background:${LOS.colors[b]}">${['Free-flowing', 'Flowing', 'Congested', 'Jammed'][b]}</span> <b>Airfield</b>
-      <span class="muted small">${per.toFixed(1)} min held per movement · taxi ${(g.taxi / g.moves).toFixed(1)} min · ${g.standoffs} stand-off${g.standoffs === 1 ? '' : 's'} · ${g.gate.toFixed(0)} min held on stand${worst && (worst[1].min > 1 || worst[1].so) ? ` · worst: taxiway ${esc(s.d.taxiLetter.get(worst[0]) ?? '')} (${worst[1].min.toFixed(0)} min)` : ''}</span></li></ul>`;
+      <span class="muted small">${per.toFixed(1)} min held per movement · taxi ${(g.taxi / g.moves).toFixed(1)} min · ${g.standoffs} stand-off${g.standoffs === 1 ? '' : 's'} ${g.tows ? ` · ${g.tows} towed clear after a long hold` : ''} · ${g.gate.toFixed(0)} min held on stand${worst && (worst[1].min > 1 || worst[1].so) ? ` · worst: taxiway ${esc(s.d.taxiLetter.get(worst[0]) ?? '')} (${worst[1].min.toFixed(0)} min)` : ''}</span></li></ul>`;
   }
   /** v0.57: a module's level of service: the day's band, the two counts behind it, and what would lift it. */
   losHTML(z: Zone) {

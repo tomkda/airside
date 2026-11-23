@@ -7,6 +7,7 @@ import { derive, parallelTaxi } from './src/world';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
 import { GROUND } from './src/config';
+import * as W from './src/ways';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
 const fly = (w, days = 1) => { const sim = new Sim(w, 7); sim.relayout(); sim.startDay(); const out = []; let close = 1e9;
@@ -52,6 +53,31 @@ check('the day names where they stood', !!worst && worst[1].min > 1);
   if (!('why' in par)) { for (const q of par.ways) w.ways.push({ id: w.nextId++, kind: 'taxi', a: q.a, b: q.b, cls: q.cls, lanes: 0 });
     const D = fly(w); line('sample with a second parallel', D);
     check('the sample keeps its 14 gates and flies', D.sim.d.gates.length === 14 && D.s.cancelled === 0 && D.s.missed === 0); } }
+// 5. other days and seeds on the sample: no aircraft gives way to one that is standing for it, and a stand's swap is no stand-off
+{ let tows = 0, so = 0, held = 0, cxl = 0;
+  for (const seed of [1, 2, 8]) { const sim = new Sim(sampleWorld(), seed); sim.relayout(); sim.startDay();
+    sim.onDayEnd = r => { tows += r.stats.ground.tows; so += r.stats.ground.standoffs; held += r.stats.ground.hold; };
+    while (sim.day < 4) sim.step(0.25); }
+  console.log('sample, seeds 1, 2 and 8 over four days each:', tows, 'towed clear,', so, 'stand-offs,', held.toFixed(0), 'min held');
+  check('nobody stands long enough to be towed, and there is no stand-off', tows === 0 && so === 0 && held < 60); }
+
+// 6. the parallel's ends, a second click, and a curve
+{ const { w, keep } = one(); const d = derive(w); const par = parallelTaxi(w, keep, d.aprons);
+  const m = par.ways[0]; console.log('   beside the angled link:', par.ways.length, 'way(s), from', Math.round(m.a.x) + ',' + Math.round(m.a.y), 'to', Math.round(m.b.x) + ',' + Math.round(m.b.y));
+  check('its ends meet the runway centre line and taxiway A themselves, with no link laid along either', par.ways.length === 1 && Math.abs(m.a.y - 2300) < 0.5 && Math.abs(m.b.y - 2490) < 0.5);
+  for (const q of par.ways) w.ways.push({ id: w.nextId++, kind: 'taxi', a: q.a, b: q.b, cls: q.cls, lanes: 0 });
+  const again = parallelTaxi(w, keep, derive(w).aprons);
+  check('a second click does not lay the same one again', 'why' in again || Math.abs(again.ways[0].a.x - m.a.x) > 40);
+  const w2 = sampleWorld(); const A2 = w2.ways.find(q => q.kind === 'taxi' && Math.abs(q.a.y - 2490) < 1 && Math.abs(q.b.y - 2490) < 1);
+  const p1 = parallelTaxi(w2, A2, derive(w2).aprons); for (const q of p1.ways) w2.ways.push({ id: w2.nextId++, kind: 'taxi', a: q.a, b: q.b, cls: q.cls, lanes: 0 });
+  const p2 = parallelTaxi(w2, A2, derive(w2).aprons);
+  console.log('   taxiway A: first', p1.ways.length, 'way(s) at y', p1.ways[0].a.y, '| asked again:', 'why' in p2 ? p2.why : 'y ' + p2.ways[0].a.y);
+  check('taxiway A gets one way with no link (its ends are on the end links); asked again it is refused: one side has it, the other has the stands', p1.ways.length === 1 && 'why' in p2);
+  const w3 = sampleWorld(); const cv = { id: w3.nextId++, kind: 'taxi', a: { x: 1500, y: 1500 }, b: { x: 2100, y: 1500 }, c: { x: 1800, y: 1300 }, cls: 2, lanes: 0 }; w3.ways.push(cv);
+  const pc = parallelTaxi(w3, cv, derive(w3).aprons);
+  if (!('why' in pc)) { const P = W.wayPts(cv), Q = W.wayPts(pc.ways[0]); let least = 1e9; for (const q of Q) for (const p of P) least = Math.min(least, Math.hypot(p.x - q.x, p.y - q.y));
+    console.log('   beside a curve: never nearer than', least.toFixed(1), 'm'); check('a curve is set off along its own normals: 40 m or more all the way', least >= 40); }
+  else console.log('   beside a curve: refused,', pc.why); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

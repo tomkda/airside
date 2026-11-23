@@ -4,11 +4,12 @@
 import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
+  polyLen, along,
 } from './geom';
 import { GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
-import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, curveOK, roundOuter, roundDef, chordWays } from './ways';
+import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, wayPts, curveOK, roundOuter, roundDef, chordWays } from './ways';
 export type { Round, Piece } from './ways';
 import { gripsOf, Grip, maxTwist, curved, widthK, simplePoly, zonePts, inZone, toLocal, toWorld, overlapOf, polyCentre, zonesOverlap, centreOf, zoneBox, shaped, polyBox, polyClip, polyArea, arcOf, frameOf, bendPath, heart, maxBend, zoneParts, END_WIDTH } from './shapes';
 import { buildGateAreas, GateSlot, SideGuide, SIDE_NAMES, sideName, LANE_REF, selfDepth } from './gates';
@@ -1389,22 +1390,55 @@ function runwayStubs(world: World, rw: Runway, extra: WaySpec[] = []): number[] 
  * for the prevailing landing direction; the rest are square.
  */
 /** v0.58: a second taxiway beside this one, so aircraft bound opposite ways need not share it: the same line set off
- *  by the centre-line separation for its class (`GROUND.par`), joined to it at both ends. The side clear of buildings
- *  and stands is tried first. Every existing taxiway it crosses joins it by itself (the network splits them). */
+ *  by the centre-line separation for its class (`GROUND.par`). An end that stands on a runway or on another taxiway
+ *  is run on (or cut back) to meet that same line; a free end is joined to the first by a short link. A curve is
+ *  offset along its own normals. The side clear of the terminal is tried first; a side that already has one is
+ *  refused. Every existing taxiway it crosses joins it by itself (the network splits them). */
 export function parallelTaxi(world: World, w: Way, aprons: Apron[]): { ways: (WaySpec & { c?: Pt })[]; len: number } | { why: string } {
-  const sep = GROUND.par[w.cls] ?? GROUND.par[2]; const d = norm(sub(w.b, w.a)); const n = { x: -d.y, y: d.x };
+  const sep = GROUND.par[w.cls] ?? GROUND.par[2];
   const mid = wayMid(w); let why = 'no room on either side';
-  // (the side further from the nearest terminal building first)
+  const others = chordWays(world.ways.filter(q => q.kind === 'taxi' && q.id !== w.id));
+  const perp = (d: Pt) => ({ x: -d.y, y: d.x });
+  const meet = (p: Pt, d: Pt, q: Pt, e: Pt): Pt | null => { const den = d.x * e.y - d.y * e.x; if (Math.abs(den) < 1e-6) return null; const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den; return add(p, mul(d, t)); };
+  // the line an end stands on: a runway's centre line, or another taxiway it meets
+  const host = (p: Pt): { a: Pt; b: Pt; seg: boolean } | null => {
+    for (const r of world.runways) if (segDist(p, r.a, r.b) < 6) return { a: r.a, b: r.b, seg: true };
+    for (const q of others) if (segDist(p, q.a, q.b) < 6) return { a: q.a, b: q.b, seg: true };
+    return null;
+  };
   const near = (p: Pt) => Math.min(1e9, ...world.zones.filter(z => isTerminalModule(z)).map(z => dist(p, centreOf(z))));
-  const sides = [1, -1].sort((p, q) => near(add(mid, mul(n, q * sep))) - near(add(mid, mul(n, p * sep))));
+  const n0 = perp(norm(sub(w.b, w.a)));
+  const sides = [1, -1].sort((p, q) => near(add(mid, mul(n0, q * sep))) - near(add(mid, mul(n0, p * sep))));
   for (const k of sides) {
-    const o = mul(n, k * sep); const a = add(w.a, o), b = add(w.b, o), c = w.c ? add(w.c, o) : undefined;
+    const da = norm(sub(w.c ?? w.b, w.a)), db = norm(sub(w.b, w.c ?? w.a));
+    let a = add(w.a, mul(perp(da), k * sep)), b = add(w.b, mul(perp(db), k * sep)); let c: Pt | undefined;
+    if (w.c) {
+      const x = meet(a, da, b, db); if (!x) { why = 'its curve cannot be set off'; continue; } c = x;
+      // (a true offset keeps its distance all the way round)
+      const P = wayPts(w), Q = wayPts({ a, b, c } as Way); let least = Infinity; for (const q of Q) for (let i = 1; i < P.length; i++) least = Math.min(least, segDist(q, P[i - 1], P[i]));
+      if (least < sep * 0.9) { why = 'its curve is too tight to set another off it'; continue; }
+    }
+    const ways: (WaySpec & { c?: Pt })[] = []; let links = 0, ok = true;
+    for (const end of ['a', 'b'] as const) {
+      const E = w[end], d = end === 'a' ? da : db; const h = c ? null : host(E); const E2 = end === 'a' ? a : b;
+      const x = h ? meet(E2, d, h.a, norm(sub(h.b, h.a))) : null;
+      if (h && x && dist(x, E2) < sep * 4 && projT(x, h.a, h.b) > -0.001 && projT(x, h.a, h.b) < 1.001) { if (end === 'a') a = x; else b = x; continue; }
+      const l = canPlaceWay(world, 'taxi', E, E2, aprons, undefined, w.cls);
+      if (l.ok && !h) { ways.push({ a: { ...E }, b: { ...E2 }, cls: w.cls }); links++; }
+      else if (!h) { ok = false; why = l.reason ?? why; }
+    }
+    if (!ok && !links) continue;
+    // one already there (all along this line) is not laid again
+    const on = (p: Pt) => others.some(q => segDist(p, q.a, q.b) < 5);
+    const lay: Way = { ...w, a, b, c } as Way; if (!c) delete lay.c;
+    // (judged along its middle: its ends may well stand on the links it meets)
+    const P = wayPts(lay), tot = polyLen(P);
+    if ([0.15, 0.3, 0.5, 0.7, 0.85].every(t => on(along(P, t * tot).p))) { why = 'it already has a parallel on that side'; continue; }
+    // (never through stands, its own or anyone's: they would give way to it and the gates would go)
+    if (P.some((q, i) => i > 0 && aprons.some(ap => rectSegDist(ap.rect, P[i - 1], q) === 0))) { why = 'it would run through the stands on that side'; continue; }
     const main = canPlaceWay(world, 'taxi', a, b, aprons, c, w.cls); if (!main.ok) { why = main.reason ?? why; continue; }
-    const la = canPlaceWay(world, 'taxi', w.a, a, aprons, undefined, w.cls), lb = canPlaceWay(world, 'taxi', w.b, b, aprons, undefined, w.cls);
-    // (an end that cannot be joined square is left to the taxiways that cross: one link is enough)
-    const ways: (WaySpec & { c?: Pt })[] = [{ a, b, cls: w.cls, c }]; if (la.ok) ways.push({ a: { ...w.a }, b: a, cls: w.cls }); if (lb.ok) ways.push({ a: { ...w.b }, b, cls: w.cls });
-    if (!la.ok && !lb.ok) { why = la.reason ?? lb.reason ?? why; continue; }
-    return { ways, len: wayLen({ ...w, a, b, c } as Way) + (la.ok ? sep : 0) + (lb.ok ? sep : 0) };
+    ways.unshift({ a, b, cls: w.cls, c });
+    return { ways, len: wayLen(lay) + links * sep };
   }
   return { why };
 }
