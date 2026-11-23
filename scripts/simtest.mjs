@@ -20,6 +20,7 @@ sim.onDayEnd = r => {
   console.log(r.label, '| plan', r.plan.scheduled + '/' + r.plan.demand, r.plan.limit,
     '| flights', s.flights, 'delayed', s.delayed, 'cxl', s.cancelled,
     '| pax dep', s.paxDep, 'arr', s.paxArr, 'missed', s.missed,
+    '| ground: taxi', (s.ground.taxi / Math.max(1, s.ground.moves)).toFixed(1), 'min/move, held', s.ground.hold.toFixed(1), 'min, on stand', s.ground.gate.toFixed(1), 'stand-offs', s.ground.standoffs,
     '| waits avg/max curb', w('curb'), 'checkin', w('checkin'), 'sec', w('security'), 'claim', w('claim'),
     '| shops/food/lounge/dutyfree/rent $', Math.round(s.rev.shops), Math.round(s.rev.food), Math.round(s.rev.lounges), Math.round(s.rev.dutyfree), Math.round(s.rev.rent), 'leased', sim.world.zones.filter(z=>z.type==='concourse').map(z=>sim.d.lease.get(z.id).count+'/'+sim.d.lease.get(z.id).max).join(','), '| sat', r.sat.toFixed(0), 'onTime', (r.onTime * 100).toFixed(0) + '%', '| profit/day $', Math.round(r.profit), 'maxLivePax', maxPax);
   maxPax = 0;

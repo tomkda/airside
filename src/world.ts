@@ -5,7 +5,7 @@ import {
   Pt, Rect, add, sub, mul, dot, dist, norm, perpLeft, lerpPt, clamp, projT, center, area,
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
 } from './geom';
-import { ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
+import { GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, curveOK, roundOuter, roundDef, chordWays } from './ways';
@@ -1388,6 +1388,26 @@ function runwayStubs(world: World, rw: Runway, extra: WaySpec[] = []): number[] 
  * plus intermediate exits every ~650 m. Exits past the landing roll are angled 30° as rapid exits
  * for the prevailing landing direction; the rest are square.
  */
+/** v0.58: a second taxiway beside this one, so aircraft bound opposite ways need not share it: the same line set off
+ *  by the centre-line separation for its class (`GROUND.par`), joined to it at both ends. The side clear of buildings
+ *  and stands is tried first. Every existing taxiway it crosses joins it by itself (the network splits them). */
+export function parallelTaxi(world: World, w: Way, aprons: Apron[]): { ways: (WaySpec & { c?: Pt })[]; len: number } | { why: string } {
+  const sep = GROUND.par[w.cls] ?? GROUND.par[2]; const d = norm(sub(w.b, w.a)); const n = { x: -d.y, y: d.x };
+  const mid = wayMid(w); let why = 'no room on either side';
+  // (the side further from the nearest terminal building first)
+  const near = (p: Pt) => Math.min(1e9, ...world.zones.filter(z => isTerminalModule(z)).map(z => dist(p, centreOf(z))));
+  const sides = [1, -1].sort((p, q) => near(add(mid, mul(n, q * sep))) - near(add(mid, mul(n, p * sep))));
+  for (const k of sides) {
+    const o = mul(n, k * sep); const a = add(w.a, o), b = add(w.b, o), c = w.c ? add(w.c, o) : undefined;
+    const main = canPlaceWay(world, 'taxi', a, b, aprons, c, w.cls); if (!main.ok) { why = main.reason ?? why; continue; }
+    const la = canPlaceWay(world, 'taxi', w.a, a, aprons, undefined, w.cls), lb = canPlaceWay(world, 'taxi', w.b, b, aprons, undefined, w.cls);
+    // (an end that cannot be joined square is left to the taxiways that cross: one link is enough)
+    const ways: (WaySpec & { c?: Pt })[] = [{ a, b, cls: w.cls, c }]; if (la.ok) ways.push({ a: { ...w.a }, b: a, cls: w.cls }); if (lb.ok) ways.push({ a: { ...w.b }, b, cls: w.cls });
+    if (!la.ok && !lb.ok) { why = la.reason ?? lb.reason ?? why; continue; }
+    return { ways, len: wayLen({ ...w, a, b, c } as Way) + (la.ok ? sep : 0) + (lb.ok ? sep : 0) };
+  }
+  return { why };
+}
 export function autoConnectors(world: World, w: WaySpec, aprons: Apron[]): WaySpec[] {
   const out: WaySpec[] = [];
   const wd = norm(sub(w.b, w.a));

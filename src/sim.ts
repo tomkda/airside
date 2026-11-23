@@ -1,8 +1,8 @@
 // Simulation core. Pure logic: no DOM, no canvas. Deterministic for a given seed and command sequence.
 // Time unit: minutes of the day. One sim "day" stands in for several calendar days.
 // Everything moves on networks: aircraft on taxiways, cars on roads, people through doors, cores and sidewalks.
-import { Pt, add, mul, dist, polyLen, along, rng, clamp, center } from './geom';
-import { CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER, YIELD } from './config';
+import { Pt, add, mul, dist, polyLen, along, rng, clamp, center, segDist } from './geom';
+import { GROUND, CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER, YIELD } from './config';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { wayLen, isRingRef } from './ways';
 import { toLocal, clampInto, frameOf, polyArea } from './shapes';
@@ -53,6 +53,11 @@ export interface Flight {
   x: number; y: number; ang: number; alt: number;
   bagsArr: number; bagsDone: number; claim?: Proc; carousel: number;
   boarded: number; deplaned: number; spawnedDep: boolean;
+  /** v0.58: on the ground. `route` is the air nodes its taxi path runs through (the last `route.length` points of
+   *  `path`); `held` it is standing for another aircraft, since `heldT`; `hold` minutes lost so far this leg;
+   *  `pass` aircraft it has been cleared past; `faceT` since when it has faced one head-on; `freeT` towed until then;
+   *  `released` its departure is counted and it waits only for the taxiway (`gateT` since when). */
+  route?: number[]; held?: boolean; heldT?: number; hold?: number; pass?: Set<number>; faceT?: number; freeT?: number; released?: boolean; gateT?: number; taxiT?: number;
 }
 
 type WaitKey = 'curb' | 'checkin' | 'security' | 'claim' | 'passport';
@@ -66,6 +71,8 @@ export interface DayStats {
   rev: { slots: number; pax: number; shops: number; food: number; lounges: number; dutyfree: number; rent: number; parking: number; curb: number; hotel: number; rental: number; rideshare: number };
   cost: { staff: number; upkeep: number };
   lotFull: number;
+  /** v0.58: the airfield's day: aircraft movements that taxied, their taxi minutes, minutes held for other aircraft, held on stand, and head-on stand-offs. */
+  ground: { moves: number; taxi: number; hold: number; gate: number; standoffs: number };
 }
 export interface PlanInfo {
   demand: number; byAirline: { airline: Airline; requested: number; scheduled: number }[];
@@ -78,7 +85,7 @@ const emptyStats = (): DayStats => ({
   paxDep: 0, paxArr: 0, missed: 0, stranded: 0, satSum: 0, satN: 0,
   waits: { curb: { sum: 0, n: 0, max: 0 }, checkin: { sum: 0, n: 0, max: 0 }, security: { sum: 0, n: 0, max: 0 }, claim: { sum: 0, n: 0, max: 0 }, passport: { sum: 0, n: 0, max: 0 } },
   walkSum: 0, walkN: 0, flights: 0, delayed: 0, cancelled: 0, delaySum: 0,
-  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, dutyfree: 0, rent: 0, parking: 0, curb: 0, hotel: 0, rental: 0, rideshare: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0,
+  rev: { slots: 0, pax: 0, shops: 0, food: 0, lounges: 0, dutyfree: 0, rent: 0, parking: 0, curb: 0, hotel: 0, rental: 0, rideshare: 0 }, cost: { staff: 0, upkeep: 0 }, lotFull: 0, ground: { moves: 0, taxi: 0, hold: 0, gate: 0, standoffs: 0 },
 });
 
 /** All revenue lines for a day. rent is the top-up when a lot's sales share falls short of its minimum guarantee. */
@@ -212,6 +219,7 @@ export class Sim {
   relayout() {
     this.d = derive(this.world);
     this.airCache.clear(); this.roadCache.clear(); this.shopLoad.clear();
+    for (const f of this.flights) f.route = undefined;   // (v0.58: the airfield's nodes are new ones)
     this.roadLoad = new Float32Array(this.d.road.edges.length);
     // v0.11: how much of its length each road edge can use. Traffic stops and starts at a crossroads or T, so an
     // edge that ends at one holds less; a roundabout keeps traffic moving, so its ring and its approaches do not lose any.
@@ -343,6 +351,7 @@ export class Sim {
   startDay() {
     this.t = DAY_START;
     if (this.los.size) this.losLast = this.los; this.los = new Map();
+    if (this.ground.size || this.flights.length) this.groundLast = this.ground; this.ground = new Map();
     this.flights = []; this.pax = []; this.cars = []; this.pending = [];
     this.openArr.clear(); this.bagCounter = {}; this.noted.clear(); this.shopLoad.clear(); this.shopDay.clear(); this.lotDay.clear(); this.flowDay.clear();
     this.gateBusy.clear(); this.rwFree.clear();
@@ -526,6 +535,7 @@ export class Sim {
   // ---------------------------------------------------------------- aircraft
   updateFlights(dt: number) {
     const t = this.t;
+    this.onGround = this.flights.filter(o => o.state === 'taxiIn' || o.state === 'taxiOut' || o.state === 'holdDep' || o.state === 'waitGate' || (o.state === 'takeoff' && t < o.landT));
     for (const f of this.flights) {
       switch (f.state) {
         case 'pending':
@@ -541,7 +551,7 @@ export class Sim {
           this.move(f, dt);
           break;
         case 'waitGate':
-          if (!this.gateBusy.get(f.gate.id)) { this.gateBusy.set(f.gate.id, f); this.setPath(f, [{ x: f.x, y: f.y }, f.gate.stand], TUNE.taxiSpeed * 0.3); f.state = 'taxiIn'; }
+          if (!this.gateBusy.get(f.gate.id)) { this.gateBusy.set(f.gate.id, f); this.setPath(f, [{ x: f.x, y: f.y }, f.gate.stand], TUNE.taxiSpeed * 0.3); f.route = undefined; f.state = 'taxiIn'; }
           break;
         case 'stand':
           this.atStand(f);
@@ -577,9 +587,11 @@ export class Sim {
       if (k >= 1) { f.state = 'gone'; this.gateBusy.forEach((v, key) => { if (v === f) this.gateBusy.set(key, null); }); }
       return;
     }
-    f.d += f.speed * dt;
-    const a = along(f.path, f.d); f.x = a.p.x; f.y = a.p.y; f.ang = a.ang;
+    const want = f.speed * dt; const go = f.state === 'taxiIn' || f.state === 'taxiOut' ? this.clearAhead(f, want, dt) : want;
+    f.d += go;
+    const a = along(f.path, f.d); f.x = a.p.x; f.y = a.p.y; if (go > 0.01 || !(f.state === 'taxiIn' || f.state === 'taxiOut')) f.ang = a.ang;
     if (f.d < f.len) return;
+    if (f.state === 'taxiIn' || f.state === 'taxiOut') this.taxiDone(f);
     if (f.state === 'roll') { this.taxiIn(f); return; }
     if (f.state === 'taxiIn') {
       const end = f.path[f.path.length - 1];
@@ -587,7 +599,7 @@ export class Sim {
         const busy = this.gateBusy.get(f.gate.id);
         if (busy && busy !== f) { f.state = 'waitGate'; return; }
         this.gateBusy.set(f.gate.id, f);
-        this.setPath(f, [{ x: f.x, y: f.y }, f.gate.stand], TUNE.taxiSpeed * 0.3);
+        this.setPath(f, [{ x: f.x, y: f.y }, f.gate.stand], TUNE.taxiSpeed * 0.3); f.route = undefined;
         return;
       }
       this.gateBusy.set(f.gate.id, f);
@@ -598,6 +610,86 @@ export class Sim {
       return;
     }
     if (f.state === 'taxiOut') { f.state = 'holdDep'; return; }
+  }
+
+  // ---------------------------------------------------------------- ground traffic (v0.58)
+  /** v0.58: how the airfield's day is going, by taxiway (way id; 0 for taxilanes and runways): minutes aircraft stood there, and stand-offs. */
+  ground = new Map<number, { min: number; so: number }>(); groundLast = new Map<number, { min: number; so: number }>();
+  private onGround: Flight[] = [];
+  private groundAt(f: Flight) {
+    let ref = 0, bd = 60; const p = { x: f.x, y: f.y };
+    for (const e of this.d.air.edges) { if (e.kind !== 'taxi' || e.ref <= 0) continue; const d = segDist(p, this.d.air.nodes[e.u], this.d.air.nodes[e.v]); if (d < bd) { bd = d; ref = e.ref; } }
+    let g = this.ground.get(ref); if (!g) { g = { min: 0, so: 0 }; this.ground.set(ref, g); } return g;
+  }
+  private taxiStart(f: Flight) { f.held = false; f.heldT = undefined; f.faceT = undefined; f.hold = 0; f.taxiT = this.t; }
+  private taxiDone(f: Flight) {
+    if (f.taxiT === undefined) return;
+    const g = this.stats.ground; g.moves++; g.taxi += this.t - f.taxiT; f.taxiT = undefined; f.held = false; f.route = undefined;
+  }
+  /** The directed stretches other taxiing aircraft still have ahead of them (from * N + to). */
+  private claimed(me: Flight, skip?: (o: Flight) => boolean) {
+    const N = this.d.air.nodes.length; const set = new Set<number>();
+    for (const o of this.flights) {
+      if (o === me || !o.route || (o.state !== 'taxiIn' && o.state !== 'taxiOut') || skip?.(o)) continue;
+      // (from the node it is next bound for: walk its path to where it is)
+      const off = o.path.length - o.route.length; let acc = 0, i = 1;
+      for (; i < o.path.length; i++) { acc += dist(o.path[i - 1], o.path[i]); if (acc > o.d) break; }
+      for (let k = Math.max(1, i - off); k < o.route.length; k++) set.add(o.route[k - 1] * N + o.route[k]);
+      if (i - off >= 1 && i - off < o.route.length) set.add(o.route[i - off - 1] * N + o.route[i - off]);
+    }
+    return set;
+  }
+  /** A taxi route from `start` to `target`: the shortest, but a stretch another aircraft is about to come down the
+   *  other way costs far more, so a second taxiway is taken where there is one. `opposed` counts such stretches left on it. */
+  taxiRoute(f: Flight, start: number, target: number, skip?: (o: Flight) => boolean): { nodes: number[]; opposed: number } | null {
+    const air = this.d.air; const N = air.nodes.length; const opp = this.claimed(f, skip);
+    let dj = this.airDJ(target, f.cls);
+    if (opp.size) dj = dijkstra(air, [{ n: target, c: 0 }], e => e.cls >= f.cls, undefined, 0,
+      (e, from, to) => { const L = e.kind === 'rwy' ? e.len * 4 : e.len; return opp.has(to * N + from) ? L * GROUND.oppCost + GROUND.oppFlat : L; });
+    if (start < 0 || !isFinite(dj.dist[start])) return null;
+    const nodes = trace(air, dj, start).nodes; let opposed = 0;
+    for (let k = 1; k < nodes.length; k++) if (opp.has(nodes[k] * N + nodes[k - 1])) opposed++;
+    return { nodes, opposed };
+  }
+  /** How far a taxiing aircraft may move this step (at most `want`): it keeps its distance behind whoever is ahead,
+   *  gives way where paths cross, and stops nose to nose with one coming the other way until a tug clears them. */
+  clearAhead(f: Flight, want: number, dt: number): number {
+    const t = this.t;
+    if (f.freeT !== undefined && t < f.freeT) { f.held = false; return want; }
+    const gap = GROUND.gap + f.ac.length, look = want + gap + 30, R = GROUND.reach;
+    const taxi = (o: Flight) => o.state === 'taxiIn' || o.state === 'taxiOut';
+    const prio = (o: Flight) => (o.state === 'taxiIn' ? 0 : 1e6) + o.id;
+    let lim = want, facing: Flight | null = null;
+    for (const o of this.onGround) {
+      if (o === f || f.pass?.has(o.id)) continue;
+      if (o.state === 'waitGate' && o.gate === f.gate) continue;            // (it waits for the stand this one is leaving)
+      const dx = o.x - f.x, dy = o.y - f.y; if (dx * dx + dy * dy > (look + R) * (look + R)) continue;
+      let hit = -1, ang = 0;
+      for (let q = 8; q <= look; q += 8) {
+        if (f.d + q > f.len + 1) break;
+        const a = along(f.path, f.d + q); if (Math.hypot(a.p.x - o.x, a.p.y - o.y) < R) { hit = q; ang = a.ang; break; }
+      }
+      if (hit < 0) continue;
+      const dot = Math.cos(ang - o.ang); const room = Math.max(0, hit - gap);
+      if (taxi(o) && dot < -0.3) { if (room < lim) { lim = room; facing = o; } }
+      else if (!taxi(o) || o.held || dot > 0.5 || prio(o) < prio(f)) { if (room < lim) { lim = room; facing = null; } }
+    }
+    if (lim >= want) { f.held = false; f.heldT = undefined; f.faceT = undefined; return want; }
+    const lost = (want - lim) / Math.max(1, f.speed);
+    f.hold = (f.hold ?? 0) + lost; this.stats.ground.hold += lost; this.groundAt(f).min += lost;
+    void dt;
+    if (lim > 0.01) { f.held = false; f.heldT = undefined; return lim; }
+    f.held = true; f.heldT ??= t;
+    if (facing) {
+      f.faceT ??= t;
+      if (t - f.faceT >= GROUND.standoff) {
+        (f.pass ??= new Set()).add(facing.id); (facing.pass ??= new Set()).add(f.id); f.faceT = undefined; facing.faceT = undefined;
+        this.stats.ground.standoffs++; this.groundAt(f).so++;
+        this.noteOnce(`${f.code} and ${facing.code} met head-on on a taxiway: a tug cleared them after ${GROUND.standoff} min. A second taxiway would let them pass.`, 'warn');
+      }
+    } else f.faceT = undefined;
+    if (t - f.heldT >= GROUND.maxHold) { f.freeT = t + 1.5; f.heldT = undefined; this.stats.ground.standoffs++; this.groundAt(f).so++; }
+    return 0;
   }
 
   beginApproach(f: Flight, rw: RunwayInfo, at: number) {
@@ -628,9 +720,9 @@ export class Sim {
     const air = this.d.air;
     const dj = this.airDJ(f.gate.frontNode, f.cls);
     if (f.exitNode < 0 || !isFinite(dj.dist[f.exitNode])) { this.cancel(f, 'taxi route to its gate was removed'); return; }
-    const tr = trace(air, dj, f.exitNode);
+    const tr = this.taxiRoute(f, f.exitNode, f.gate.frontNode) ?? { nodes: trace(air, dj, f.exitNode).nodes };
     this.setPath(f, [{ x: f.x, y: f.y }, ...tr.nodes.map(n => air.nodes[n])], TUNE.taxiSpeed);
-    f.state = 'taxiIn';
+    f.route = tr.nodes; f.state = 'taxiIn'; this.taxiStart(f);
   }
 
   atStand(f: Flight) {
@@ -644,12 +736,14 @@ export class Sim {
     if (t >= f.readyT - 20) for (const p of this.pax) if (p.flight === f && p.dep && p.stage === 'dwell') this.board(p);
     const remaining = this.pax.some(p => p.flight === f && p.dep && p.stage !== 'done');
     if (t >= f.readyT && (!remaining || t >= f.readyT + 2)) {
-      for (const p of this.pax) if (p.flight === f && p.dep && p.stage !== 'done') this.miss(p);
-      f.pushT = t;
-      const delay = t - f.schedDep;
-      this.stats.flights++;
-      if (delay > 15) { this.stats.delayed++; this.stats.delaySum += delay; }
-      this.stats.rev.slots += this.slotPrice * 2 * (this.dealOf(f.airline)?.feeMult ?? 1);
+      if (!f.released) {
+        f.released = true;
+        for (const p of this.pax) if (p.flight === f && p.dep && p.stage !== 'done') this.miss(p);
+        const delay = t - f.schedDep;
+        this.stats.flights++;
+        if (delay > 15) { this.stats.delayed++; this.stats.delaySum += delay; }
+        this.stats.rev.slots += this.slotPrice * 2 * (this.dealOf(f.airline)?.feeMult ?? 1);
+      }
       const ok = this.rwyOK(f);
       const cands = this.d.runways.filter(ok);
       const reach = this.d.runways.filter(r => r.cls >= f.cls && f.gate.rwys[f.cls].has(r.rw.id));
@@ -657,6 +751,12 @@ export class Sim {
       if (!pool.length) { this.gateBusy.set(f.gate.id, null); this.cancel(f, 'no taxi route to a long-enough runway'); return; }
       const cost = (r: RunwayInfo) => this.airDJ(this.landingFromA(r) ? r.nodeA : r.nodeB, f.cls).dist[f.gate.frontNode];
       const rw = pool.reduce((m, r) => (cost(r) < cost(m) ? r : m));
+      // v0.58: not pushed back into traffic coming the other way: it holds on its stand a few minutes for the taxiway
+      // (unless what is coming is bound for this very stand)
+      { const rt = this.taxiRoute(f, f.gate.frontNode, this.landingFromA(rw) ? rw.nodeA : rw.nodeB, o => o.gate === f.gate);
+        if (rt && rt.opposed && t - (f.gateT ??= t) < GROUND.gateHold) return;
+        if (f.gateT !== undefined) this.stats.ground.gate += t - f.gateT; }
+      f.pushT = t;
       this.gateBusy.set(f.gate.id, null);
       this.taxiToRunway(f, rw, true);
     }
@@ -671,9 +771,10 @@ export class Sim {
     if (fromStand) { pts.push(f.gate.front); start = f.gate.frontNode; }
     else start = nearestNode(air, { x: f.x, y: f.y });
     if (start < 0 || !isFinite(dj.dist[start])) { this.cancel(f, 'no taxi route to the runway'); return; }
-    pts.push(...trace(air, dj, start).nodes.map(n => air.nodes[n]));
+    const rt = this.taxiRoute(f, start, f.fromA ? rw.nodeA : rw.nodeB) ?? { nodes: trace(air, dj, start).nodes };
+    pts.push(...rt.nodes.map(n => air.nodes[n]));
     this.setPath(f, pts, TUNE.taxiSpeed);
-    f.state = 'taxiOut';
+    f.route = rt.nodes; f.state = 'taxiOut'; this.taxiStart(f);
   }
 
   takeoffPath(f: Flight) {
