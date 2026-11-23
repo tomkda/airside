@@ -2814,7 +2814,7 @@ export class UI {
     const pay = (cost: number) => { if (!s.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return false; } s.spend(cost); return true; };
     if (a === 'offerYes') { s.acceptOffer(); this.toast('Deal signed. It applies from tomorrow\'s schedule.'); this.refresh(true); this.ctl.save(); return; }
     if (a.startsWith('style:') && sel?.kind === 'site') { const st = this.world.sites?.find(q => q.id === sel.id); const i = Number(a.split(':')[1]);
-      if (st && STYLES[i]) { if (i) st.style = i; else delete st.style; this.changed(); this.ren.selected = { kind: 'site', id: st.id }; this.refresh(true); this.toast(`${this.siteName(st)}: ${STYLES[i].name.toLowerCase()}`); } return; }
+      if (st && STYLES[i] && (st.style ?? 0) !== i) { if (i) st.style = i; else delete st.style; this.changed(); this.ren.selected = { kind: 'site', id: st.id }; this.refresh(true); this.toast(`${this.siteName(st)}: ${STYLES[i].name.toLowerCase()}`); } return; }
     if (a.startsWith('bankAsk:')) { const [, id, i] = a.split(':'); const sl = BANK.slots[Number(i)]; if (!sl) return;
       if (!s.addBank(id, sl.hour)) return; this.toast(`${AIRLINES.find(q => q.id === id)?.name}: a ${sl.name.toLowerCase()} bank from tomorrow's schedule`); this.refresh(true); this.ctl.save(); return; }
     if (a.startsWith('bankEnd:')) { s.endBank(Number(a.split(':')[1])); this.toast('Bank ended: its flights leave the schedule tomorrow'); this.refresh(true); this.ctl.save(); return; }
