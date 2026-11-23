@@ -146,11 +146,15 @@ export class Sim {
   offer: Offer | null = null; deals: Record<string, Deal> = {};
   /** v0.60: the banks in force (saved) */
   banks: Bank[] = [];
-  addBank(airline: string, hour: number, n = BANK.n, bonus = BANK.bonus) {
-    const a = AIRLINES.find(q => q.id === airline); if (!a) return;
-    this.banks = this.banks.filter(b => b.until > this.day); this.banks.push({ id: this.ids++, airline, hour, n, until: this.day + BANK.days });
+  /** (No signing bonus unless the airline came asking: `bonus` is the offer's. One bank an airline and hour.) */
+  addBank(airline: string, hour: number, n = BANK.n, bonus = 0) {
+    const a = AIRLINES.find(q => q.id === airline); if (!a || a.intl) return false;
+    this.banks = this.banks.filter(b => b.until > this.day);
+    if (this.banks.some(b => b.airline === airline && b.hour === hour)) return false;
+    this.banks.push({ id: this.banks.reduce((m, b) => Math.max(m, b.id), 0) + 1, airline, hour, n, until: this.day + BANK.days });
     if (this.moneyOn) this.money += bonus;
     this.note(`${a.name} will fly a bank of ${n} at ${this.clockOf(hour * 60)} from tomorrow, for ${BANK.days} days`);
+    return true;
   }
   endBank(id: number) { this.banks = this.banks.filter(b => b.id !== id); }
   clockOf(min: number) { const h = Math.floor(min / 60) % 24, m = Math.floor(min % 60); return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`; }
@@ -179,7 +183,8 @@ export class Sim {
       : { airline: a.id, kind: 'base', title: `${a.name}: a crew base`, mult: 1.2, feeMult: 1, bonus, days: 14,
           text: `${a.name} will base crews here: 20% more flights for 14 days and ${(bonus / 1e6).toFixed(0)} million dollars on signing. In return it expects 90% of flights on time; each day that falls short costs 1 million dollars.` };
     // v0.60: or a bank, from a carrier that connects its own flights
-    if (rr() < 0.35 && !a.intl) { const sl = BANK.slots[Math.floor(rr() * BANK.slots.length)];
+    { const pick = rr(), which = rr(); const sl = BANK.slots[Math.floor(which * BANK.slots.length)];
+      if (pick < 0.35 && !a.intl && !this.banks.some(b => b.until > this.day && b.airline === a.id && b.hour === sl.hour))
       this.offer = { airline: a.id, kind: 'bank', bank: { hour: sl.hour, n: BANK.n }, title: `${a.name}: a ${sl.name.toLowerCase()} bank`, mult: 1, feeMult: 1, bonus: BANK.bonus, days: BANK.days,
         text: `${a.name} will land ${BANK.n} flights within ${BANK.window} minutes of ${this.clockOf(sl.hour * 60)}, hold them together and send them out again, every day for ${BANK.days} days, with ${(BANK.bonus / 1e6).toFixed(0)} million dollars on signing. About a third of their passengers change aircraft here and never see the kerb. It needs ${BANK.n} free stands at once, and the taxiways and concourse to move them.` }; }
     this.note(`Offer: ${this.offer.title}`); this.onOffer?.(this.offer);
@@ -445,7 +450,8 @@ export class Sim {
     // v0.60: banks. Each asks for its wave on top of the day's ordinary demand: `n` landings spread over the window,
     // all on the ground together, then away one after another. (No dice: a day with no bank is the day it always was.)
     for (const b of this.banks) {
-      if (b.until <= this.day) continue; const a = AIRLINES.find(q => q.id === b.airline); if (!a) continue;
+      if (b.until <= this.day) continue; const a = AIRLINES.find(q => q.id === b.airline); if (!a || a.intl) continue;
+      { const row = plan.byAirline.find(q => q.airline === a); if (row) row.requested += b.n; }
       const main = Number(Object.entries(a.mix).sort((p, q) => (q[1] as number) - (p[1] as number))[0][0]) as Cls;
       let use: number = operable[main] ? main : -1;
       if (use < 0 && a.downgrade) for (let k = main - 1; k >= 0; k--) if (a.mix[k as Cls] !== undefined && operable[k]) { use = k; break; }
@@ -456,7 +462,7 @@ export class Sim {
     const usable = d.runways.filter(r => r.cls >= 0 && runwayUsable(r, prevailing));
     const capHr = this.capacityPerHour(usable.length ? usable : d.runways.filter(r => r.cls >= 0).slice(0, 1)) * WEATHER[this.weather].cap;
     const perHour = new Map<number, number>();
-    const gateFree = new Map<string, number>();
+    const gateFree = new Map<string, number>(); const bankTerm = new Map<number, Terminal>();
     const flightNo = new Map<string, number>();
     for (const c of cands) {
       const ac = CLASSES[c.cls];
@@ -465,10 +471,12 @@ export class Sim {
       if ((perHour.get(hA) ?? 0) + 1 > capHr || (perHour.get(hD) ?? 0) + 1 > capHr) { plan.rejectedRunway++; if (c.bank) plan.bankLost++; continue; }
       const open = d.terminals.filter(T => T.active);
       const home = open.length ? open[AIRLINES.indexOf(c.airline) % open.length] : undefined;
-      const rank = (g: Gate) => g.cls * 10 + (d.termOf.get(g.zone.id) === home ? 0 : 1);
+      // (v0.60: a bank keeps to the terminal its first flight was given, so its passengers can walk between its gates)
+      const mine = c.bank ? bankTerm.get(c.bank.id) ?? home : home;
+      const rank = (g: Gate) => g.cls * 10 + (d.termOf.get(g.zone.id) === mine ? 0 : c.bank ? 5 : 1);
       const gate = d.gates.filter(g => d.gateUsable(g, c.cls) && (!c.airline.intl || d.termOf.get(g.zone.id)?.intl)).sort((p, q) => rank(p) - rank(q)).find(g => (gateFree.get(g.id) ?? 0) + 8 <= c.arr);
       if (!gate) { plan.rejectedGates++; if (c.bank) plan.bankLost++; continue; }
-      gateFree.set(gate.id, dep);
+      gateFree.set(gate.id, dep); if (c.bank && !bankTerm.has(c.bank.id)) { const T = d.termOf.get(gate.zone.id); if (T) bankTerm.set(c.bank.id, T); }
       perHour.set(hA, (perHour.get(hA) ?? 0) + 1); perHour.set(hD, (perHour.get(hD) ?? 0) + 1);
       const no = (flightNo.get(c.airline.iata) ?? (100 + Math.floor(this.r() * 300))) + 7;
       flightNo.set(c.airline.iata, no);
@@ -487,7 +495,10 @@ export class Sim {
     for (const b of this.banks) {
       const F = this.flights.filter(f => f.bank === b.id); if (F.length < 2) continue;
       F.forEach((X, i) => { X.xferOut = []; const n = Math.round(X.paxArr * BANK.share);
-        for (let k = 0, j = 0; k < n && j < n * 4; j++) { const Y = F[(i + 1 + (j % (F.length - 1))) % F.length]; if ((Y.xferIn ?? 0) + 1 > Y.paxDep * BANK.maxIn) continue; Y.xferIn = (Y.xferIn ?? 0) + 1; X.xferOut.push(Y); k++; } });
+        for (let k = 0, j = 0; k < n && j < n * 4; j++) { const Y = F[(i + 1 + (j % (F.length - 1))) % F.length];
+          // (only to a gate in the same terminal: there is no walking airside from one terminal to another)
+          if (d.termOf.get(Y.gate.zone.id) !== d.termOf.get(X.gate.zone.id)) continue;
+          if ((Y.xferIn ?? 0) + 1 > Y.paxDep * BANK.maxIn) continue; Y.xferIn = (Y.xferIn ?? 0) + 1; X.xferOut.push(Y); k++; } });
     }
     for (const f of this.flights) f.bagsArr = Math.round((f.paxArr - (f.xferOut?.length ?? 0)) * 0.62);
     plan.scheduled = this.flights.length;
@@ -916,7 +927,9 @@ export class Sim {
     party.pax.push(p);
     if (party.pax.length >= party.atCurb) { party.atCurb = 0; this.openArr.delete(f.id); }
     p.x = f.gate.door.x; p.y = f.gate.door.y; p.level = f.gate.zone.level;
-    if (p.bags) { this.bagCounter[f.id] = (this.bagCounter[f.id] ?? 0) + 1; p.bagNo = this.bagCounter[f.id]; }
+    if (p.bags) { this.bagCounter[f.id] = (this.bagCounter[f.id] ?? 0) + 1; p.bagNo = this.bagCounter[f.id];
+      // (v0.60: the belt carries every bag that was checked: a passenger whose bag was one more than the estimate waited for good, and held the belt)
+      if (p.bagNo > f.bagsArr) f.bagsArr = p.bagNo; }
     this.pax.push(p);
     this.stats.paxArr++;
     this.advance(p);
@@ -925,7 +938,9 @@ export class Sim {
   /** v0.60: a passenger changing aircraft: off at one gate and, with time to spare, by way of the shops to another.
    *  Never landside: no check-in, no security, no bag to reclaim. */
   spawnTransfer(f: Flight, Y: Flight) {
-    if (Y.state === 'cancelled' || Y.state === 'gone' || Y.state === 'takeoff' || Y.state === 'taxiOut' || Y.state === 'holdDep') { this.spawnArrival(f); return; }
+    // their onward flight has gone, or cannot be walked to: they come out landside like anyone else, a connection missed
+    if (Y.state === 'cancelled' || Y.state === 'gone' || Y.state === 'takeoff' || Y.state === 'taxiOut' || Y.state === 'holdDep' || !this.d.pedRoute(f.gate.door, f.gate.zone.level, Y.gate.door, Y.gate.zone.level)) {
+      this.spawnArrival(f); this.stats.xfer++; this.stats.xferMissed++; return; }
     const party: Party = { id: this.ids++, dep: true, mode: 'curb', pax: [], atCurb: 0, flight: Y };
     const p = this.newPax(Y, party, true); party.pax.push(p);
     p.xfer = true; p.bags = false; p.steps = Y.schedDep - COMMERCE.boardLead - this.t > 25 ? ['shop', 'gate'] : ['gate'];

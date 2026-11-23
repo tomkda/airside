@@ -2667,7 +2667,7 @@ export class UI {
     const ask = AIRLINES.filter(a => !a.intl && a.id !== 'polaris').map(a => `<div class="row"><span>${esc(a.name)}</span>${BANK.slots.map((q, i) => `<button class="btn small" data-act="bankAsk:${a.id}:${i}" ${live.some(b => b.airline === a.id && b.hour === q.hour) ? 'disabled' : ''}>${q.name}</button>`).join('')}</div>`).join('');
     return `<h2>Banks</h2>
       ${rows ? `<ul class="lostab banks">${rows}</ul>${today}` : ''}
-      <p class="muted small">A bank is a wave: ${BANK.n} of one airline's flights land within ${BANK.window} minutes, stand together and leave together, so about a third of their passengers change aircraft here and never see the kerb. It needs ${BANK.n} free stands at once and brings the day's sharpest peak to the taxiways and the concourse. ${money(BANK.bonus)} on signing, ${BANK.days} days.</p>
+      <p class="muted small">A bank is a wave: ${BANK.n} of one airline's flights land within ${BANK.window} minutes, stand together and leave together, so about a third of their passengers change aircraft here and never see the kerb. It needs ${BANK.n} free stands at once and brings the day's sharpest peak to the taxiways and the concourse. ${BANK.days} days; an airline that comes asking pays ${money(BANK.bonus)} on signing.</p>
       <div class="bankask">${ask}</div>`;
   }
   /** An airline's open offer, and the deals in force. */
@@ -2813,7 +2813,7 @@ export class UI {
     const pay = (cost: number) => { if (!s.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return false; } s.spend(cost); return true; };
     if (a === 'offerYes') { s.acceptOffer(); this.toast('Deal signed. It applies from tomorrow\'s schedule.'); this.refresh(true); this.ctl.save(); return; }
     if (a.startsWith('bankAsk:')) { const [, id, i] = a.split(':'); const sl = BANK.slots[Number(i)]; if (!sl) return;
-      s.addBank(id, sl.hour); this.toast(`${AIRLINES.find(q => q.id === id)?.name}: a ${sl.name.toLowerCase()} bank from tomorrow's schedule · ${money(BANK.bonus)} on signing`); this.refresh(true); this.ctl.save(); return; }
+      if (!s.addBank(id, sl.hour)) return; this.toast(`${AIRLINES.find(q => q.id === id)?.name}: a ${sl.name.toLowerCase()} bank from tomorrow's schedule`); this.refresh(true); this.ctl.save(); return; }
     if (a.startsWith('bankEnd:')) { s.endBank(Number(a.split(':')[1])); this.toast('Bank ended: its flights leave the schedule tomorrow'); this.refresh(true); this.ctl.save(); return; }
     if (a === 'offerNo') { s.declineOffer(); this.refresh(true); this.ctl.save(); return; }
     if (a === 'undo') { this.undo(); return; }

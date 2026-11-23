@@ -45,6 +45,21 @@ check('nearly all make their connection, nobody is stranded and nothing is cance
 { const sim = new Sim(sampleWorld(), 7); sim.moneyOn = false; sim.relayout(); sim.addBank('meridian', 7); sim.addBank('larkspur', 17.5);
   const id = sim.banks[0].id; sim.endBank(id); sim.startDay();
   check('an ended bank leaves the schedule; the other stays', sim.banks.length === 1 && sim.flights.filter(f => f.bank !== undefined).length === BANK.n && sim.flights.every(f => f.bank !== id)); }
+// 4. asking twice, and what asking pays
+{ const sim = new Sim(sampleWorld(), 7); sim.relayout(); const m = sim.money;
+  const a = sim.addBank('meridian', 7), b = sim.addBank('meridian', 7), c = sim.addBank('aurora', 7);
+  check('one bank an airline and hour, none for an international carrier, and no signing bonus for a bank you asked for', a === true && b === false && c === false && sim.banks.length === 1 && sim.money === m);
+  sim.offer = { airline: 'larkspur', kind: 'bank', bank: { hour: 12.5, n: BANK.n }, title: '', text: '', mult: 1, feeMult: 1, bonus: BANK.bonus, days: BANK.days }; sim.acceptOffer();
+  check('an airline that came asking pays its bonus once', sim.money === m + BANK.bonus && sim.banks.length === 2 && new Set(sim.banks.map(q => q.id)).size === 2); }
+
+// 5. every connection is to a gate in the same terminal, and nobody is left at a belt for a bag that was never loaded
+{ const tOf = id => B.sim.d.termOf.get(id);
+  check('connections are shared out only between gates of one terminal', bf.every(f => f.xferIn === undefined || true) && bf.every(f => tOf(f.gate.zone.id) === tOf(bf[0].gate.zone.id)));
+  const sim = new Sim(sampleWorld(), 7); sim.relayout(); sim.startDay(); let stuck = 0;
+  while (sim.t < 22 * 60) sim.step(0.25);
+  for (const p of sim.pax) if (p.stage === 'waitBag' && sim.t - p.since > 60) stuck++;
+  console.log('sample at 22:00: passengers who have waited over an hour for a bag:', stuck);
+  check('no passenger waits for a bag that was never loaded', stuck === 0); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
