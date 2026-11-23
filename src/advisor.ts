@@ -49,6 +49,10 @@ export function advise(sim: Sim): Advice[] {
   }
   if (p.rejectedAircraft > 0) out.push({ key: 'aircraft', kind: 'info', weight: p.rejectedAircraft * 6, title: 'Larger aircraft',
     why: `${plural(p.rejectedAircraft, 'flight')} today ${p.rejectedAircraft === 1 ? 'was' : 'were'} flown by aircraft nothing here can take${p.wantsSJ ? ` (${p.wantsSJ} by A380: a 3,000 m runway, Code F taxiways all the way, and A380 stands)` : ''}. Lengthen the runway, widen the taxiways on the way, or size a concourse for them.` });
+  // ---- connections missed (v0.60)
+  { const st = sim.stats.xfer >= 20 ? sim.stats : sim.history[sim.history.length - 1]?.stats;
+    if (st && st.xfer >= 20 && st.xferMissed > st.xfer * 0.05) out.push({ key: 'xfer', kind: 'info', weight: 60 + st.xferMissed, title: 'Connections are being missed',
+      why: `${st.xferMissed} of ${st.xfer} connecting passengers saw their onward flight leave without them. Their aircraft landed late or stood on a taxiway, or the walk between gates is too long: keep a bank's gates together, clear the taxiways, or link the concourses.` }); }
   if (p.rejectedIntl > 0) out.push({ key: 'intl', kind: 'info', weight: p.rejectedIntl * 6, title: 'Passport control',
     why: `${plural(p.rejectedIntl, 'international flight')} today had no terminal with passport control between a concourse and bag claim.` });
   // ---- the airfield: taxiways where aircraft stood

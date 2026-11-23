@@ -4,11 +4,12 @@ import { Renderer } from './render';
 import { UI, money, Controls } from './ui';
 import { World, newWorld, migrateWorld } from './world';
 import { sampleWorld } from './sample';
-import type { UnlockId, Offer, Deal } from './config';
+import type { UnlockId, Offer, Deal, Bank } from './config';
+import { BANK } from './config';
 
 declare const __VERSION__: string;   // from package.json, set by scripts/build.mjs
 const KEY = 'airport-builder-alpha-v3';
-interface Save { world: World; staff: Sim['staff']; slotPrice: number; moneyOn: boolean; money: number; calDays: number; rep: number; goals?: string[]; unlocked?: string[]; bestPax?: number; offer?: Offer | null; deals?: Record<string, Deal> }
+interface Save { world: World; staff: Sim['staff']; slotPrice: number; moneyOn: boolean; money: number; calDays: number; rep: number; goals?: string[]; unlocked?: string[]; bestPax?: number; offer?: Offer | null; deals?: Record<string, Deal>; banks?: Bank[]; /** v0.60: the day count deals and banks end by */ day?: number }
 
 type Hot = { data?: Save; ready?: (fn: (d: Save | Record<string, never>) => void) => void; snapshot?: (fn: () => Save) => void };
 const hot = (window as unknown as { claude?: { hot?: Hot } }).claude?.hot;
@@ -26,7 +27,8 @@ function start(restored: Save | null) {
     sim.money = saved.money; sim.calDays = saved.calDays; sim.rep = saved.rep;
     sim.goalsDone = new Set(Array.isArray(saved.goals) ? saved.goals : []);
     sim.unlocked = new Set((Array.isArray(saved.unlocked) ? saved.unlocked : []) as UnlockId[]); sim.bestPax = saved.bestPax ?? 0;
-    sim.staff.officers ??= 0; sim.offer = saved.offer ?? null; sim.deals = saved.deals ?? {};
+    sim.staff.officers ??= 0; sim.offer = saved.offer ?? null; sim.deals = saved.deals ?? {}; if (Number.isFinite(saved.day) && saved.day! >= 0) sim.day = Math.floor(saved.day!);
+    sim.banks = Array.isArray(saved.banks) ? saved.banks.filter(b => b && typeof b.airline === 'string' && Number.isFinite(b.id) && BANK.slots.some(q => q.hour === b.hour) && Number.isFinite(b.n) && Number.isFinite(b.until)).map(b => ({ ...b, n: Math.max(2, Math.min(12, Math.round(b.n))) })) : [];
     sim.relayout(); sim.startDay();
   }
   const ver = document.getElementById('version'); if (ver) ver.textContent = `AIRSIDE v${typeof __VERSION__ === 'string' ? __VERSION__ : 'dev'}`;
@@ -34,7 +36,7 @@ function start(restored: Save | null) {
   const ren = new Renderer(canvas);
   ren.resize();
 
-  const snapshot = (): Save => ({ world: sim.world, staff: sim.staff, slotPrice: sim.slotPrice, moneyOn: sim.moneyOn, money: sim.money, calDays: sim.calDays, rep: sim.rep, goals: [...sim.goalsDone], unlocked: [...sim.unlocked], bestPax: sim.bestPax, offer: sim.offer, deals: sim.deals });
+  const snapshot = (): Save => ({ world: sim.world, staff: sim.staff, slotPrice: sim.slotPrice, moneyOn: sim.moneyOn, money: sim.money, calDays: sim.calDays, rep: sim.rep, goals: [...sim.goalsDone], unlocked: [...sim.unlocked], bestPax: sim.bestPax, offer: sim.offer, deals: sim.deals, banks: sim.banks, day: sim.day });
   const ctl: Controls = {
     speed: 4, paused: false,
     save() { try { localStorage.setItem(KEY, JSON.stringify(snapshot())); } catch { /* storage unavailable: play on */ } },
@@ -42,7 +44,7 @@ function start(restored: Save | null) {
     clearSite() { reset(newWorld()); ui.toast('Site cleared. Draw a runway to begin.'); ui.setTool('runway'); },
   };
   function reset(w: World) {
-    sim.world = w; sim.money = 420_000_000; sim.calDays = 0; sim.day = 0; sim.rep = 1; sim.history = []; sim.log = []; sim.goalsDone = new Set(); sim.unlocked = new Set(); sim.los.clear(); sim.losLast.clear(); sim.ground.clear(); sim.groundLast.clear(); sim.bestPax = 0; sim.offer = null; sim.deals = {};
+    sim.world = w; sim.money = 420_000_000; sim.calDays = 0; sim.day = 0; sim.rep = 1; sim.history = []; sim.log = []; sim.goalsDone = new Set(); sim.unlocked = new Set(); sim.los.clear(); sim.losLast.clear(); sim.ground.clear(); sim.groundLast.clear(); sim.bestPax = 0; sim.offer = null; sim.deals = {}; sim.banks = [];
     sim.relayout(); sim.startDay(); ui.adoptStands();
     ren.selected = null; ui.focusAirport(); ui.refresh(true); ctl.save();
   }

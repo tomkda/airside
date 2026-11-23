@@ -1,6 +1,6 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND, LOS, GROUND } from './config';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND, LOS, GROUND, BANK } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GOALS, Goal, nextGoals, rating } from './goals';
 import { GateSlot, slotAt, SIDE_NAMES, sideName, standDepth, sideReach, STAND_TOL } from './gates';
@@ -2624,6 +2624,7 @@ export class UI {
       ${this.airfieldHTML()}
       ${this.losTableHTML()}
       ${this.offerHTML()}
+      ${this.banksHTML()}
       <h2>Airlines and slots</h2>
       <div class="slider">
         <label for="price">Slot fee per movement <b id="priceOut">${money(s.slotPrice)}</b></label>
@@ -2655,6 +2656,20 @@ export class UI {
       </div>`;
   }
 
+  /** v0.60: the banks in force, how today's went, and a way to ask for one. */
+  banksHTML() {
+    const s = this.sim; const live = s.banks.filter(b => b.until > s.day);
+    const rows = live.map(b => { const a = AIRLINES.find(q => q.id === b.airline); const F = s.flights.filter(f => f.bank === b.id);
+      const sl = BANK.slots.find(q => q.hour === b.hour)?.name ?? ''; const conn = F.reduce((t, f) => t + (f.xferIn ?? 0), 0);
+      return `<li><b>${esc(a?.name ?? b.airline)}</b> · ${esc(sl.toLowerCase())} bank at ${s.clockOf(b.hour * 60)} <span class="muted small">${F.length ? `${F.length} of ${b.n} flights fitted today · ${conn} connecting` : 'starts with the next schedule'} · ${b.until - s.day} day${b.until - s.day === 1 ? '' : 's'} left</span>
+        <button class="btn small ghost" data-act="bankEnd:${b.id}">End it</button></li>`; }).join('');
+    const st = s.stats; const today = st.xfer ? `<p class="muted small">Today ${n0(st.xfer)} passengers changed aircraft here${st.xferMissed ? `, and <span class="bad">${n0(st.xferMissed)} missed their connection</span>` : ''}.</p>` : '';
+    const ask = AIRLINES.filter(a => !a.intl && a.id !== 'polaris').map(a => `<div class="row"><span>${esc(a.name)}</span>${BANK.slots.map((q, i) => `<button class="btn small" data-act="bankAsk:${a.id}:${i}" ${live.some(b => b.airline === a.id && b.hour === q.hour) ? 'disabled' : ''}>${q.name}</button>`).join('')}</div>`).join('');
+    return `<h2>Banks</h2>
+      ${rows ? `<ul class="lostab banks">${rows}</ul>${today}` : ''}
+      <p class="muted small">A bank is a wave: ${BANK.n} of one airline's flights land within ${BANK.window} minutes, stand together and leave together, so about a third of their passengers change aircraft here and never see the kerb. It needs ${BANK.n} free stands at once and brings the day's sharpest peak to the taxiways and the concourse. ${BANK.days} days; an airline that comes asking pays ${money(BANK.bonus)} on signing.</p>
+      <div class="bankask">${ask}</div>`;
+  }
   /** An airline's open offer, and the deals in force. */
   offerHTML() {
     const s = this.sim; const o = s.offer;
@@ -2797,6 +2812,9 @@ export class UI {
     const w = sel?.kind === 'way' ? s.world.ways.find(q => q.id === sel.id) : undefined;
     const pay = (cost: number) => { if (!s.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return false; } s.spend(cost); return true; };
     if (a === 'offerYes') { s.acceptOffer(); this.toast('Deal signed. It applies from tomorrow\'s schedule.'); this.refresh(true); this.ctl.save(); return; }
+    if (a.startsWith('bankAsk:')) { const [, id, i] = a.split(':'); const sl = BANK.slots[Number(i)]; if (!sl) return;
+      if (!s.addBank(id, sl.hour)) return; this.toast(`${AIRLINES.find(q => q.id === id)?.name}: a ${sl.name.toLowerCase()} bank from tomorrow's schedule`); this.refresh(true); this.ctl.save(); return; }
+    if (a.startsWith('bankEnd:')) { s.endBank(Number(a.split(':')[1])); this.toast('Bank ended: its flights leave the schedule tomorrow'); this.refresh(true); this.ctl.save(); return; }
     if (a === 'offerNo') { s.declineOffer(); this.refresh(true); this.ctl.save(); return; }
     if (a === 'undo') { this.undo(); return; }
     if (a === 'demolish' && sel) this.demolish(this.selHit(sel));
