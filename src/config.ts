@@ -487,3 +487,15 @@ export const GROUND = { gap: 40, reach: 32, standoff: 2.5, gateHold: 6, oppCost:
 export const BANK = { n: 8, window: 50, connect: 40, stagger: 2, share: 0.35, maxIn: 0.6, days: 14, bonus: 3_000_000,
   slots: [{ name: 'Morning', hour: 7 }, { name: 'Midday', hour: 12.5 }, { name: 'Evening', hour: 17.5 }] };
 export interface Bank { id: number; airline: string; hour: number; n: number; until: number }
+
+/** v0.61: a terminal's architecture, as the model shows it. Looks only: nothing in the sim reads it. `roof` is the
+ *  form over the body (a flat slab with a clerestory, a barrel vault along the long axis, or a flat slab with
+ *  roof lights across it every few bays); `eave` how far the roof oversails the wall, `fins` vertical blades outside
+ *  the long walls at half-bay centres, `band` a solid spandrel under the glass (metres high, 0 for none). */
+export interface Style { name: string; note: string; roof: 'flat' | 'vault' | 'monitors'; roofC: string; edgeC: string; plinth: string; mullion: string; glass?: string; eave: number; fins: boolean; finC: string; band: number; bandC: string }
+export const STYLES: Style[] = [
+  { name: 'Model white', note: 'flat white roof, clerestory, slim mullions', roof: 'flat', roofC: '#F1ECE2', edgeC: '#F1ECE2', plinth: '#8C8576', mullion: '#E4DDCF', eave: 0.8, fins: false, finC: '#E4DDCF', band: 0, bandC: '#8C8576' },
+  { name: 'Vaulted', note: 'a long barrel vault with a glazed ridge, white steel', roof: 'vault', roofC: '#F4F0E8', edgeC: '#E6E0D3', plinth: '#8C8576', mullion: '#F0EBE0', glass: '#C3D0D2', eave: 1.6, fins: false, finC: '#F0EBE0', band: 0, bandC: '#8C8576' },
+  { name: 'Timber and fins', note: 'warm timber roof with deep eaves, vertical fins, roof lights', roof: 'monitors', roofC: '#D9C7A6', edgeC: '#B38B5A', plinth: '#7A6E5E', mullion: '#9A7447', glass: '#AFC0BF', eave: 3.2, fins: true, finC: '#B38B5A', band: 0, bandC: '#7A6E5E' },
+  { name: 'Concrete bands', note: 'board-marked concrete, a deep spandrel under ribbon glazing, heavy roof', roof: 'monitors', roofC: '#CFCABF', edgeC: '#B9B3A6', plinth: '#8E897D', mullion: '#A8A295', glass: '#9DAEB3', eave: 1.8, fins: false, finC: '#A8A295', band: 2.2, bandC: '#C2BCAF' },
+];
