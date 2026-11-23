@@ -43,10 +43,11 @@ function start(restored: Save | null) {
   };
   function reset(w: World) {
     sim.world = w; sim.money = 420_000_000; sim.calDays = 0; sim.day = 0; sim.rep = 1; sim.history = []; sim.log = []; sim.goalsDone = new Set(); sim.unlocked = new Set(); sim.bestPax = 0; sim.offer = null; sim.deals = {};
-    sim.relayout(); sim.startDay();
+    sim.relayout(); sim.startDay(); ui.adoptStands();
     ren.selected = null; ui.focusAirport(); ui.refresh(true); ctl.save();
   }
   const ui = new UI(sim, ren, ctl);
+  ui.adoptStands();   // (v0.56: the gates an older save has are its built stands)
   sim.onGoal = g => ui.celebrate(g);
   sim.onUnlock = u => ui.unlockedNow(u);
   sim.onOffer = o => { ui.toast(`Offer: ${o.title}. See Operations.`); if (ui.tab === 'ops') ui.refresh(true); };

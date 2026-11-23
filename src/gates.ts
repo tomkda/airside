@@ -15,6 +15,9 @@ import { pointInPoly } from './geom';
 
 /** n, e, s, w for a rectangle (of its own frame); `f0.`, `f1.` … for the facets of a round or polygonal hall (v0.18). */
 export type SideKey = string;
+/** v0.56: is this slot a gate? A concourse with `stands` has only the stands built there (the rest are places a stand
+ *  could be built); one without it (older saves, test worlds) has every slot but those switched off. */
+export const slotOn = (z: Zone, key: string) => (z.stands ? z.stands.includes(key) : !(z.off ?? []).includes(key));
 export interface GateSlot {
   key: string; id: string; zone: Zone; side: SideKey; i: number; cls: Cls; on: boolean;
   door: Pt; stand: Pt; front: Pt; ang: number; outward: Pt; cell: Pt[];
@@ -103,7 +106,6 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
     letters.set(z.id, letter);
     // v0.24: a piece of a multi-piece building has no stands of its own: the building's outline is walked as a whole
     if (walked.has(z.id)) { counts.set(z.id, { k: 0, n: 0 }); continue; }
-    const off = new Set(z.off ?? []);
     let k = 0, nSlots = 0;
     for (const sd of sidesOf(z)) {
       const L = dist(sd.a, sd.b); const al = norm(sub(sd.b, sd.a));
@@ -183,10 +185,11 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
         const h = mul(al, sp / 2);
         const cell = [sub(ep, h), add(ep, h), add(add(ep, h), mul(sd.out, D)), add(sub(ep, h), mul(sd.out, D))];
         const sl: GateSlot = {
-          key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: cls as Cls, on: !off.has(key),
+          key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: cls as Cls, on: slotOn(z, key),
           door: add(ep, mul(sd.out, -7)), stand: add(ep, mul(sd.out, C.length / 2 + 8)), front, ang: Math.atan2(-sd.out.y, -sd.out.x), outward: sd.out, cell,
         };
         slots.push(sl); nSlots++; guide.served = true;
+        if (z.stands && !sl.on) { flush(); continue; }   // (v0.56: not built: no apron is paved there)
         run.push(sl);
       }
       flush();
@@ -341,8 +344,9 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       else { const q = toLocal(z, door), F = frameOf(z); const u = side === 'n' ? q.x - F.x : side === 's' ? F.x + F.w - q.x : side === 'e' ? q.y - F.y : F.y + F.h - q.y; i = Math.max(0, Math.floor(u / (CLASSES[0].gateSpacing / 2))); }
       while (per.has(`${z.id}:${side}${i}`)) i++;
       per.set(`${z.id}:${side}${i}`, 1); per.set(`${z.id}:${side}`, i + 1); const key = `${side}${i}`;
-      const sl: Slot = { key, id: `${z.id}-${key}`, zone: z, side, i, cls: zc, on: !(z.off ?? []).includes(key), door, stand: add(wm, mul(nc, C.length / 2 + APRON.nose + dist(wm, m))), front, ang: Math.atan2(-nc.y, -nc.x), outward: nc, cell, tan, s: s0, w, drawn: !!via, box: cb };
-      got.push(sl); slots.push(sl); const cnt = counts.get(z.id)!; cnt.n++;
+      const sl: Slot = { key, id: `${z.id}-${key}`, zone: z, side, i, cls: zc, on: slotOn(z, key), door, stand: add(wm, mul(nc, C.length / 2 + APRON.nose + dist(wm, m))), front, ang: Math.atan2(-nc.y, -nc.x), outward: nc, cell, tan, s: s0, w, drawn: !!via, box: cb };
+      slots.push(sl); const cnt = counts.get(z.id)!; cnt.n++;
+      if (!(z.stands && !sl.on)) got.push(sl);   // (v0.56: a stand not built yet is offered, not paved)
       prev = cell; s0 += w; down = null;
     }
     if (!got.length) continue;
@@ -478,10 +482,11 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       if (!c.free) { flush(); continue; }
       const key = `${sd.side}${c.i}`;
       const sl = {
-        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i: c.i, cls: zc, on: !(z.off ?? []).includes(key),
+        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i: c.i, cls: zc, on: slotOn(z, key),
         door: add(c.ep, mul(c.out, -7)), stand: add(c.ep, mul(c.out, C.length / 2 + APRON.nose)), front: c.front, ang: Math.atan2(-c.out.y, -c.out.x), outward: c.out, cell: c.cell, tan: c.tan,
       };
       slots.push(sl); cnt.n++; guide.served = true; guide.self = true; guide.d = D; guide.cls = zc;
+      if (z.stands && !sl.on) { flush(); continue; }
       run.push(sl);
     }
     flush();

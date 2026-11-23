@@ -1,6 +1,6 @@
 // DOM UI and input. Translates player gestures into world edits; reads sim state for panels.
 import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, norm, dot, pointInPoly } from './geom';
-import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES } from './config';
+import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GOALS, Goal, nextGoals, rating } from './goals';
 import { GateSlot, slotAt, SIDE_NAMES, sideName, standDepth, sideReach } from './gates';
@@ -872,7 +872,7 @@ export class UI {
       dr.pier = z ? { z, ok, cost, reason: chk.reason } : undefined;
       this.ren.ghost = z ? { kind: 'zone', rect: z, ok, level: 1 } : null;
       // v0.19: it stands there as you draw it, with its stands and taxilanes, before you let go
-      this.liveDraft(z && ok ? [{ id: this.world.nextId, type: 'concourse', level: 1, x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, tier: 0, cls: this.opt.conc }] : []);
+      this.liveDraft(z && ok ? [{ id: this.world.nextId, type: 'concourse', level: 1, x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, tier: 0, cls: this.opt.conc, stands: [] }] : []);
       if (z) {
         const joins = this.world.zones.filter(o => o.type === 'concourse' && zonesOverlap(z, o, 24));
         const deg = Math.round(((z.rot ?? 0) * 180) / Math.PI);
@@ -1104,7 +1104,7 @@ export class UI {
     const hall = t === 'checkin'; const id = this.world.nextId;
     const st = TERMINAL_TOOLS.has(t) && !sat ? this.world.sites?.find(q => q.id === this.ren.focus) : undefined;
     const z: Zone = { id, type: t, level: ZONES[t].groundOnly ? 0 : hall || sat ? 1 : this.ren.level, ...r, tier: 0, site: st?.id };
-    if (t === 'concourse') z.cls = this.opt.conc;
+    if (t === 'concourse') { z.cls = this.opt.conc; z.stands = []; }
     if (!hall) return [z];
     z.units = Math.max(6, Math.round(area(r) / 500)); z.pair = id + 1;
     return [z, { id: id + 1, type: 'claim', level: 0, ...r, tier: 0, pair: id, site: st?.id }];
@@ -1171,7 +1171,7 @@ export class UI {
   /** The zones a path makes: a pier a leg, a round hall at each corner between two legs. */
   pathZones(pts: Pt[]): { zones: Zone[]; cost: number } {
     const zones: Zone[] = []; let id = this.world.nextId; let cost = 0; const R = Math.max(HALL.minDia / 2, this.opt.pierW / 2 + 4);
-    const mk = (g: { x: number; y: number; w: number; h: number; rot?: number; sides?: number }) => { const z: Zone = { id: id++, type: 'concourse', level: 1, x: g.x, y: g.y, w: g.w, h: g.h, tier: 0, cls: this.opt.conc }; if (g.rot) z.rot = g.rot; if (g.sides) z.sides = g.sides; zones.push(z); cost += (g.sides ? polyArea(zonePts(z)) : g.w * g.h) * ZONES.concourse.costPerM2; };
+    const mk = (g: { x: number; y: number; w: number; h: number; rot?: number; sides?: number }) => { const z: Zone = { id: id++, type: 'concourse', level: 1, x: g.x, y: g.y, w: g.w, h: g.h, tier: 0, cls: this.opt.conc, stands: [] }; if (g.rot) z.rot = g.rot; if (g.sides) z.sides = g.sides; zones.push(z); cost += (g.sides ? polyArea(zonePts(z)) : g.w * g.h) * ZONES.concourse.costPerM2; };
     for (let i = 0; i + 1 < pts.length; i++) {
       const a = pts[i], b = pts[i + 1]; const L = dist(a, b); const ang = Math.atan2(b.y - a.y, b.x - a.x); const W = this.opt.pierW;
       let rot = ang; if (rot > Math.PI / 2 + 1e-6) rot -= Math.PI; else if (rot <= -Math.PI / 2 + 1e-6) rot += Math.PI;
@@ -1246,7 +1246,7 @@ export class UI {
     if (!this.world.zones.some(z => z.type === 'concourse' && z.level === lv && zonesOverlap(sh, z))) return { ok: false, reason: 'A cut-out must take floor from a concourse, pier or free area' };
     return { ok: true };
   }
-  polyZone(pts: Pt[]): Zone { return { id: this.world.nextId, type: 'concourse', level: 1, ...polyBox(pts), tier: 0, cls: this.opt.conc, poly: pts.map(q => ({ ...q })) }; }
+  polyZone(pts: Pt[]): Zone { return { id: this.world.nextId, type: 'concourse', level: 1, ...polyBox(pts), tier: 0, cls: this.opt.conc, stands: [], poly: pts.map(q => ({ ...q })) }; }
   polyCheck(pts: Pt[]): { ok: boolean; reason?: string; cost: number } {
     const cut = this.tool === 'cut';
     if (pts.length < 3) return { ok: false, reason: 'Click at least three corners', cost: 0 };
@@ -1897,7 +1897,7 @@ export class UI {
 
   buildPier(zr: { x: number; y: number; w: number; h: number; rot?: number; sides?: number; level: Level }, cost: number) {
     this.sim.spend(cost);
-    const z: Zone = { id: this.world.nextId++, type: 'concourse', level: 1, x: zr.x, y: zr.y, w: zr.w, h: zr.h, rot: zr.rot, tier: 0, cls: this.opt.conc };
+    const z: Zone = { id: this.world.nextId++, type: 'concourse', level: 1, x: zr.x, y: zr.y, w: zr.w, h: zr.h, rot: zr.rot, tier: 0, cls: this.opt.conc, stands: [] };
     if (zr.sides) z.sides = zr.sides;
     this.world.zones.push(z);
     this.changed();
@@ -1934,7 +1934,7 @@ export class UI {
     if (hall) z.units = Math.max(6, Math.round(area(r) / 500));
     if (under) { z.pair = under.id; const st0 = this.world.sites?.find(q => q.id === this.ren.focus) ?? siteOf(this.world, z); if (st0) under.site = st0.id; this.world.zones.push(under); }
     const roads0 = this.sim.d.autoRoads.filter(w => w.fore === 'face').length;
-    if (t === 'concourse') z.cls = this.opt.conc;
+    if (t === 'concourse') { z.cls = this.opt.conc; z.stands = []; }
     if (t === 'passport' && !(this.sim.staff.officers ?? 0)) { this.sim.staff.officers = 8; this.toast('8 passport officers hired. Adjust them in Operations.'); }
     if (TERMINAL_TOOLS.has(t) && !sat) {
       const st = this.world.sites?.find(s => s.id === this.ren.focus) ?? siteOf(this.world, z);
@@ -2000,13 +2000,25 @@ export class UI {
     this.changed();
   }
 
-  toggleGate(sl: GateSlot, on: boolean) {
-    const z = sl.zone; const off = new Set(z.off ?? []);
-    if (on) off.delete(sl.key); else off.add(sl.key);
-    z.off = [...off];
-    this.changed();
-    this.toast(on ? 'Gate added' : 'Gate removed', on ? 'info' : 'warn');
+  /** v0.56: every concourse keeps a list of the stands built on it. One that has none yet (an older save, the sample)
+   *  takes the gates it has now as built, so nothing changes under the player; from then on stands are built one by one. */
+  adoptStands() {
+    for (const z of this.world.zones) if (z.type === 'concourse' && !z.stands) { z.stands = this.sim.d.gateSlots.filter(sl => sl.zone.id === z.id && sl.on).map(sl => sl.key); delete z.off; }
   }
+  /** v0.56: build stands (paid) or take them away (40% back). All of `sls` or none. */
+  buildStands(sls: GateSlot[], on: boolean) {
+    sls = sls.filter(sl => sl.on !== on); if (!sls.length) return false;
+    const price = sls.reduce((t, sl) => t + STAND.cost[sl.cls], 0);
+    if (on && !this.sim.canAfford(price)) { this.toast(`Not enough money: ${money(price)}`, 'bad'); return false; }
+    for (const sl of sls) { const z = sl.zone; const st = new Set(z.stands ?? []); if (on) st.add(sl.key); else st.delete(sl.key); z.stands = [...st]; }
+    if (on) this.sim.spend(price); else if (this.sim.moneyOn) this.sim.money += price * STAND.refund;
+    this.nextSound = on ? 'place' : 'demolish';
+    this.changed();
+    const n = sls.length;
+    this.toast(on ? `${n} stand${n > 1 ? 's' : ''} built · ${money(price)}` : `${n} stand${n > 1 ? 's' : ''} removed · ${money(price * STAND.refund)} back`, on ? 'info' : 'warn');
+    return true;
+  }
+  toggleGate(sl: GateSlot, on: boolean) { this.buildStands([sl], on); }
 
   select(h: Hit) {
     this.ren.selected = this.hitToSel(h);
@@ -2114,15 +2126,15 @@ export class UI {
       const fl = gate ? s.gateBusy.get(gate.id) : null;
       const next = gate ? s.flights.filter(f => f.gate.id === gate.id && (f.state === 'pending' || f.state === 'hold' || f.state === 'approach')).sort((a, b) => a.schedArr - b.schedArr)[0] : undefined;
       const C = CLASSES[sl.cls];
-      return `<h2>${gate ? `<span class="des">${gate.num}</span>` : ''} ${gate ? 'Gate' : 'Removed gate'}</h2>
+      return `<h2>${gate ? `<span class="des">${gate.num}</span>` : ''} ${gate ? 'Gate' : 'A place for a stand'}</h2>
         <dl class="kv">
           <dt>Concourse</dt><dd>${s.d.gateLetter.get(sl.zone.id)} · ${sideName(sl.side).toLowerCase()} side</dd>
           <dt>Stand</dt><dd>${C.name} · ${C.example} · ${C.gateSpacing} m wide</dd>
           ${gate ? `<dt>Now</dt><dd>${fl ? `${fl.code} (${fl.ac.example})` : 'Free'}</dd><dt>Next arrival</dt><dd>${next ? `${next.code} at ${s.clock(next.schedArr)}` : '—'}</dd>
           <dt>Connected</dt><dd class="${gate.rwys[0].size ? '' : 'bad'}">${gate.rwys[0].size ? 'Taxiway route to a runway' : 'No route to a runway'}</dd>` : ''}
         </dl>
-        ${gate ? `<button class="btn danger" data-act="gateOff">Remove this gate</button><p class="muted small">The stand stays marked so you can add it back. Removing gates frees apron for something else.</p>`
-          : `<button class="btn" data-act="gateOn">Add a gate here</button>`}`;
+        ${gate ? `<button class="btn danger" data-act="gateOff">Remove this stand · ${money(STAND.cost[sl.cls] * STAND.refund)} back</button><p class="muted small">Its apron goes and the wall behind it becomes a window wall with seating and shops.</p>`
+          : `<button class="btn" data-act="gateOn">Build a stand here · ${money(STAND.cost[sl.cls])}</button><button class="btn" data-act="gateSide">Build every stand on this side · ${money(s.d.gateSlots.filter(q => q.zone.id === sl.zone.id && q.side === sl.side && !q.on).reduce((t, q) => t + STAND.cost[q.cls], 0))}</button><p class="muted small">A stand is an apron slab for one aircraft, with a jet bridge to a gate and a holdroom behind it. It needs a taxiway or taxilane to reach a runway.</p>`}`;
     }
     if (sel.kind === 'cut') {
       // v0.35: a cut-out: how much floor it takes, and from which building
@@ -2347,11 +2359,12 @@ export class UI {
     const rows = s.d.gateGuides.filter(g => g.zone.id === z.id).map(g => {
       const n = s.d.gateSlots.filter(sl => sl.zone.id === z.id && sl.side === g.side);
       const on = n.filter(sl => sl.on).length;
-      const txt = n.length ? `${on} of ${n.length} gates · ${CLASSES[g.cls ?? zc].example} · ${g.self ? 'its own apron, taxilane' : 'taxiway'} ${Math.round(g.d ?? 0)} m out`
+      const left = n.filter(sl => !sl.on), price = left.reduce((t, sl) => t + STAND.cost[sl.cls], 0);
+      const txt = n.length ? `${on} of ${n.length} stands built · ${CLASSES[g.cls ?? zc].example} · ${g.self ? 'its own apron, taxilane' : 'taxiway'} ${Math.round(g.d ?? 0)} m out${left.length ? ` <button class="btn small" data-act="standsSide:${g.side}:1">Build ${left.length} · ${money(price)}</button>` : ''}`
         : g.land ? 'landside: no stands against the hall or security' : g.note ? g.note : 'no room for stands: built against, or too near a road, taxiway or runway';
       return `<dt>${sideName(g.side)}</dt><dd class="${n.length ? '' : 'muted'}">${txt}</dd>`;
     }).join('');
-    return `${rows}<dt></dt><dd class="muted small">Click a gate on the apron to remove it, or a dashed stand to add it back.</dd>`;
+    return `${rows}<dt></dt><dd class="muted small">Stands are built, not given: click a dashed outline on the map to build one there, or build a whole side here. A wall with no stands is a window wall with seating and shops.</dd>`;
   }
 
   legendHTML() {
@@ -2601,6 +2614,14 @@ export class UI {
     else if (a === 'roundSize' && sel?.kind === 'round') {
       const r = s.world.rounds?.find(q => q.id === sel.id);
       if (r) { const up = ROUNDS[1 - r.size].cost - ROUNDS[r.size].cost; if (up > 0 && !pay(up)) return; r.size = 1 - r.size; this.changed(); this.ren.selected = { kind: 'round', id: r.id }; this.refresh(true); }
+    }
+    else if (a === 'gateSide' && sel?.kind === 'gate') {
+      const sl = s.d.gateSlots.find(q => q.zone.id === sel.id && q.key === sel.key);
+      if (sl) { this.buildStands(s.d.gateSlots.filter(q => q.zone.id === sl.zone.id && q.side === sl.side), true); this.ren.selected = { ...sel }; this.refresh(true); }
+    }
+    else if (a.startsWith('standsSide:') && sel?.kind === 'zone') {
+      const [, side, on] = a.split(':');
+      this.buildStands(s.d.gateSlots.filter(q => q.zone.id === sel.id && q.side === side), on === '1'); this.ren.selected = { ...sel }; this.refresh(true);
     }
     else if ((a === 'gateOff' || a === 'gateOn') && sel?.kind === 'gate') {
       const sl = s.d.gateSlots.find(q => q.zone.id === sel.id && q.key === sel.key);

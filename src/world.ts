@@ -19,6 +19,8 @@ import { Shell, Cut, shellsOf, Junction, junctionsOf, inJunction, junctionGap, o
 
 export interface Zone {
   id: number; type: ZoneType; level: Level; x: number; y: number; w: number; h: number; tier: 0 | 1; units?: number; cls?: Cls; leased?: number; off?: string[];
+  /** v0.56: the stands built on this concourse (slot keys). Absent on older saves: every slot not in `off` is a gate. */
+  stands?: string[];
   /** v0.32: a free-drawn area (a concourse piece): its outline. x, y, w, h are its bounding box. */
   poly?: Pt[];
   /** Concourses (v0.7): walk-through duty free at the security exit, who holds each lot, and the running footfall count. */
