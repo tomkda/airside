@@ -14,6 +14,8 @@ const path = require('path');
     w.ways = w.ways.filter(q => !links.includes(q) || q === keep);
     const c = w.zones.find(z => z.type === 'concourse'); c.stands = c.stands.slice(0, 6); g.sim.staff.screeners = 9; g.ui.changed();
     while (g.sim.day < 2) g.sim.step(0.25);
+    // (whether two aircraft meet on the link on a given day depends on when the page was paused: the day's record is set here, so the card is always there)
+    g.sim.ground.clear(); g.sim.groundLast.set(keep.id, { min: 18, so: 2 });
     g.ui.tab = 'ops'; document.body.classList.add('panel-open'); g.ui.refresh(true); });
   await p.waitForTimeout(300);
   const st = () => p.evaluate(() => { const g = window.__game; return { cards: [...document.querySelectorAll('.advice li b')].map(e => e.textContent), buttons: [...document.querySelectorAll('[data-advrun]')].map(e => e.dataset.advrun + ': ' + e.textContent.trim()),
@@ -25,7 +27,7 @@ const path = require('path');
   const shown = await p.evaluate(() => { const e = document.querySelector('[data-advshow]'); if (!e) return false; e.click(); return true; }); await p.waitForTimeout(300);
   const cam1 = await p.evaluate(() => ({ x: window.__game.ren.cam.x, y: window.__game.ren.cam.y, heat: window.__game.ren.overlay }));
   check('Show takes the plan there with the overlay on', shown && cam1.heat && (cam1.x !== cam0.x || cam1.y !== cam0.y));
-  const click = async key => { const n = await p.evaluate(k => { const e = [...document.querySelectorAll('[data-advrun]')].find(q => q.dataset.advrun.startsWith(k)); if (!e) return 0; e.click(); return 1; }, key); await p.waitForTimeout(300); return n; };
+  const clicked = []; const click = async key => { const n = await p.evaluate(k => { const e = [...document.querySelectorAll('[data-advrun]')].find(q => q.dataset.advrun.startsWith(k)); if (!e) return ''; const id = e.dataset.advrun; e.click(); return id; }, key); await p.waitForTimeout(300); if (n) clicked.push(n); return n ? 1 : 0; };
   if (await click('staff')) { const s = await st(); console.log('hired:', s0.screeners, '→', s.screeners, 'screeners'); check('Hire adds the screeners the busiest hour needed', s.screeners > s0.screeners && (s.screeners - s0.screeners) % 3 === 0); }
   else check('there is a staffing card for security', false);
   if (await click('par')) { const s = await st(); console.log('taxiways:', s0.taxi, '→', s.taxi); check('Lay it lays the parallel taxiway and charges for it', s.taxi === s0.taxi + 1 && s.money < s0.money); const again = await st(); check('its card is gone once laid', !again.buttons.some(t => t.startsWith('par'))); }
@@ -34,7 +36,7 @@ const path = require('path');
   if (s1.buttons.some(t => t.startsWith('stands'))) { await click('stands'); const s = await st(); console.log('gates:', s1.gates, '→', s.gates); check('Build builds the stands next to those already there', s.gates > s1.gates && s.money < s1.money); }
   else console.log('  (no flight was turned away for gates on this seed: no stands card)');
   const sA = await st();
-  check('a card acted on is put away for the day (no second charge)', !sA.buttons.some(t => t.startsWith('staff') || t.startsWith('par') || t.startsWith('stands')));
+  check('a card acted on is put away for the day (no second charge)', clicked.length >= 2 && !sA.buttons.some(t => clicked.some(k => t.startsWith(k + ':'))));
   await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
   const s2 = await st(); check('undo takes back the last upgrade alone', (sA.gates > s1.gates ? s2.gates === s1.gates : s2.taxi === sA.taxi - 1) && s2.screeners === sA.screeners);
   if (sA.gates > s1.gates) await p.keyboard.press('Control+z'); await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
@@ -56,6 +58,20 @@ const path = require('path');
     return { label, gates0, gates: g.sim.d.gates.length, w: c.w, idle: g.ui.idleStands(c).length, offers: g.sim.d.gateSlots.filter(q => !q.on).length, paid: Math.round(m - g.sim.money) }; });
   console.log('a 200 m concourse with every stand built:', JSON.stringify(ex));
   check('lengthening keeps every built stand a gate and opens new places', /Lengthen/.test(ex.label) && ex.w > 200 && ex.gates >= ex.gates0 && ex.idle === 0 && ex.offers > 0 && ex.paid > 0);
+  // v0.62: a module that is too small is enlarged where it stands, or its fit-out upgraded
+  const gr = await p.evaluate(() => { const g = window.__game, w = g.sim.world; const sec = w.zones.find(z => z.type === 'security'), ci = w.zones.find(z => z.type === 'checkin'), cl = w.zones.find(z => z.type === 'claim');
+    const A = z => z.w * z.h; const open = () => g.sim.d.terminals[0].active;
+    const r = g.ui.resolveAdvice({ key: 'g', kind: 'grow', zone: sec.id, title: '', why: '', weight: 1 }); const a0 = A(sec), m0 = g.sim.money, u0 = g.sim.d.units.get(sec.id).max;
+    const labels = [r && r.label, r && r.alt && r.alt.label]; if (r && r.run) r.run();
+    const sec1 = { grew: A(sec) > a0, paid: m0 - g.sim.money, open: open(), max: g.sim.d.units.get(sec.id).max > u0 };
+    const m1 = g.sim.money; const r2 = g.ui.resolveAdvice({ key: 'g', kind: 'grow', zone: sec.id, title: '', why: '', weight: 1 }); if (r2 && r2.alt) r2.alt.run();
+    const tier = { tier: sec.tier, paid: m1 - g.sim.money };
+    const h = g.ui.resolveAdvice({ key: 'h', kind: 'grow', zone: ci.id, title: '', why: '', weight: 1 }); const c0 = A(ci), curbs0 = g.sim.d.zones.filter(z => z.type === 'curb').length; if (h && h.run) h.run();
+    return { labels, sec1, tier, hall: { label: h && (h.label || h.why), grew: A(ci) > c0, same: ci.x === cl.x && ci.y === cl.y && ci.w === cl.w && ci.h === cl.h, open: open(), curbs: g.sim.d.zones.filter(z => z.type === 'curb').length >= curbs0, missedGates: g.sim.d.gates.length } }; });
+  console.log('too small:', JSON.stringify(gr));
+  check('security is enlarged where it stands: more floor, room for more lanes, paid for, the terminal still open', /Enlarge/.test(gr.labels[0]) && gr.sec1.grew && gr.sec1.paid > 0 && gr.sec1.open && gr.sec1.max);
+  check('or its fit-out is upgraded (CT scanners) from the same card', /CT/.test(gr.labels[1] || '') && gr.tier.tier === 1 && gr.tier.paid > 0);
+  check('a hall grows with the claim under it, keeping its curbs and the terminal open', /Enlarge/.test(gr.hall.label) && gr.hall.grew && gr.hall.same && gr.hall.open && gr.hall.curbs);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();

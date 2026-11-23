@@ -9,7 +9,7 @@ import { losDay } from './los';
 import { heart } from './shapes';
 import { wayMid } from './ways';
 
-export type AdviceKind = 'stands' | 'extend' | 'parallel' | 'staff' | 'desks' | 'info';
+export type AdviceKind = 'stands' | 'extend' | 'parallel' | 'staff' | 'desks' | 'grow' | 'info';
 export interface Advice {
   /** stable while the cause stands, so a button finds it again */
   key: string; kind: AdviceKind; title: string; why: string;
@@ -83,9 +83,9 @@ export function advise(sim: Sim): Advice[] {
           title: `Staff ${plural(target - cur, 'more ' + unit.replace(/s$/, ''))} at ${name.toLowerCase()}`, why: `Its queue waited ${Math.round(L.wait ?? 0)} minutes in a rush (${LOS.std[L.kind].wait![1]} at most): the busiest hour brought ${Math.round(L.demand)} people and the ${L.open} staffed serve about ${Math.round(L.open * rate)}.${hire ? '' : ' The people are on the roll already: its dial holds them back.'}` });
       } else if (L.need > L.max && L.max < max) out.push({ key: 'desks' + z.id, kind: 'desks', zone: z.id, at: heart(z), n: Math.min(max, L.need) - L.max, weight: w0,
         title: `Fit ${plural(Math.min(max, L.need) - L.max, 'more ' + unit.replace(/s$/, ''))} in ${name.toLowerCase()}`, why: `The busiest hour brought ${Math.round(L.demand)} people; all ${L.max} of its ${unit} serve ${Math.round(L.capMax)}. It has room for ${max}.` });
-      else if (L.open >= L.max) out.push({ key: 'los' + z.id, kind: 'info', zone: z.id, at: heart(z), weight: w0, title: `${name} is too small`,
+      else if (L.open >= L.max) out.push({ key: 'grow' + z.id, kind: 'grow', zone: z.id, at: heart(z), weight: w0, title: `${name} is too small`,
         why: `Its queue waited ${Math.round(L.wait ?? 0)} minutes in a rush with every one of its ${unit} at work. Make it larger, upgrade its fit-out, or build a second.` });
-    } else if (L.sBand === 2) out.push({ key: 'los' + z.id, kind: 'info', zone: z.id, at: heart(z), weight: w0, title: `${name} is crowded`,
+    } else if (L.sBand === 2) out.push({ key: (z.type === 'concourse' ? 'los' : 'grow') + z.id, kind: z.type === 'concourse' ? 'info' : 'grow', zone: z.id, at: heart(z), weight: w0, title: `${name} is crowded`,
       why: `${L.peakQ} people waited on ${Math.round(L.area)} m² at the peak, ${L.space.toFixed(1)} m² each (${LOS.std[L.kind].space[0]} at least). ${z.type === 'concourse' ? 'Widen it, or build fewer and larger stands.' : 'Make it larger.'}` });
     else if (L.wBand === 2) out.push({ key: 'bags' + z.id, kind: 'staff', zone: z.id, at: heart(z), n: 2, pool: 'handlers', weight: w0, title: 'Hire baggage handlers',
       why: `The longest wait for a bag at ${name.toLowerCase()} was ${Math.round(L.wait ?? 0)} minutes (${LOS.std[L.kind].wait![1]} at most). More handlers bring bags to the belts sooner.` });
