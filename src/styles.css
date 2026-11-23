@@ -291,3 +291,10 @@ ul.goals li.done .tick { background: var(--ink); border-color: var(--ink); color
 .offer p { margin: 0 0 8px; font-size: 12.5px; color: var(--ink-2); }
 .offer .row { display: flex; gap: 8px; }
 .btn.ghost { background: none; }
+
+/* v0.57: level of service */
+.los { display: inline-block; padding: 1px 7px; border-radius: 8px; color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+.lostab { list-style: none; margin: 4px 0 6px; padding: 0; }
+.lostab li { padding: 4px 2px; border-bottom: 1px solid var(--rule); cursor: pointer; line-height: 1.5; }
+.lostab li:hover { background: rgba(40, 36, 30, 0.05); }
+.lostab li .muted { display: block; }

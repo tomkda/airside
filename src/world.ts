@@ -22,6 +22,8 @@ export interface Zone {
   /** v0.56: the stands built on this concourse: where each one's gate door is, and what was paid for it. Absent on
    *  older saves and test worlds: every slot not in `off` is a gate. */
   stands?: { x: number; y: number; paid: number; cls?: number }[];
+  /** v0.57: how many of a check-in, security or passport module's desks to staff (absent: its share of the pool). */
+  staff?: number;
   /** v0.32: a free-drawn area (a concourse piece): its outline. x, y, w, h are its bounding box. */
   poly?: Pt[];
   /** Concourses (v0.7): walk-through duty free at the security exit, who holds each lot, and the running footfall count. */
@@ -82,6 +84,8 @@ export function migrateWorld(w: World): World {
   // v0.32: free-drawn areas and cut-outs. An outline that is not a simple polygon is dropped (an area becomes its box).
   w.cuts = (w.cuts ?? []).filter(k => Array.isArray(k.pts) && k.pts.length >= 3 && simplePoly(k.pts));
   for (const z of w.zones) if (z.poly && !(z.type === 'concourse' && z.poly.length >= 3 && simplePoly(z.poly))) delete z.poly;
+  // v0.57: a staffing dial is a whole number on a module that has desks
+  for (const z of w.zones) if (z.staff !== undefined && !((z.type === 'checkin' || z.type === 'security' || z.type === 'passport') && Number.isFinite(z.staff) && z.staff >= 0)) delete z.staff; else if (z.staff !== undefined) z.staff = Math.round(z.staff);
   // v0.56: built stands are points with the price paid; anything else is dropped (the concourse then has what it had).
   for (const z of w.zones) if (z.stands !== undefined) {
     if (z.type !== 'concourse' || !Array.isArray(z.stands)) delete z.stands;

@@ -56,6 +56,9 @@ export interface Flight {
 }
 
 type WaitKey = 'curb' | 'checkin' | 'security' | 'claim' | 'passport';
+/** v0.57: a module's day, for its level of service: the most people waiting at once, the longest wait (smoothed at a desk, the longest for a bag), and arrivals hour by hour. */
+export interface LosStat { peakQ: number; peakWait: number; in: number[];
+  /** how many desks were staffed when the wait peaked */ open?: number }
 export interface DayStats {
   paxDep: number; paxArr: number; missed: number; stranded: number; satSum: number; satN: number;
   waits: Record<WaitKey, { sum: number; n: number; max: number }>;
@@ -101,6 +104,9 @@ export class Sim {
   pax: Pax[] = [];
   cars: Car[] = [];
   procs = new Map<number, Proc>();
+  /** v0.57: level-of-service figures by zone id, today's so far and the last full day's (los.ts reads them). */
+  los = new Map<number, LosStat>(); losLast = new Map<number, LosStat>();
+  losStat(id: number) { let L = this.los.get(id); if (!L) { L = { peakQ: 0, peakWait: 0, in: new Array(24).fill(0) }; this.los.set(id, L); } return L; }
   rwFree = new Map<number, number>();
   gateBusy = new Map<string, Flight | null>();
   lotUsed = 0;
@@ -295,6 +301,12 @@ export class Sim {
 
   lotCapacity() { return this.d.zones.filter(z => z.type === 'parking').reduce((s, z) => s + unitsOf(this.d, z), 0); }
 
+  /** Open or close desks. Someone being served at a desk that closes goes back to the head of the line (v0.57: they
+   *  were left standing at it for good). */
+  setDesks(p: Proc, n: number) {
+    for (let i = p.busy.length - 1; i >= n; i--) { const b = p.busy[i]; if (b) { b.stage = 'queue'; p.queue.unshift(b); } }
+    p.busy = resize(p.busy, n, null);
+  }
   /** Staff go where today's passengers are: each terminal's share of departing passengers, split by desk count inside it. */
   allocateStaff() {
     const load = new Map<Terminal | undefined, number>();
@@ -305,12 +317,20 @@ export class Sim {
       let wts = ps.map(p => (load.get(this.d.termOf.get(p.zone.id)) ?? 0) * p.maxServers / inT(p));
       if (!wts.some(x => x > 0)) wts = ps.map(p => p.maxServers);
       const tot = wts.reduce((s, x) => s + x, 0) || 1;
+      // v0.57: a module with its dial set takes that many first (in the order they were built); the rest are shared as before
+      if (ps.some(p => p.zone.staff !== undefined)) {
+        let left = pool; const auto: number[] = [];
+        ps.forEach((p, i) => { if (p.zone.staff === undefined) { auto.push(i); return; } const a = clamp(Math.min(p.zone.staff, left), 0, p.maxServers); left -= a; p.servers = a; this.setDesks(p, a); });
+        const at = auto.reduce((s, i) => s + wts[i], 0) || 1; const pool2 = left;
+        auto.forEach((i, k) => { const p = ps[i]; const a = k === auto.length - 1 ? left : Math.min(left, Math.round(pool2 * wts[i] / at)); left -= a; p.servers = clamp(a, 0, p.maxServers); this.setDesks(p, p.servers); });
+        return;
+      }
       let left = pool;
       ps.forEach((p, i) => {
         const a = i === ps.length - 1 ? left : Math.round(pool * wts[i] / tot);
         left -= a;
         p.servers = clamp(a, 0, p.maxServers);
-        p.busy = resize(p.busy, p.servers, null);
+        this.setDesks(p, p.servers);
       });
     };
     share('checkin', this.staff.agents);
@@ -322,6 +342,7 @@ export class Sim {
   // ---------------------------------------------------------------- daily plan (demand -> schedule)
   startDay() {
     this.t = DAY_START;
+    if (this.los.size) this.losLast = this.los; this.los = new Map();
     this.flights = []; this.pax = []; this.cars = []; this.pending = [];
     this.openArr.clear(); this.bagCounter = {}; this.noted.clear(); this.shopLoad.clear(); this.shopDay.clear(); this.lotDay.clear(); this.flowDay.clear();
     this.gateBusy.clear(); this.rwFree.clear();
@@ -452,6 +473,7 @@ export class Sim {
     this.updatePax(dt);
     this.updateProcs();
     this.updateBags(dt);
+    if (Math.floor(this.t) !== Math.floor(t0)) this.sampleLos();
     if (this.t >= DAY_END) this.endDay();
   }
 
@@ -1009,7 +1031,7 @@ export class Sim {
       } else if (p.stage === 'waitBag') {
         const f = p.flight; const w = t - p.since;
         p.mood = w < TUNE.tolerance.claim ? 0 : w < TUNE.tolerance.claim * 2 ? 1 : 2;
-        if (f.claim && f.bagsDone >= p.bagNo) { this.recordWait(p, 'claim', w); p.steps.shift(); p.proc = undefined; this.advance(p); }
+        if (f.claim && f.bagsDone >= p.bagNo) { this.recordWait(p, 'claim', w); if (p.proc) { const L = this.losStat(p.proc.zone.id); if (w > L.peakWait) L.peakWait = w; } p.steps.shift(); p.proc = undefined; this.advance(p); }
       } else if (p.stage === 'shopping') {
         const f = p.flight;
         if (t >= p.serviceEnd || t >= f.schedDep - 30 || f.state === 'cancelled') this.leaveShop(p);
@@ -1025,12 +1047,27 @@ export class Sim {
     if (this.pax.length > 4000 || Math.floor(t) % 30 === 0) this.pax = this.pax.filter(p => p.stage !== 'done');
   }
 
+  /** v0.57: once a sim minute, who is waiting where: people at the reclaim belts and in the holdrooms. */
+  sampleLos() {
+    const n = new Map<number, number>();
+    for (const p of this.pax) {
+      if (p.stage === 'dwell') { const id = p.flight.gate.zone.id; n.set(id, (n.get(id) ?? 0) + 1); }
+      else if (p.stage === 'waitBag' && p.proc) { const id = p.proc.zone.id; n.set(id, (n.get(id) ?? 0) + 1); }
+    }
+    for (const [id, k] of n) { const L = this.losStat(id); if (k > L.peakQ) L.peakQ = k; }
+    // (and the one who has stood longest in each desk queue: a queue nobody serves has a wait too)
+    for (const p of this.procs.values()) if (p.queue.length && (p.type === 'checkin' || p.type === 'security' || p.type === 'passport')) {
+      const w = this.t - p.queue[0].since; const L = this.losStat(p.zone.id); if (w > L.peakWait) { L.peakWait = w; L.open = p.servers; }
+    }
+  }
   arrive(p: Pax) {
     const step = p.steps[0];
     switch (step) {
       case 'checkin': case 'security': case 'passport':
         if (!p.proc || !this.procs.has(p.proc.zone.id)) { this.advance(p); return; }
-        p.stage = 'queue'; p.since = this.t; p.proc.queue.push(p); return;
+        p.stage = 'queue'; p.since = this.t; p.proc.queue.push(p);
+        { const L = this.losStat(p.proc.zone.id); L.in[Math.floor(this.t / 60) % 24]++; if (p.proc.queue.length > L.peakQ) L.peakQ = p.proc.queue.length; }
+        return;
       case 'dutyfree': {
         const sh = p.shop;
         if (!sh) { p.steps.shift(); this.advance(p); return; }
@@ -1102,6 +1139,7 @@ export class Sim {
           const w = t - p.since;
           this.recordWait(p, proc.type as 'checkin', w);
           proc.recentWait = proc.recentWait * 0.9 + w * 0.1;
+          { const L = this.losStat(proc.zone.id); if (proc.recentWait > L.peakWait) { L.peakWait = proc.recentWait; L.open = proc.servers; } }
           p.stage = 'service'; p.serviceEnd = t + svc * (0.6 + this.r() * 0.8);
           const sp = proc.frame.slots[i] ?? center(proc.zone);
           p.x = sp.x - proc.frame.inward.x * 2; p.y = sp.y - proc.frame.inward.y * 2;
