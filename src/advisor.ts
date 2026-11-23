@@ -85,10 +85,10 @@ export function advise(sim: Sim): Advice[] {
         title: `Fit ${plural(Math.min(max, L.need) - L.max, 'more ' + unit.replace(/s$/, ''))} in ${name.toLowerCase()}`, why: `The busiest hour brought ${Math.round(L.demand)} people; all ${L.max} of its ${unit} serve ${Math.round(L.capMax)}. It has room for ${max}.` });
       else if (L.open >= L.max) out.push({ key: 'grow' + z.id, kind: 'grow', zone: z.id, at: heart(z), weight: w0, title: `${name} is too small`,
         why: `Its queue waited ${Math.round(L.wait ?? 0)} minutes in a rush with every one of its ${unit} at work. Make it larger, upgrade its fit-out, or build a second.` });
-    } else if (L.sBand === 2) out.push({ key: (z.type === 'concourse' ? 'los' : 'grow') + z.id, kind: z.type === 'concourse' ? 'info' : 'grow', zone: z.id, at: heart(z), weight: w0, title: `${name} is crowded`,
-      why: `${L.peakQ} people waited on ${Math.round(L.area)} m² at the peak, ${L.space.toFixed(1)} m² each (${LOS.std[L.kind].space[0]} at least). ${z.type === 'concourse' ? 'Widen it, or build fewer and larger stands.' : 'Make it larger.'}` });
-    else if (L.wBand === 2) out.push({ key: 'bags' + z.id, kind: 'staff', zone: z.id, at: heart(z), n: 2, pool: 'handlers', weight: w0, title: 'Hire baggage handlers',
+    } else if (L.wBand === 2 && z.type === 'claim') out.push({ key: 'bags' + z.id, kind: 'staff', zone: z.id, at: heart(z), n: 2, pool: 'handlers', weight: w0, title: 'Hire baggage handlers',
       why: `The longest wait for a bag at ${name.toLowerCase()} was ${Math.round(L.wait ?? 0)} minutes (${LOS.std[L.kind].wait![1]} at most). More handlers bring bags to the belts sooner.` });
+    else if (L.sBand === 2) out.push({ key: (z.type === 'concourse' ? 'los' : 'grow') + z.id, kind: z.type === 'concourse' ? 'info' : 'grow', zone: z.id, at: heart(z), weight: w0, title: `${name} is crowded`,
+      why: `${L.peakQ} people waited on ${Math.round(L.area)} m² at the peak, ${L.space.toFixed(1)} m² each (${LOS.std[L.kind].space[0]} at least). ${z.type === 'concourse' ? 'Widen it, or build fewer and larger stands.' : 'Make it larger.'}` });
   }
   return out.sort((a, b) => b.weight - a.weight).slice(0, 6);
 }

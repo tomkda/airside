@@ -72,6 +72,15 @@ const path = require('path');
   check('security is enlarged where it stands: more floor, room for more lanes, paid for, the terminal still open', /Enlarge/.test(gr.labels[0]) && gr.sec1.grew && gr.sec1.paid > 0 && gr.sec1.open && gr.sec1.max);
   check('or its fit-out is upgraded (CT scanners) from the same card', /CT/.test(gr.labels[1] || '') && gr.tier.tier === 1 && gr.tier.paid > 0);
   check('a hall grows with the claim under it, keeping its curbs and the terminal open', /Enlarge/.test(gr.hall.label) && gr.hall.grew && gr.hall.same && gr.hall.open && gr.hall.curbs);
+  // a hall with its frontage road drawn by hand close under it does not grow onto the road
+  const fr = await p.evaluate(() => { const g = window.__game, w = g.sim.world; const ci = w.zones.find(z => z.type === 'checkin'); const y = ci.y + ci.h + 28;
+    const way = (ax, ay, bx, by) => w.ways.push({ id: w.nextId++, kind: 'road', a: { x: ax, y: ay }, b: { x: bx, y: by }, cls: 0, lanes: 2 });
+    way(2780, y, 3320, y); way(2780, y, 2780, 3230); way(3320, y, 3320, 3230); g.ui.changed();
+    const roads = () => g.sim.d.zones.filter(z => z.type === 'curb' && z.auto).map(z => z.auto.road).sort().join(','); const r0 = roads(), south0 = ci.y + ci.h, faces0 = g.sim.d.autoRoads.filter(q => q.fore === 'face').length;
+    const h = g.ui.resolveAdvice({ key: 'h', kind: 'grow', zone: ci.id, title: '', why: '', weight: 1 }); if (h && h.run) h.run();
+    return { drawn: faces0 === 0, label: h && (h.label || h.why), same: roads() === r0, south: ci.y + ci.h === south0, faces: g.sim.d.autoRoads.filter(q => q.fore === 'face').length, open: g.sim.d.terminals[0].active }; });
+  console.log('hall with a drawn frontage road:', JSON.stringify(fr));
+  check('growing a hall never moves it onto its drawn frontage road: its curbs stay on that road', fr.drawn && fr.same && fr.south && fr.faces === 0 && fr.open);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();
