@@ -51,6 +51,34 @@ const path = require('path');
   await p.keyboard.press('Control+z'); await p.waitForTimeout(300);
   const s5 = await st();
   check('undo puts the stand back', s5.built === s3.built);
+  // move the satellite whole: its stands go with it
+  const mv = await p.evaluate(id => { const g = window.__game; const z = g.sim.world.zones.find(q => q.id === id); g.ui.select({ kind: 'zone', zone: z });
+    const [x, y] = g.ren.P(z.x + z.w * 0.35, z.y + z.h / 2); const [x2, y2] = g.ren.P(z.x + z.w * 0.35 + 64, z.y + z.h / 2 + 32); return { x, y, x2, y2, zx: z.x }; }, s1.satId);
+  await p.mouse.move(mv.x, mv.y); await p.mouse.down();
+  for (let k = 1; k <= 8; k++) { await p.mouse.move(mv.x + (mv.x2 - mv.x) * k / 8, mv.y + (mv.y2 - mv.y) * k / 8); await p.waitForTimeout(30); }
+  await p.mouse.up(); await p.waitForTimeout(400);
+  const s6 = await st(); const moved = await p.evaluate(id => window.__game.sim.world.zones.find(q => q.id === id).x, s1.satId);
+  console.log('satellite moved', Math.round(moved - mv.zx), 'm east:', s6.built, 'stands still built of', s6.satStands);
+  check('a concourse moved whole takes its built stands with it', moved !== mv.zx && s6.built === s5.built && s6.satStands === s5.satStands);
+  // a pier drawn into the sample's concourse: the stands it does not stand on are still gates, the rest are kept and can be refunded
+  const pr = await p.evaluate(() => { const g = window.__game, w = g.sim.world; const c = w.zones.find(z => z.type === 'concourse');
+    const m0 = g.sim.money; const id = w.nextId++;
+    w.zones.push({ id, type: 'concourse', level: 1, x: c.x + c.w - 40, y: c.y, w: 200, h: c.h, tier: 0, cls: c.cls, stands: [] }); g.ui.changed();
+    const idle = g.ui.idleStands(c).length; const gates = g.sim.d.gates.filter(q => c.stands.some(t => Math.hypot(t.x - q.door.x, t.y - q.door.y) < 15)).length;
+    return { id, cid: c.id, idle, gates, n: c.stands.length, m0 }; });
+  console.log('a pier joined to the sample concourse:', pr.gates, 'of its', pr.n, 'stands are gates,', pr.idle, 'have no place');
+  check('joining a pier keeps the stands it does not stand on (their keys change, their places do not)', pr.n === 14 && pr.gates + pr.idle === 14 && pr.gates >= 12);
+  const rf = await p.evaluate(a => { const g = window.__game, w = g.sim.world; const c = w.zones.find(z => z.id === a.cid); const m = g.sim.money;
+    g.ui.refundIdle(c); return { n: c.stands.length, back: g.sim.money - m, idle: g.ui.idleStands(c).length }; }, pr);
+  check('stands with no place can be taken up (the sample\'s were paid for by nobody: nothing back)', rf.n === 14 - pr.idle && rf.idle === 0 && rf.back === 0);
+  // undo right back to the start, then remove one of the sample's stands: the others stay
+  for (let k = 0; k < 12; k++) { await p.keyboard.press('Control+z'); await p.waitForTimeout(120); }
+  const u = await p.evaluate(() => { const g = window.__game, c = g.sim.world.zones.find(z => z.type === 'concourse');
+    const before = g.sim.d.gates.length, n0 = (c.stands || []).length, m = g.sim.money;
+    g.ui.buildStands([g.sim.d.gateSlots.find(s => s.zone.id === c.id && s.on)], false);
+    return { before, n0, after: g.sim.d.gates.length, back: g.sim.money - m, concs: g.sim.world.zones.filter(z => z.type === 'concourse').length }; });
+  console.log('undone to the start:', u.concs, 'concourse,', u.before, 'gates; one stand removed:', u.after);
+  check('after undoing everything the sample still has its 14 built stands, and removing one leaves 13', u.before === 14 && u.n0 === 14 && u.after === 13 && u.back === 0);
   check('Terminal 1 is open throughout', s5.open);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);

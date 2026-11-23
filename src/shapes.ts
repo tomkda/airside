@@ -369,9 +369,27 @@ export const zonesOverlap = (a: Shaped, b: Shaped, min = 1) => !!overlapOf(a, b,
 //   while both ends stay where they are.
 //   v0.21: and one on a corner of each end (`ta`, `tb`): it sets the width of that end alone, so the pier tapers.
 export type Grip = 'n' | 'e' | 's' | 'w' | 'a' | 'b' | 'r' | 'm' | 'ta' | 'tb' | 't' | 'k' | `v${number}`;
-export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; off?: string[]; stands?: string[]; poly?: Pt[]; twist?: number }
-export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, twist: z.twist, poly: z.poly ? z.poly.map(p => ({ ...p })) : undefined, off: z.off ? [...z.off] : undefined, stands: z.stands ? [...z.stands] : undefined });
+export interface Geom { x: number; y: number; w: number; h: number; rot?: number; sides?: number; bend?: number; taper?: number; off?: string[]; poly?: Pt[]; twist?: number }
+export const geomOf = (z: Geom): Geom => ({ x: z.x, y: z.y, w: z.w, h: z.h, rot: z.rot, sides: z.sides, bend: z.bend, taper: z.taper, twist: z.twist, poly: z.poly ? z.poly.map(p => ({ ...p })) : undefined, off: z.off ? [...z.off] : undefined });
 export function setGeom(z: Geom, g: Geom) {
+  // v0.56: the stands built on a concourse are kept by where they are. A building moved, turned or swung whole takes
+  // them with it (a rigid move about its centre; a frame re-expressed a quarter turn round, w and h swapped, is no turn);
+  // one stretched, bent or tapered leaves them where they stand, to meet whatever places its new walls offer.
+  const zs = z as Geom & { stands?: { x: number; y: number; paid: number }[] };
+  if (zs.stands?.length) {
+    const same = (a?: number, b?: number) => Math.abs((a ?? 0) - (b ?? 0)) < 1e-9;
+    const b0 = z.poly ? polyBox(z.poly) : z, b1 = g.poly ? polyBox(g.poly) : g;
+    const keep = same(b0.w, b1.w) && same(b0.h, b1.h), swap = !keep && same(b0.w, b1.h) && same(b0.h, b1.w);
+    if ((keep || swap) && same(Math.abs(z.bend ?? 0), Math.abs(g.bend ?? 0)) && same(Math.abs(z.taper ?? 0), Math.abs(g.taper ?? 0))) {
+      if (same(z.twist, g.twist) && (z.sides ?? 0) === (g.sides ?? 0)) {
+        const c0 = { x: z.x + b0.w / 2, y: z.y + b0.h / 2 }, c1 = { x: g.x + b1.w / 2, y: g.y + b1.h / 2 };
+        let da = (g.rot ?? 0) - (z.rot ?? 0); da = Math.atan2(Math.sin(da), Math.cos(da));
+        if (swap) da += Math.abs(da - Math.PI / 2) < Math.abs(da + Math.PI / 2) ? -Math.PI / 2 : Math.PI / 2;
+        const cs = Math.cos(da), sn = Math.sin(da);
+        zs.stands = zs.stands.map(q => ({ ...q, x: c1.x + (q.x - c0.x) * cs - (q.y - c0.y) * sn, y: c1.y + (q.x - c0.x) * sn + (q.y - c0.y) * cs }));
+      }
+    }
+  }
   // v0.32: a free area's outline goes where its box is put (so moving the box moves the outline)
   if (g.poly) { const b = polyBox(g.poly); const dx = g.x - b.x, dy = g.y - b.y; z.poly = g.poly.map(p => ({ x: p.x + dx, y: p.y + dy })); z.x = g.x; z.y = g.y; z.w = b.w; z.h = b.h; }
   else { delete z.poly; z.x = g.x; z.y = g.y; z.w = g.w; z.h = g.h; }
@@ -380,7 +398,6 @@ export function setGeom(z: Geom, g: Geom) {
   if (g.taper) z.taper = g.taper; else delete z.taper;
   if (g.twist) z.twist = g.twist; else delete z.twist;
   if (g.off && g.off.length) z.off = [...g.off]; else delete z.off;
-  if (g.stands) z.stands = [...g.stands];   // (v0.56: built stands; never dropped by a reshape)
 }
 /** Does the long axis of a pier run along its own x? (A turned one always does; an upright one may stand on end.) */
 const alongX = (z: Geom) => !!z.rot || !!z.bend || !!z.taper || !!z.twist || z.w >= z.h;
@@ -388,7 +405,7 @@ const alongX = (z: Geom) => !!z.rot || !!z.bend || !!z.taper || !!z.twist || z.w
 function asPier(z: Geom): Geom {
   if (alongX(z)) return geomOf(z);
   const c = centreOf(z);
-  return { x: c.x - z.h / 2, y: c.y - z.w / 2, w: z.h, h: z.w, rot: Math.PI / 2, off: turnKeys(z.off, -1), stands: turnKeys(z.stands, -1) };
+  return { x: c.x - z.h / 2, y: c.y - z.w / 2, w: z.h, h: z.w, rot: Math.PI / 2, off: turnKeys(z.off, -1) };
 }
 /** A width and taper that keep both ends within `END_WIDTH`. */
 function fitEnds(wa: number, wb: number, keep: 'a' | 'b', lim: GripLimits, was: number): { h: number; taper: number | undefined } {
@@ -524,7 +541,7 @@ export function regrip(z0: Geom, grip: Grip, p: Pt, turns: boolean, lim: GripLim
     // (and a taper turns round with the frame: the wide end stays the wide end)
     const flip = quarters % 4 === 2 || quarters % 4 === -2 || quarters === 1;
     // (v0.41: and an S keeps its twist, as far as the new length allows: turned end for end it is the same S)
-    return { x: c.x - L / 2, y: c.y - W / 2, w: L, h: W, rot, sides: undefined, bend, taper: z0.taper ? (flip ? -z0.taper : z0.taper) : undefined, twist: clampTwist(L, W, bend, z0.twist), off: turnKeys(z0.off, quarters), stands: turnKeys(z0.stands, quarters) };
+    return { x: c.x - L / 2, y: c.y - W / 2, w: L, h: W, rot, sides: undefined, bend, taper: z0.taper ? (flip ? -z0.taper : z0.taper) : undefined, twist: clampTwist(L, W, bend, z0.twist), off: turnKeys(z0.off, quarters) };
   }
   // an edge: it moves square to itself, in the shape's own frame, and the opposite edge stays where it is
   const q = toLocal(z0, p); let x0 = z0.x, y0 = z0.y, x1 = z0.x + z0.w, y1 = z0.y + z0.h;

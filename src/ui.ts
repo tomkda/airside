@@ -3,7 +3,7 @@ import { Pt, Rect, snap, sub, dist, clamp, area, rad, projT, lerpPt, inRect, nor
 import { ZONES, ZoneType, Level, TUNE, SITE, LEVELS, CLASSES, Cls, TAXI_CLASSES, ROAD_LANES, WALK, rwyClass, COMMERCE, TENANTS, TenantId, Lod, LOD, SITES, FRONTAGE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, AIRLINES, STAND } from './config';
 import { Sim, DAY_START, DAY_END, revTotal } from './sim';
 import { GOALS, Goal, nextGoals, rating } from './goals';
-import { GateSlot, slotAt, SIDE_NAMES, sideName, standDepth, sideReach } from './gates';
+import { GateSlot, slotAt, SIDE_NAMES, sideName, standDepth, sideReach, STAND_TOL } from './gates';
 import { holdDepth, spineWidth, depthClass } from './bands';
 import { Renderer, Sel } from './render';
 import {
@@ -1618,13 +1618,18 @@ export class UI {
     if (this.live) { this.endLive(false); this.drag = null; this.ren.ghost = null; }
     this.liveStale = false;
     if (this.snap) { this.undoStack.push(this.snap); if (this.undoStack.length > 50) this.undoStack.shift(); this.redoStack = []; }
-    this.sim.relayout(); this.refresh(true); this.ctl.save();
+    this.sim.relayout(); this.adopt(); this.refresh(true); this.ctl.save();
     this.snap = this.snapshot();
+    // v0.56: a built stand that has lost its place is kept, and said once
+    { let idle = 0; for (const z of this.world.zones) if (z.stands?.length) idle += this.idleStands(z).length;
+      if (idle > this.idleN) this.toast(`${idle - this.idleN} built stand${idle - this.idleN > 1 ? 's have' : ' has'} no place now: kept for when there is room again, or refund ${idle - this.idleN > 1 ? 'them' : 'it'} in the concourse's panel`, 'warn');
+      this.idleN = idle; }
     if (this.nextSound === 'place') this.snd.place(); else if (this.nextSound === 'demolish') this.snd.demolish();
     this.nextSound = 'place';
   }
 
   // ------------------------------------------------------------ undo (v0.10): every edit can be taken back
+  private idleN = 0;
   private undoStack: string[] = []; private redoStack: string[] = []; private snap = '';
   snapshot() { return JSON.stringify({ w: this.sim.world, m: this.sim.money }); }
   restore(s: string) {
@@ -1635,7 +1640,7 @@ export class UI {
     Object.assign(ws, o.w); this.sim.money = o.m;
     this.ren.selected = null; this.ren.hover = null;
     if (this.ren.focus !== null && !this.world.sites?.some(q => q.id === this.ren.focus)) this.setLod('landside', null);
-    this.sim.relayout(); this.refresh(true); this.ctl.save(); this.snap = s;
+    this.sim.relayout(); const ad = this.adopt(); this.refresh(true); this.ctl.save(); this.snap = ad ? this.snapshot() : s;
   }
   undo() {
     const s = this.undoStack.pop(); if (!s) { this.toast('Nothing to undo'); return; }
@@ -1967,13 +1972,13 @@ export class UI {
     let refund = 0, what = '';
     if (h.kind === 'site') {
       const st = h.site; const mine = this.world.zones.filter(z => z.site === st.id || (z.site === undefined && isTerminalModule(z) && inRect(center4(z), st)));
-      refund = mine.reduce((t, z) => t + floorArea(z) * ZONES[z.type].costPerM2 * 0.4, 0); what = this.siteName(st);
+      refund = mine.reduce((t, z) => t + floorArea(z) * ZONES[z.type].costPerM2 * 0.4 + (z.stands ?? []).reduce((u, q) => u + q.paid * STAND.refund, 0), 0); what = this.siteName(st);
       this.world.zones = this.world.zones.filter(z => !mine.includes(z));
       this.world.sites = (this.world.sites ?? []).filter(s => s !== st);
       if (this.ren.focus === st.id) this.setLod('landside', null);
     } else if (h.kind === 'zone') {
       const z = h.zone; const tw = this.twin(z);
-      refund = floorArea(z) * ZONES[z.type].costPerM2 * 0.4 + (tw ? floorArea(tw) * ZONES[tw.type].costPerM2 * 0.4 : 0); what = tw ? 'Hall (check-in and baggage claim)' : ZONES[z.type].label;
+      refund = floorArea(z) * ZONES[z.type].costPerM2 * 0.4 + (tw ? floorArea(tw) * ZONES[tw.type].costPerM2 * 0.4 : 0) + (z.stands ?? []).reduce((u, q) => u + q.paid * STAND.refund, 0); what = tw ? 'Hall (check-in and baggage claim)' : ZONES[z.type].label;
       this.world.zones = this.world.zones.filter(q => q !== z && q !== tw);
     } else if (h.kind === 'way') {
       const w = h.way; refund = wayLen(w) * wayCostPerM(w.kind, w.cls, w.lanes) * 0.4; what = wayName(w.kind);
@@ -2000,22 +2005,64 @@ export class UI {
     this.changed();
   }
 
-  /** v0.56: every concourse keeps a list of the stands built on it. One that has none yet (an older save, the sample)
-   *  takes the gates it has now as built, so nothing changes under the player; from then on stands are built one by one. */
-  adoptStands() {
-    for (const z of this.world.zones) if (z.type === 'concourse' && !z.stands) { z.stands = this.sim.d.gateSlots.filter(sl => sl.zone.id === z.id && sl.on).map(sl => sl.key); delete z.off; }
+  /** v0.56: every concourse keeps the stands built on it, by where they are. One that has no list yet (an older save,
+   *  the sample, a starter layout) takes the gates it has now as built and paid for by nobody, so nothing changes under
+   *  the player; from then on stands are built one by one. */
+  private adopt() {
+    let any = false;
+    for (const z of this.world.zones) if (z.type === 'concourse' && !z.stands) {
+      z.stands = this.sim.d.gateSlots.filter(sl => sl.zone.id === z.id && sl.on).map(sl => ({ x: sl.door.x, y: sl.door.y, paid: 0 })); delete z.off; any = true;
+    }
+    if (any) this.sim.relayout();
+    return any;
   }
-  /** v0.56: build stands (paid) or take them away (40% back). All of `sls` or none. */
+  adoptStands() { if (this.adopt()) { this.refresh(true); this.ctl.save(); this.snap = this.snapshot(); } }
+  /** The built stand that a slot stands on: the nearest one within reach, on any piece of the building. */
+  standOf(sl: GateSlot) {
+    let best: { z: Zone; i: number; paid: number } | null = null, bd = STAND_TOL;
+    for (const z of this.world.zones) (z.stands ?? []).forEach((q, i) => { const d = Math.hypot(q.x - sl.door.x, q.y - sl.door.y); if (d < bd) { bd = d; best = { z, i, paid: q.paid }; } });
+    return best as { z: Zone; i: number; paid: number } | null;
+  }
+  /** Built stands of a concourse that are no gate as things stand: their wall has moved, something is in the way, or
+   *  they have no way to a runway. They are kept (and come back when there is room), or can be refunded in full. */
+  idleStands(z: Zone) {
+    const doors = this.sim.d.gates.map(g => ({ p: g.door, used: false }));
+    // (every building's stands claim their gates, so two stands never count on one)
+    const idle: number[] = [];
+    for (const o of this.world.zones) (o.stands ?? []).forEach((q, i) => {
+      let best = -1, bd = STAND_TOL;
+      doors.forEach((g, k) => { if (g.used) return; const d = Math.hypot(q.x - g.p.x, q.y - g.p.y); if (d < bd) { bd = d; best = k; } });
+      if (best >= 0) doors[best].used = true; else if (o === z) idle.push(i);
+    });
+    return idle;
+  }
+  refundIdle(z: Zone) {
+    const idle = new Set(this.idleStands(z)); if (!idle.size || !z.stands) return;
+    const back = z.stands.reduce((t, q, i) => t + (idle.has(i) ? q.paid : 0), 0);
+    z.stands = z.stands.filter((_, i) => !idle.has(i));
+    if (this.sim.moneyOn) this.sim.money += back;
+    this.nextSound = 'demolish'; this.changed();
+    this.toast(`${idle.size} stand${idle.size > 1 ? 's' : ''} with no place taken up · ${money(back)} back`, 'warn');
+  }
+  /** v0.56: build stands (paid) or take them away (part of what was paid back). All of `sls` or none. */
   buildStands(sls: GateSlot[], on: boolean) {
     sls = sls.filter(sl => sl.on !== on); if (!sls.length) return false;
-    const price = sls.reduce((t, sl) => t + STAND.cost[sl.cls], 0);
-    if (on && !this.sim.canAfford(price)) { this.toast(`Not enough money: ${money(price)}`, 'bad'); return false; }
-    for (const sl of sls) { const z = sl.zone; const st = new Set(z.stands ?? []); if (on) st.add(sl.key); else st.delete(sl.key); z.stands = [...st]; }
-    if (on) this.sim.spend(price); else if (this.sim.moneyOn) this.sim.money += price * STAND.refund;
+    let sum = 0;
+    if (on) {
+      sum = sls.reduce((t, sl) => t + STAND.cost[sl.cls], 0);
+      if (!this.sim.canAfford(sum)) { this.toast(`Not enough money: ${money(sum)}`, 'bad'); return false; }
+      for (const sl of sls) (sl.zone.stands ??= []).push({ x: sl.door.x, y: sl.door.y, paid: this.sim.moneyOn ? STAND.cost[sl.cls] : 0 });
+      this.sim.spend(sum);
+    } else {
+      let n = 0;
+      for (const sl of sls) { const q = this.standOf(sl); if (!q) continue; sum += q.paid * STAND.refund; q.z.stands!.splice(q.i, 1); n++; }
+      if (!n) return false;
+      if (this.sim.moneyOn) this.sim.money += sum;
+    }
     this.nextSound = on ? 'place' : 'demolish';
     this.changed();
     const n = sls.length;
-    this.toast(on ? `${n} stand${n > 1 ? 's' : ''} built · ${money(price)}` : `${n} stand${n > 1 ? 's' : ''} removed · ${money(price * STAND.refund)} back`, on ? 'info' : 'warn');
+    this.toast(on ? `${n} stand${n > 1 ? 's' : ''} built · ${money(sum)}` : `${n} stand${n > 1 ? 's' : ''} removed · ${money(sum)} back`, on ? 'info' : 'warn');
     return true;
   }
   toggleGate(sl: GateSlot, on: boolean) { this.buildStands([sl], on); }
@@ -2133,7 +2180,7 @@ export class UI {
           ${gate ? `<dt>Now</dt><dd>${fl ? `${fl.code} (${fl.ac.example})` : 'Free'}</dd><dt>Next arrival</dt><dd>${next ? `${next.code} at ${s.clock(next.schedArr)}` : '—'}</dd>
           <dt>Connected</dt><dd class="${gate.rwys[0].size ? '' : 'bad'}">${gate.rwys[0].size ? 'Taxiway route to a runway' : 'No route to a runway'}</dd>` : ''}
         </dl>
-        ${gate ? `<button class="btn danger" data-act="gateOff">Remove this stand · ${money(STAND.cost[sl.cls] * STAND.refund)} back</button><p class="muted small">Its apron goes and the wall behind it becomes a window wall with seating and shops.</p>`
+        ${gate ? `<button class="btn danger" data-act="gateOff">Remove this stand · ${money((this.standOf(sl)?.paid ?? 0) * STAND.refund)} back</button><p class="muted small">Its apron goes and the wall behind it becomes a window wall with seating and shops.</p>`
           : `<button class="btn" data-act="gateOn">Build a stand here · ${money(STAND.cost[sl.cls])}</button><button class="btn" data-act="gateSide">Build every stand on this side · ${money(s.d.gateSlots.filter(q => q.zone.id === sl.zone.id && q.side === sl.side && !q.on).reduce((t, q) => t + STAND.cost[q.cls], 0))}</button><p class="muted small">A stand is an apron slab for one aircraft, with a jet bridge to a gate and a holdroom behind it. It needs a taxiway or taxilane to reach a runway.</p>`}`;
     }
     if (sel.kind === 'cut') {
@@ -2364,7 +2411,9 @@ export class UI {
         : g.land ? 'landside: no stands against the hall or security' : g.note ? g.note : 'no room for stands: built against, or too near a road, taxiway or runway';
       return `<dt>${sideName(g.side)}</dt><dd class="${n.length ? '' : 'muted'}">${txt}</dd>`;
     }).join('');
-    return `${rows}<dt></dt><dd class="muted small">Stands are built, not given: click a dashed outline on the map to build one there, or build a whole side here. A wall with no stands is a window wall with seating and shops.</dd>`;
+    const idle = this.idleStands(z), back = idle.reduce((t, i) => t + (z.stands?.[i]?.paid ?? 0), 0);
+    const lost = idle.length ? `<dt>No place</dt><dd class="bad">${idle.length} built stand${idle.length > 1 ? 's have' : ' has'} no place now (the wall moved, something is in the way, or no way to a runway). Kept for when there is room again. <button class="btn small" data-act="standsIdle">Refund · ${money(back)}</button></dd>` : '';
+    return `${rows}${lost}<dt></dt><dd class="muted small">Stands are built, not given: click a dashed outline on the map to build one there, or build a whole side here. A wall with no stands is a window wall with seating and shops.</dd>`;
   }
 
   legendHTML() {
@@ -2619,6 +2668,7 @@ export class UI {
       const sl = s.d.gateSlots.find(q => q.zone.id === sel.id && q.key === sel.key);
       if (sl) { this.buildStands(s.d.gateSlots.filter(q => q.zone.id === sl.zone.id && q.side === sl.side), true); this.ren.selected = { ...sel }; this.refresh(true); }
     }
+    else if (a === 'standsIdle' && sel?.kind === 'zone') { const z = this.world.zones.find(q => q.id === sel.id); if (z) { this.refundIdle(z); this.ren.selected = { ...sel }; this.refresh(true); } }
     else if (a.startsWith('standsSide:') && sel?.kind === 'zone') {
       const [, side, on] = a.split(':');
       this.buildStands(s.d.gateSlots.filter(q => q.zone.id === sel.id && q.side === side), on === '1'); this.ren.selected = { ...sel }; this.refresh(true);

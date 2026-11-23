@@ -17,7 +17,17 @@ import { pointInPoly } from './geom';
 export type SideKey = string;
 /** v0.56: is this slot a gate? A concourse with `stands` has only the stands built there (the rest are places a stand
  *  could be built); one without it (older saves, test worlds) has every slot but those switched off. */
-export const slotOn = (z: Zone, key: string) => (z.stands ? z.stands.includes(key) : !(z.off ?? []).includes(key));
+/** How near a built stand's point must be to a slot's door to be that slot: under half the smallest spacing. */
+export const STAND_TOL = 15;
+let pool: { x: number; y: number; used: boolean }[] = [];
+/** (One pool of built stands per layout: each claims the one nearest slot, on whichever piece of the building it now is.) */
+const slotOn = (z: Zone, key: string, door: Pt) => {
+  if (!z.stands) return !(z.off ?? []).includes(key);
+  let best = -1, bd = STAND_TOL;
+  for (let i = 0; i < pool.length; i++) { const q = pool[i]; if (q.used) continue; const d = Math.hypot(q.x - door.x, q.y - door.y); if (d < bd) { bd = d; best = i; } }
+  if (best < 0) return false;
+  pool[best].used = true; return true;
+};
 export interface GateSlot {
   key: string; id: string; zone: Zone; side: SideKey; i: number; cls: Cls; on: boolean;
   door: Pt; stand: Pt; front: Pt; ang: number; outward: Pt; cell: Pt[];
@@ -91,6 +101,7 @@ interface Count { k: number; n: number }
 
 export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth: (len: number) => number, opts: GateOpts = {}) {
   const gates: Gate[] = [], aprons: Apron[] = [], slots: GateSlot[] = [], guides: SideGuide[] = [];
+  pool = world.zones.flatMap(z => (z.stands ?? []).map(q => ({ x: q.x, y: q.y, used: false })));
   const pending: Pending[] = []; const counts = new Map<number, Count>();
   const letters = new Map<number, string>();
   const units = new Map<number, { max: number; count: number }>();
@@ -185,7 +196,7 @@ export function buildGateAreas(world: World, runways: RunwayInfo[], runwayWidth:
         const h = mul(al, sp / 2);
         const cell = [sub(ep, h), add(ep, h), add(add(ep, h), mul(sd.out, D)), add(sub(ep, h), mul(sd.out, D))];
         const sl: GateSlot = {
-          key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: cls as Cls, on: slotOn(z, key),
+          key, id: `${z.id}-${key}`, zone: z, side: sd.side, i, cls: cls as Cls, on: slotOn(z, key, add(ep, mul(sd.out, -7))),
           door: add(ep, mul(sd.out, -7)), stand: add(ep, mul(sd.out, C.length / 2 + 8)), front, ang: Math.atan2(-sd.out.y, -sd.out.x), outward: sd.out, cell,
         };
         slots.push(sl); nSlots++; guide.served = true;
@@ -344,7 +355,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       else { const q = toLocal(z, door), F = frameOf(z); const u = side === 'n' ? q.x - F.x : side === 's' ? F.x + F.w - q.x : side === 'e' ? q.y - F.y : F.y + F.h - q.y; i = Math.max(0, Math.floor(u / (CLASSES[0].gateSpacing / 2))); }
       while (per.has(`${z.id}:${side}${i}`)) i++;
       per.set(`${z.id}:${side}${i}`, 1); per.set(`${z.id}:${side}`, i + 1); const key = `${side}${i}`;
-      const sl: Slot = { key, id: `${z.id}-${key}`, zone: z, side, i, cls: zc, on: slotOn(z, key), door, stand: add(wm, mul(nc, C.length / 2 + APRON.nose + dist(wm, m))), front, ang: Math.atan2(-nc.y, -nc.x), outward: nc, cell, tan, s: s0, w, drawn: !!via, box: cb };
+      const sl: Slot = { key, id: `${z.id}-${key}`, zone: z, side, i, cls: zc, on: slotOn(z, key, door), door, stand: add(wm, mul(nc, C.length / 2 + APRON.nose + dist(wm, m))), front, ang: Math.atan2(-nc.y, -nc.x), outward: nc, cell, tan, s: s0, w, drawn: !!via, box: cb };
       slots.push(sl); const cnt = counts.get(z.id)!; cnt.n++;
       if (!(z.stands && !sl.on)) got.push(sl);   // (v0.56: a stand not built yet is offered, not paved)
       prev = cell; s0 += w; down = null;
@@ -482,7 +493,7 @@ function selfAprons(world: World, runways: RunwayInfo[], runwayWidth: (len: numb
       if (!c.free) { flush(); continue; }
       const key = `${sd.side}${c.i}`;
       const sl = {
-        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i: c.i, cls: zc, on: slotOn(z, key),
+        key, id: `${z.id}-${key}`, zone: z, side: sd.side, i: c.i, cls: zc, on: slotOn(z, key, add(c.ep, mul(c.out, -7))),
         door: add(c.ep, mul(c.out, -7)), stand: add(c.ep, mul(c.out, C.length / 2 + APRON.nose)), front: c.front, ang: Math.atan2(-c.out.y, -c.out.x), outward: c.out, cell: c.cell, tan: c.tan,
       };
       slots.push(sl); cnt.n++; guide.served = true; guide.self = true; guide.d = D; guide.cls = zc;
