@@ -1394,9 +1394,9 @@ function runwayStubs(world: World, rw: Runway, extra: WaySpec[] = []): number[] 
  *  is run on (or cut back) to meet that same line; a free end is joined to the first by a short link. A curve is
  *  offset along its own normals. The side clear of the terminal is tried first; a side that already has one is
  *  refused. Every existing taxiway it crosses joins it by itself (the network splits them). */
-export function parallelTaxi(world: World, w: Way, aprons: Apron[]): { ways: (WaySpec & { c?: Pt })[]; len: number } | { why: string } {
+export function parallelTaxi(world: World, w: Way, aprons: Apron[]): { ways: (WaySpec & { c?: Pt })[]; len: number } | { why: string; /** a side already has one */ has?: boolean } {
   const sep = GROUND.par[w.cls] ?? GROUND.par[2];
-  const mid = wayMid(w); let why = 'no room on either side';
+  const mid = wayMid(w); let why = 'no room on either side', has = false;
   const others = chordWays(world.ways.filter(q => q.kind === 'taxi' && q.id !== w.id));
   const perp = (d: Pt) => ({ x: -d.y, y: d.x });
   const meet = (p: Pt, d: Pt, q: Pt, e: Pt): Pt | null => { const den = d.x * e.y - d.y * e.x; if (Math.abs(den) < 1e-6) return null; const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den; return add(p, mul(d, t)); };
@@ -1433,14 +1433,14 @@ export function parallelTaxi(world: World, w: Way, aprons: Apron[]): { ways: (Wa
     const lay: Way = { ...w, a, b, c } as Way; if (!c) delete lay.c;
     // (judged along its middle: its ends may well stand on the links it meets)
     const P = wayPts(lay), tot = polyLen(P);
-    if ([0.15, 0.3, 0.5, 0.7, 0.85].every(t => on(along(P, t * tot).p))) { why = 'it already has a parallel on that side'; continue; }
+    if ([0.15, 0.3, 0.5, 0.7, 0.85].every(t => on(along(P, t * tot).p))) { why = 'it already has a parallel on that side'; has = true; continue; }
     // (never through stands, its own or anyone's: they would give way to it and the gates would go)
     if (P.some((q, i) => i > 0 && aprons.some(ap => rectSegDist(ap.rect, P[i - 1], q) === 0))) { why = 'it would run through the stands on that side'; continue; }
     const main = canPlaceWay(world, 'taxi', a, b, aprons, c, w.cls); if (!main.ok) { why = main.reason ?? why; continue; }
     ways.unshift({ a, b, cls: w.cls, c });
     return { ways, len: wayLen(lay) + links * sep };
   }
-  return { why };
+  return { why, has };
 }
 export function autoConnectors(world: World, w: WaySpec, aprons: Apron[]): WaySpec[] {
   const out: WaySpec[] = [];

@@ -15,8 +15,8 @@ export interface Advice {
   key: string; kind: AdviceKind; title: string; why: string;
   /** what it bears on, and where to look */
   zone?: number; way?: number; at?: Pt;
-  /** stands to build, staff to hire, desks to fit */
-  n?: number; pool?: 'agents' | 'screeners' | 'officers' | 'handlers';
+  /** stands to build, staff to hire (0: only its dial is raised), desks to fit; `need` the desks the module should have staffed */
+  n?: number; need?: number; pool?: 'agents' | 'screeners' | 'officers' | 'handlers';
   weight: number;
 }
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
@@ -27,7 +27,8 @@ export function advise(sim: Sim): Advice[] {
   const open = new Set(d.terminals.filter(T => T.active).flatMap(T => T.zones.map(z => z.id)));
   // ---- flights turned away for want of a gate
   if (p.rejectedGates > 0) {
-    const offers = d.gateSlots.filter(sl => !sl.on && sl.zone.stands);
+    // (places on a building of an open terminal: stands elsewhere would be no use to the schedule)
+    const offers = d.gateSlots.filter(sl => !sl.on && sl.zone.stands && (open.has(sl.zone.id) || !open.size));
     if (offers.length) {
       const n = Math.min(offers.length, Math.max(1, Math.ceil(p.rejectedGates / 3)));
       const z = offers[0].zone;
@@ -66,11 +67,19 @@ export function advise(sim: Sim): Advice[] {
     if (L.wBand === 2 && (z.type === 'checkin' || z.type === 'security' || z.type === 'passport')) {
       const pool = z.type === 'checkin' ? 'agents' : z.type === 'security' ? 'screeners' : 'officers';
       const per = z.type === 'security' ? TUNE.screenersPerLane : 1; const max = d.units.get(z.id)?.max ?? L.max;
-      if (L.need > L.open && L.need <= L.max) out.push({ key: 'staff' + z.id, kind: 'staff', zone: z.id, at: heart(z), n: (L.need - L.open) * per, pool, weight: w0,
-        title: `Staff ${plural(L.need - L.open, 'more ' + unit.replace(/s$/, ''))} at ${name.toLowerCase()}`, why: `Its queue waited ${Math.round(L.wait ?? 0)} minutes in a rush (${LOS.std[L.kind].wait![1]} at most): the busiest hour brought ${Math.round(L.demand)} people and the ${L.open} staffed served ${Math.round(L.cap)}.` });
-      else if (L.need > L.max && L.max < max) out.push({ key: 'desks' + z.id, kind: 'desks', zone: z.id, at: heart(z), n: Math.min(max, L.need) - L.max, weight: w0,
+      const P = sim.procs.get(z.id); const cur = Math.max(L.open, P?.servers ?? 0);
+      // what the busiest hour needed, of the desks it has; one more if it was a rush within the hour
+      const target = Math.min(L.max, Math.max(L.need, L.open < L.max && L.need <= L.open ? L.open + 1 : 0));
+      const rate = L.max ? L.capMax / L.max : 0;
+      if (target > cur) {
+        // people already on the roll and standing idle are used before anyone is hired
+        const used = [...sim.procs.values()].filter(q => q.type === z.type).reduce((t, q) => t + q.servers * per, 0);
+        const idle = Math.max(0, (sim.staff[pool] ?? 0) - used); const hire = Math.max(0, (target - cur) * per - idle);
+        out.push({ key: 'staff' + z.id, kind: 'staff', zone: z.id, at: heart(z), n: hire, need: target, pool, weight: w0,
+          title: `Staff ${plural(target - cur, 'more ' + unit.replace(/s$/, ''))} at ${name.toLowerCase()}`, why: `Its queue waited ${Math.round(L.wait ?? 0)} minutes in a rush (${LOS.std[L.kind].wait![1]} at most): the busiest hour brought ${Math.round(L.demand)} people and the ${L.open} staffed serve about ${Math.round(L.open * rate)}.${hire ? '' : ' The people are on the roll already: its dial holds them back.'}` });
+      } else if (L.need > L.max && L.max < max) out.push({ key: 'desks' + z.id, kind: 'desks', zone: z.id, at: heart(z), n: Math.min(max, L.need) - L.max, weight: w0,
         title: `Fit ${plural(Math.min(max, L.need) - L.max, 'more ' + unit.replace(/s$/, ''))} in ${name.toLowerCase()}`, why: `The busiest hour brought ${Math.round(L.demand)} people; all ${L.max} of its ${unit} serve ${Math.round(L.capMax)}. It has room for ${max}.` });
-      else out.push({ key: 'los' + z.id, kind: 'info', zone: z.id, at: heart(z), weight: w0, title: `${name} is too small`,
+      else if (L.open >= L.max) out.push({ key: 'los' + z.id, kind: 'info', zone: z.id, at: heart(z), weight: w0, title: `${name} is too small`,
         why: `Its queue waited ${Math.round(L.wait ?? 0)} minutes in a rush with every one of its ${unit} at work. Make it larger, upgrade its fit-out, or build a second.` });
     } else if (L.sBand === 2) out.push({ key: 'los' + z.id, kind: 'info', zone: z.id, at: heart(z), weight: w0, title: `${name} is crowded`,
       why: `${L.peakQ} people waited on ${Math.round(L.area)} m² at the peak, ${L.space.toFixed(1)} m² each (${LOS.std[L.kind].space[0]} at least). ${z.type === 'concourse' ? 'Widen it, or build fewer and larger stands.' : 'Make it larger.'}` });
