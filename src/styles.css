@@ -306,3 +306,8 @@ ul.goals li.done .tick { background: var(--ink); border-color: var(--ink); color
 .advice li .muted { display: block; line-height: 1.45; }
 .advice li .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .btn.ghost { background: transparent; }
+
+/* v0.60: banks */
+.bankask .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.bankask .row span { flex: 1; }
+.lostab.banks li { cursor: default; }

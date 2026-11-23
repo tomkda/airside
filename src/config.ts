@@ -280,7 +280,7 @@ export const WEATHER: Record<WeatherKind, { label: string; cap: number; p: numbe
   snow: { label: 'Snow', cap: 0.7, p: 0.07, note: 'Snow: ploughing between movements, runways take 70% of normal.' },
 };
 /** v0.10: an airline's proposal. Accepting changes its flights and what it pays; declining costs nothing. */
-export interface Offer { airline: string; kind: 'volume' | 'base'; title: string; text: string; mult: number; feeMult: number; bonus: number; days: number }
+export interface Offer { /** v0.60: a bank asked for at this hour */ bank?: { hour: number; n: number }; airline: string; kind: 'volume' | 'base' | 'bank'; title: string; text: string; mult: number; feeMult: number; bonus: number; days: number }
 export interface Deal { mult: number; feeMult: number; until: number; kind: 'volume' | 'base' }
 export const GROWTH = {
   // How arriving and departing parties split once the facility exists and is reachable. Rough US mode shares from
@@ -478,3 +478,12 @@ export const LOS = {
  *  `maxHold` minutes is towed through. `par` is the taxiway centre-line separation a parallel is laid at, by class
  *  (Annex 14 Table 3-1: 44 m Code C, 91 m Code F). `bands` grade the day's minutes held per movement. */
 export const GROUND = { gap: 40, reach: 32, standoff: 2.5, gateHold: 6, oppCost: 3, oppFlat: 400, maxHold: 8, par: [44, 44, 44, 91], bands: [0.5, 2, 5] };
+
+/** v0.60: a bank is a wave of one airline's flights that land inside one window, stand together and leave together,
+ *  so that passengers can change from one to another. `window` minutes for the arrivals, `connect` minutes on the
+ *  ground after the last has landed before the first leaves, departures `stagger` minutes apart. `share` of each
+ *  flight's arriving passengers connect (hub carriers run 30–60% connecting; game tuning), and a departure takes at
+ *  most `maxIn` of its seats from connections. `slots` are the hours a bank can be asked for; `bonus` is paid on signing. */
+export const BANK = { n: 8, window: 50, connect: 40, stagger: 2, share: 0.35, maxIn: 0.6, days: 14, bonus: 3_000_000,
+  slots: [{ name: 'Morning', hour: 7 }, { name: 'Midday', hour: 12.5 }, { name: 'Evening', hour: 17.5 }] };
+export interface Bank { id: number; airline: string; hour: number; n: number; until: number }
