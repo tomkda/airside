@@ -2,7 +2,8 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER } from './config';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER, LOS } from './config';
+import { Los, losKind, losNow, losDay } from './los';
 import type { Sim, Flight } from './sim';
 import { Zone, Shop, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
 import type { LItem } from './layout';
@@ -716,6 +717,7 @@ export class Renderer {
       if (z > 0.8) for (let i = 1; i < 5; i++) this.line({ x: r.x + 1, y: r.y + i * (s * 2 / 5) }, { x: r.x + r.w - 1, y: r.y + i * (s * 2 / 5) }, 0.5, PAL.bldgTop, top);
     }
     for (const [zn, top] of labels) this.zoneLabel(sim, zn, top);
+    this.drawLosChips();
     this.drawTerminals(sim);
   }
 
@@ -738,25 +740,34 @@ export class Renderer {
     }
   }
 
+  /** v0.57: the level-of-service overlay. A module is tinted by how it stands this minute and carries a chip with
+   *  the day's band and the figure that set it; curbs keep the old queue tint. */
   heat(sim: Sim, zn: Zone, top: number) {
-    const p = sim.procs.get(zn.id);
-    let v = 0;
-    if (p && (p.type === 'checkin' || p.type === 'security')) {
-      const tol = TUNE.tolerance[p.type];
-      const waitNow = p.queue.length && p.servers ? (p.queue.length * (p.type === 'checkin' ? TUNE.checkinTime[zn.tier] : TUNE.securityTime[zn.tier])) / p.servers : 0;
-      v = Math.max(waitNow, p.recentWait) / tol;
-    } else if (p && p.type === 'claim') {
-      v = sim.pax.filter(q => q.stage === 'waitBag' && q.proc === p).reduce((s, q) => Math.max(s, sim.t - q.since), 0) / TUNE.tolerance.claim;
-    } else if (zn.type === 'concourse') {
-      const seats = sim.d.budgets.get(zn.id)?.seats ?? 0;
-      const atGates = seats ? sim.pax.filter(q => q.stage === 'dwell' && q.flight.gate.zone.id === zn.id).length / seats : 0;
-      const list = sim.d.shops.get(zn.id) ?? [];
-      const cap = list.filter(sh => sim.leased(sh)).reduce((n, sh) => n + sh.cap, 0) || 1;
-      v = Math.max(atGates, list.reduce((n, sh) => n + (sim.shopLoad.get(sh) ?? 0), 0) / cap);
+    if (losKind(zn)) {
+      const now = losNow(sim, zn), day = losDay(sim, zn);
+      if (now && (now.band >= 2 || now.peakQ > 0)) this.poly(this.rectPts(zn), LOS.colors[now.band] + (now.band >= 2 ? '8C' : '47'), top);
+      if (day) this.losChips.push({ zn, top, day });
+      return;
     }
-    v = clamp(v, 0, 2);
+    const p = sim.procs.get(zn.id); if (!p || p.type !== 'curb') return;
+    const q = p.cars?.filter(c => c.stage === 'queue').length ?? 0; const v = clamp(q / Math.max(1, p.maxServers), 0, 2);
     if (v < 0.05) return;
     this.poly(this.rectPts(zn), v < 1 ? `rgba(194,133,46,${0.12 + 0.3 * v})` : `rgba(176,71,43,${0.35 + 0.25 * (v - 1)})`, top);
+  }
+  losChips: { zn: Zone; top: number; day: Los }[] = [];
+  /** The chips, drawn after everything else on the floor so nothing covers them. */
+  drawLosChips() {
+    const g = this.ctx;
+    for (const { zn, top, day } of this.losChips) {
+      const c = heart(zn); const [x, y] = this.P(c.x, c.y, top); if (!isFinite(x)) continue;
+      const fig = day.wBand !== undefined && day.wBand >= day.sBand ? `${Math.round(day.wait ?? 0)} min` : isFinite(day.space) ? `${day.space.toFixed(1)} m²` : '';
+      const txt = `${LOS.names[day.band].toUpperCase()}${fig ? ' · ' + fig : ''}`;
+      g.save(); g.font = '700 10px ui-sans-serif, system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      const w = g.measureText(txt).width + 14, h = 17, yy = y - 17;
+      g.fillStyle = LOS.colors[day.band]; g.beginPath(); (g as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect(x - w / 2, yy - h / 2, w, h, 8); g.fill();
+      g.fillStyle = '#fff'; g.fillText(txt, x, yy + 0.5); g.restore();
+    }
+    this.losChips.length = 0;
   }
 
   fitout(sim: Sim, zn: Zone, top: number) {

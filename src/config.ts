@@ -450,3 +450,21 @@ export const PAL = {
   select: '#2F5D7C',
   night: 'rgb(30,34,58)',
 };
+
+/** v0.57: level of service, after IATA's Airport Development Reference Manual (10th edition on): a subsystem is judged
+ *  on space per waiting passenger (m²) and on maximum waiting time (min), each over-design above the optimum range,
+ *  optimum within it and sub-optimum below. The ranges are the ADRM's for economy check-in, security, emigration,
+ *  baggage reclaim (narrow-body) and the gate holdroom (between its standing and seated figures), from memory of its
+ *  LoS table, not checked against the book. `queueShare` is game tuning: the part of a module's floor that is queue. */
+export const LOS = {
+  std: {
+    checkin: { space: [1.3, 1.8], wait: [10, 20] as number[] | null },
+    security: { space: [1.0, 1.2], wait: [5, 10] as number[] | null },
+    passport: { space: [1.0, 1.2], wait: [5, 10] as number[] | null },
+    claim: { space: [1.5, 1.7], wait: [0, 15] as number[] | null },
+    concourse: { space: [1.2, 1.7], wait: null as number[] | null },
+  },
+  queueShare: { checkin: 0.45, security: 0.4, passport: 0.5, claim: 0.55 },
+  names: ['Over-design', 'Optimum', 'Sub-optimum', 'Under-provided'],
+  colors: ['#6E8FA8', '#5E8C61', '#C2852E', '#B0472B'],
+};
