@@ -43,6 +43,16 @@ console.log('log:', sim.log.slice(0, 6));
   console.log('security with its dial at 2 lanes (was ' + open0 + '):', LOS.names[before.band], Math.round(before.wait) + ' min →', LOS.names[after.band], Math.round(after.wait) + ' min,', after.open + '/' + after.max, 'staffed,', after.need, 'needed');
   check('a module staffed below its busiest hour waits longer and drops a band', after.open === 2 && after.wait > before.wait && after.band > before.band && after.need > 2);
   delete sec.staff; sim.relayout(); check('with the dial off it takes its share again', sim.procs.get(sec.id).servers === open0);
+  // turned down while people are being served: they go back to the head of the line, nobody is left at a closed lane
+  { const d1 = sim.day; while (sim.day === d1 && !(sim.procs.get(sec.id).busy.filter(Boolean).length >= 3)) sim.step(0.25);
+    sec.staff = 0; sim.relayout(); const P = sim.procs.get(sec.id);
+    const lost = sim.pax.filter(p => p.stage === 'service' && p.proc === P).length;
+    for (let i = 0; i < 4 * 90; i++) sim.step(0.25);
+    const { losNow, losFix } = LOSM; const now = losNow(sim, sec);
+    console.log('security closed mid-morning:', P.queue.length, 'in line,', lost, 'left at a closed lane | now', LOS.names[now.band], Math.round(now.wait) + ' min |', losFix(now, 'lanes'));
+    check('nobody is left standing at a lane that closed', lost === 0 && P.queue.length > 10);
+    check('a module nobody staffs is not over-design: its queue has a wait, and the advice says to staff it', now.band >= 2 && now.wait > 30 && /nobody is staffing/.test(losFix(now, 'lanes')));
+    delete sec.staff; sim.relayout(); }
   if (bad) { console.log(bad + ' CHECK(S) FAILED'); process.exit(1); } }
 `;
 const dir = mkdtempSync(join(tmpdir(), 'simtest-'));

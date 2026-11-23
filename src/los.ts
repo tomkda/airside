@@ -17,6 +17,8 @@ export interface Los {
   peakQ: number; area: number; demand: number; cap: number; capMax: number;
   /** open desks the busiest hour needed to keep up */
   need: number; open: number; max: number;
+  /** (losDay) from today's figures so far, not the last full day's */
+  today?: boolean;
 }
 export const losKind = (z: Zone): LosKind | null => (z.type in LOS.std ? z.type as LosKind : null);
 const floor = (z: Zone) => (z.poly ? polyArea(z.poly) : z.w * z.h);
@@ -42,17 +44,26 @@ export function losFrom(sim: Sim, z: Zone, st: LosStat | undefined): Los | null 
   const p = sim.procs.get(z.id); const svc = p && (kind === 'checkin' || kind === 'security' || kind === 'passport') ? sim.svcTime(p) : 0;
   const demand = Math.max(0, ...st.in);
   return { kind, band: bandOf(sBand, wBand, space, std.space[0]), space, sBand, wait, wBand, peakQ: st.peakQ, area, demand,
-    cap: svc && p ? p.servers * 60 / svc : 0, capMax: svc && p ? p.maxServers * 60 / svc : 0, need: svc ? Math.ceil(demand * svc / 60) : 0, open: p?.servers ?? 0, max: p?.maxServers ?? 0 };
+    cap: svc && p ? p.servers * 60 / svc : 0, capMax: svc && p ? p.maxServers * 60 / svc : 0, need: svc ? Math.ceil(demand * svc / 60) : 0, open: st.open ?? p?.servers ?? 0, max: p?.maxServers ?? 0 };
 }
-/** The day's level of service: today's so far once people have waited there, else the last full day's. */
-export const losDay = (sim: Sim, z: Zone): Los | null => losFrom(sim, z, sim.los.get(z.id)) ?? losFrom(sim, z, sim.losLast.get(z.id));
+/** The day's level of service: the last full day's, until today has seen at least half as many people (or already
+ *  stands worse), so a module does not read as empty every morning. */
+export function losDay(sim: Sim, z: Zone): Los | null {
+  const a = sim.los.get(z.id), b = sim.losLast.get(z.id);
+  const A = losFrom(sim, z, a), B = losFrom(sim, z, b);
+  if (!A || !B) { if (A) A.today = true; return A ?? B; }
+  const sum = (st?: LosStat) => (st ? st.in.reduce((t, x) => t + x, 0) : 0);
+  const busy = sum(b) > 0 ? sum(a) >= sum(b) / 2 : A.peakQ >= B.peakQ / 2;
+  if (A.band > B.band || busy) { A.today = true; return A; }
+  return B;
+}
 /** As things stand this minute. */
 export function losNow(sim: Sim, z: Zone): Los | null {
   const p = sim.procs.get(z.id); let q = 0, w = 0;
   if (z.type === 'concourse') { for (const x of sim.pax) if (x.stage === 'dwell' && x.flight.gate.zone.id === z.id) q++; }
-  else if (z.type === 'claim') { for (const x of sim.pax) if (x.stage === 'waitBag' && x.proc === p) { q++; w = Math.max(w, sim.t - x.since); } }
-  else if (p) { q = p.queue.length; w = Math.max(p.recentWait, q && p.servers ? q * sim.svcTime(p) / p.servers : 0); }
-  return losFrom(sim, z, { peakQ: q, peakWait: w, in: [] });
+  else if (z.type === 'claim') { if (p) for (const x of sim.pax) if (x.stage === 'waitBag' && x.proc === p) { q++; w = Math.max(w, sim.t - x.since); } }
+  else if (p) { q = p.queue.length; w = Math.max(p.recentWait, q ? sim.t - p.queue[0].since : 0, q && p.servers ? q * sim.svcTime(p) / p.servers : 0); }
+  return losFrom(sim, z, { peakQ: q, peakWait: w, in: [], open: p?.servers });
 }
 /** What would lift a module out of sub-optimum, in a sentence. */
 export function losFix(L: Los, unit: string): string {
@@ -61,9 +72,11 @@ export function losFix(L: Los, unit: string): string {
   const std = LOS.std[L.kind]; const parts: string[] = [];
   if (L.wBand === 2) {
     if (L.kind === 'claim') parts.push('bags are slow to arrive: hire baggage handlers or add carousels');
+    else if (L.open === 0) parts.push(`nobody is staffing it: staff its ${unit}`);
     else if (L.need > L.max) parts.push(`the busiest hour brings ${Math.round(L.demand)} people and every one of its ${unit} can serve ${Math.round(L.capMax)}: make the module larger, upgrade it, or build another`);
     else if (L.need > L.open) parts.push(`the busiest hour brings ${Math.round(L.demand)} people and the ${L.open} open ${unit} serve ${Math.round(L.cap)}: staff ${L.need} of its ${L.max}`);
-    else parts.push(`its queue waits ${Math.round(L.wait ?? 0)} min at the peak (${std.wait![1]} at most): staff more ${unit}`);
+    else if (L.open >= L.max) parts.push(`every one of its ${unit} was staffed and its queue still waited ${Math.round(L.wait ?? 0)} min in a rush (${std.wait![1]} at most): upgrade it, make it larger, or build another`);
+    else parts.push(`its queue waited ${Math.round(L.wait ?? 0)} min in a rush (${std.wait![1]} at most): staff more ${unit}`);
   }
   if (L.sBand === 2) parts.push(`${L.peakQ} people wait on ${Math.round(L.area)} m² (${L.space.toFixed(1)} m² each, ${std.space[0]} at least): ${L.kind === 'concourse' ? 'widen the concourse or build fewer, larger stands' : `it needs about ${Math.round(L.peakQ * std.space[0] / (LOS.queueShare[L.kind as keyof typeof LOS.queueShare] ?? 0.5))} m² of floor`}`);
   return parts.join('; ');

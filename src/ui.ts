@@ -2256,7 +2256,7 @@ export class UI {
       const tol = TUNE.tolerance[z.type];
       stats = `
         <dt>Staffed</dt><dd><span class="stepper"><button class="step" data-act="staff-" aria-label="Staff fewer">−</button><b>${proc.servers}</b><button class="step" data-act="staff+" aria-label="Staff more">+</button></span> of ${proc.maxServers} ${def.unit}
-          ${z.staff === undefined ? '<span class="muted small">· its share of the staff</span>' : `<span class="muted small">· set to ${z.staff}</span> <button class="btn small" data-act="staffAuto">Share</button>`}</dd>
+          ${z.staff === undefined ? '<span class="muted small">· its share of the staff</span>' : `<span class="muted small">· set to ${Math.min(z.staff, proc.maxServers)}</span> <button class="btn small" data-act="staffAuto">Share</button>`}</dd>
         <dt>Capacity</dt><dd>${n0(proc.servers * 60 / svc)} pax/hr open · ${n0(proc.maxServers * 60 / svc)} with every one staffed</dd>
         <dt>In line</dt><dd>${proc.queue.length} people</dd>
         <dt>Recent wait</dt><dd class="${proc.recentWait > tol ? 'bad' : ''}">${proc.recentWait.toFixed(1)} min <span class="muted">(tolerance ${tol})</span></dd>`;
@@ -2430,7 +2430,7 @@ export class UI {
     if (!L) return `<dt>Level of service</dt><dd class="muted small">No figures yet: it is judged on the floor each waiting passenger has (${std.space[0]}–${std.space[1]} m² is optimum)${std.wait ? ` and the longest wait (${std.wait[0]}–${std.wait[1]} min)` : ''} once people have used it.</dd>`;
     const ax = ['over-design', 'optimum', 'sub-optimum']; const chip = (b: number, t: string) => `<span class="los" style="background:${LOS.colors[b]}">${t}</span>`;
     const now = losNow(s, z); const fix = losFix(L, ZONES[z.type].unit);
-    return `<dt>Level of service</dt><dd>${chip(L.band, LOS.names[L.band])} <span class="muted small">${s.los.has(z.id) ? 'today so far' : 'last day'}${now && now.peakQ ? ` · now ${LOS.names[now.band].toLowerCase()}` : ''}</span></dd>
+    return `<dt>Level of service</dt><dd>${chip(L.band, LOS.names[L.band])} <span class="muted small">${L.today ? 'today so far' : 'last day'}${now && now.peakQ ? ` · now ${LOS.names[now.band].toLowerCase()}` : ''}</span></dd>
       <dt>Space</dt><dd>${isFinite(L.space) ? `${L.space.toFixed(1)} m² each` : 'nobody waiting'} <span class="muted small">· ${L.peakQ} at the peak on ${n0(L.area)} m² · ${ax[L.sBand]} (${std.space[0]}–${std.space[1]})</span></dd>
       ${L.wBand !== undefined && std.wait ? `<dt>Wait</dt><dd>${(L.wait ?? 0).toFixed(0)} min at the peak <span class="muted small">· ${ax[L.wBand]} (${std.wait[0]}–${std.wait[1]})</span></dd>` : ''}
       ${L.capMax ? `<dt>Busiest hour</dt><dd>${n0(L.demand)} people <span class="muted small">· needs ${L.need} ${ZONES[z.type].unit} staffed</span></dd>` : ''}
@@ -2441,7 +2441,7 @@ export class UI {
     const s = this.sim; const rows: { z: Zone; L: Los }[] = [];
     for (const z of s.d.zones) { if (z.auto) continue; const L = losDay(s, z); if (L) rows.push({ z, L }); }
     if (!rows.length) return '<p class="muted small">No figures yet. Each module is judged, as IATA judges a terminal, on the floor each waiting passenger has and on the longest wait. Press <kbd>H</kbd> to see it on the plan.</p>';
-    rows.sort((a, b) => b.L.band - a.L.band || a.L.space - b.L.space);
+    rows.sort((a, b) => b.L.band - a.L.band || (b.L.wait ?? 0) - (a.L.wait ?? 0) || (isFinite(a.L.space) ? a.L.space : 1e9) - (isFinite(b.L.space) ? b.L.space : 1e9));
     const name = (z: Zone) => z.type === 'concourse' ? `Concourse ${s.d.gateLetter.get(z.id) ?? ''}` : ZONES[z.type].short;
     return `<ul class="lostab">${rows.map(({ z, L }) => `<li data-zone="${z.id}"><span class="los" style="background:${LOS.colors[L.band]}">${LOS.names[L.band]}</span> <b>${esc(name(z))}</b>
       <span class="muted small">${isFinite(L.space) ? `${L.space.toFixed(1)} m² each` : ''}${L.wait !== undefined ? ` · ${L.wait.toFixed(0)} min` : ''}${L.capMax ? ` · ${L.open}/${L.max} staffed, ${L.need} needed` : ''}</span></li>`).join('')}</ul>
@@ -2632,6 +2632,8 @@ export class UI {
     body.querySelectorAll<HTMLElement>('.lostab [data-zone]').forEach(b => b.addEventListener('click', () => {
       const z = this.sim.d.zones.find(q => q.id === Number(b.dataset.zone)); if (!z) return;
       if (!this.ren.overlay) this.setHeat('queues');
+      if (this.ren.mode3d) this.set3d(false);
+      if (this.ren.lod === 'airfield') this.setLod('landside', null);
       this.setLevel(z.level); const c = heart(z); this.ren.cam.x = c.x; this.ren.cam.y = c.y; this.select({ kind: 'zone', zone: z });
     }));
     const price = document.getElementById('price') as HTMLInputElement | null;
@@ -2669,7 +2671,10 @@ export class UI {
     else if ((a === 'staff+' || a === 'staff-' || a === 'staffAuto') && z && (z.type === 'checkin' || z.type === 'security' || z.type === 'passport')) {
       // v0.57: the module's own staffing dial. Staff come from the same pool: what one module takes, the others share.
       const p = s.procs.get(z.id); if (!p) return;
-      if (a === 'staffAuto') delete z.staff; else z.staff = clamp((z.staff ?? p.servers) + (a === 'staff+' ? 1 : -1), 0, p.maxServers);
+      if (a === 'staffAuto') delete z.staff;
+      else { const base = Math.min(z.staff ?? p.servers, p.maxServers), to = clamp(base + (a === 'staff+' ? 1 : -1), 0, p.maxServers);
+        if (to === base) { this.toast(to ? `All ${to} are staffed: add more in the row above` : 'None staffed'); return; }
+        z.staff = to; }
       this.changed(); this.ren.selected = { kind: 'zone', id: z.id }; this.refresh(true);
       if (a !== 'staffAuto' && (s.procs.get(z.id)?.servers ?? 0) < (z.staff ?? 0)) this.toast(`Only ${s.procs.get(z.id)?.servers ?? 0} to give it: hire more in Operations`, 'warn');
     }

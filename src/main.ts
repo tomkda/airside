@@ -42,7 +42,7 @@ function start(restored: Save | null) {
     clearSite() { reset(newWorld()); ui.toast('Site cleared. Draw a runway to begin.'); ui.setTool('runway'); },
   };
   function reset(w: World) {
-    sim.world = w; sim.money = 420_000_000; sim.calDays = 0; sim.day = 0; sim.rep = 1; sim.history = []; sim.log = []; sim.goalsDone = new Set(); sim.unlocked = new Set(); sim.bestPax = 0; sim.offer = null; sim.deals = {};
+    sim.world = w; sim.money = 420_000_000; sim.calDays = 0; sim.day = 0; sim.rep = 1; sim.history = []; sim.log = []; sim.goalsDone = new Set(); sim.unlocked = new Set(); sim.los.clear(); sim.losLast.clear(); sim.bestPax = 0; sim.offer = null; sim.deals = {};
     sim.relayout(); sim.startDay(); ui.adoptStands();
     ren.selected = null; ui.focusAirport(); ui.refresh(true); ctl.save();
   }

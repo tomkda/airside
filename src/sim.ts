@@ -57,7 +57,8 @@ export interface Flight {
 
 type WaitKey = 'curb' | 'checkin' | 'security' | 'claim' | 'passport';
 /** v0.57: a module's day, for its level of service: the most people waiting at once, the longest wait (smoothed at a desk, the longest for a bag), and arrivals hour by hour. */
-export interface LosStat { peakQ: number; peakWait: number; in: number[] }
+export interface LosStat { peakQ: number; peakWait: number; in: number[];
+  /** how many desks were staffed when the wait peaked */ open?: number }
 export interface DayStats {
   paxDep: number; paxArr: number; missed: number; stranded: number; satSum: number; satN: number;
   waits: Record<WaitKey, { sum: number; n: number; max: number }>;
@@ -300,6 +301,12 @@ export class Sim {
 
   lotCapacity() { return this.d.zones.filter(z => z.type === 'parking').reduce((s, z) => s + unitsOf(this.d, z), 0); }
 
+  /** Open or close desks. Someone being served at a desk that closes goes back to the head of the line (v0.57: they
+   *  were left standing at it for good). */
+  setDesks(p: Proc, n: number) {
+    for (let i = p.busy.length - 1; i >= n; i--) { const b = p.busy[i]; if (b) { b.stage = 'queue'; p.queue.unshift(b); } }
+    p.busy = resize(p.busy, n, null);
+  }
   /** Staff go where today's passengers are: each terminal's share of departing passengers, split by desk count inside it. */
   allocateStaff() {
     const load = new Map<Terminal | undefined, number>();
@@ -313,9 +320,9 @@ export class Sim {
       // v0.57: a module with its dial set takes that many first (in the order they were built); the rest are shared as before
       if (ps.some(p => p.zone.staff !== undefined)) {
         let left = pool; const auto: number[] = [];
-        ps.forEach((p, i) => { if (p.zone.staff === undefined) { auto.push(i); return; } const a = clamp(Math.min(p.zone.staff, left), 0, p.maxServers); left -= a; p.servers = a; p.busy = resize(p.busy, a, null); });
+        ps.forEach((p, i) => { if (p.zone.staff === undefined) { auto.push(i); return; } const a = clamp(Math.min(p.zone.staff, left), 0, p.maxServers); left -= a; p.servers = a; this.setDesks(p, a); });
         const at = auto.reduce((s, i) => s + wts[i], 0) || 1; const pool2 = left;
-        auto.forEach((i, k) => { const p = ps[i]; const a = k === auto.length - 1 ? left : Math.min(left, Math.round(pool2 * wts[i] / at)); left -= a; p.servers = clamp(a, 0, p.maxServers); p.busy = resize(p.busy, p.servers, null); });
+        auto.forEach((i, k) => { const p = ps[i]; const a = k === auto.length - 1 ? left : Math.min(left, Math.round(pool2 * wts[i] / at)); left -= a; p.servers = clamp(a, 0, p.maxServers); this.setDesks(p, p.servers); });
         return;
       }
       let left = pool;
@@ -323,7 +330,7 @@ export class Sim {
         const a = i === ps.length - 1 ? left : Math.round(pool * wts[i] / tot);
         left -= a;
         p.servers = clamp(a, 0, p.maxServers);
-        p.busy = resize(p.busy, p.servers, null);
+        this.setDesks(p, p.servers);
       });
     };
     share('checkin', this.staff.agents);
@@ -1048,6 +1055,10 @@ export class Sim {
       else if (p.stage === 'waitBag' && p.proc) { const id = p.proc.zone.id; n.set(id, (n.get(id) ?? 0) + 1); }
     }
     for (const [id, k] of n) { const L = this.losStat(id); if (k > L.peakQ) L.peakQ = k; }
+    // (and the one who has stood longest in each desk queue: a queue nobody serves has a wait too)
+    for (const p of this.procs.values()) if (p.queue.length && (p.type === 'checkin' || p.type === 'security' || p.type === 'passport')) {
+      const w = this.t - p.queue[0].since; const L = this.losStat(p.zone.id); if (w > L.peakWait) { L.peakWait = w; L.open = p.servers; }
+    }
   }
   arrive(p: Pax) {
     const step = p.steps[0];
@@ -1128,7 +1139,7 @@ export class Sim {
           const w = t - p.since;
           this.recordWait(p, proc.type as 'checkin', w);
           proc.recentWait = proc.recentWait * 0.9 + w * 0.1;
-          { const L = this.losStat(proc.zone.id); if (proc.recentWait > L.peakWait) L.peakWait = proc.recentWait; }
+          { const L = this.losStat(proc.zone.id); if (proc.recentWait > L.peakWait) { L.peakWait = proc.recentWait; L.open = proc.servers; } }
           p.stage = 'service'; p.serviceEnd = t + svc * (0.6 + this.r() * 0.8);
           const sp = proc.frame.slots[i] ?? center(proc.zone);
           p.x = sp.x - proc.frame.inward.x * 2; p.y = sp.y - proc.frame.inward.y * 2;
