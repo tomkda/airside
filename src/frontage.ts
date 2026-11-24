@@ -22,6 +22,8 @@ export type Deck = 'dep' | 'arr' | 'both';
 export interface AutoTag { road: number; module: number; deck: Deck; gap: number; /** v0.34: a piece of a curb along a curved wall: which wall, and where along it */ chain?: string; k?: number }
 /** An elevated stretch of road, drawn as an upper deck over the ground-level road. */
 export interface DeckSpan {
+  /** v0.64: a second ramp joining the deck at an end that already has one (a trumpet's way down): drawn like a deck, counted as none */
+  branch?: boolean;
   road: number; a: Pt; b: Pt; width: number;
   /** v0.34: along a curved face, every chord of the road the deck runs over */
   roads?: number[];
@@ -141,8 +143,10 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         const rw = realOf.get(c.road);
         if (!c.chain && rw?.c) { const k = curveOf(rw); const sa = k.sOf(La), sb = k.sOf(Lb); const dir = sb > sa ? 1 : -1; mids = k.cum.filter(s => (s - sa) * dir > 2 && (sb - s) * dir > 2).sort((u, v) => (u - v) * dir).map(k.ptAt); }
         // the ramp that lands nearer this end of the curb, laid out from the ground up to where it lands on the deck
+        const used: Way[] = [];
         const end = (p: Pt, other: Pt): RampLine | null => {
           const r = curves.filter(w => dist(w.rg!.D, p) < dist(w.rg!.D, other)).sort((v, w) => dist(v.rg!.D, p) - dist(w.rg!.D, p))[0];
+          if (r) used.push(r);
           return r ? rampLine(r.rg!, W) : null;
         };
         // with no ramp of its own (a hand-drawn frontage road), the deck comes down straight along the road it is over
@@ -175,6 +179,10 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         const arrows = [...U.arrows, ...Dn.arrows];
         const gores = [U.gore, Dn.gore].filter((q): q is Pt[] => !!q), seams = [U.seam, Dn.seam].filter((q): q is Pt[] => !!q);
         decks.push({ road: c.road.id, ...(c.chain ? { roads: group.map(o => o.road.id) } : {}), a: at(c.t0 - FRONTAGE.ramp), b: atOf(last, last.t1 + FRONTAGE.ramp), width: W, pts, zs, ws, abut, gores, seams, arrows });
+        // v0.64: a second ramp at the same end (a trumpet's way down) is a branch of the deck: its own line up to where it lands
+        for (const r of curves) if (!used.includes(r)) { const B = rampLine(r.rg!, W);
+          const ab = B.pts.map((p, i) => { const m = B.nIn[i]; if (!m) return 0; const p0 = B.pts[Math.max(0, i - 1)], p1 = B.pts[Math.min(B.pts.length - 1, i + 1)]; const dd = norm(sub(p1, p0)); return -dd.y * m.x + dd.x * m.y > 0 ? -1 : 1; });
+          decks.push({ road: c.road.id, a: B.pts[0], b: B.pts[B.pts.length - 1], width: W, pts: B.pts, zs: B.zs, ws: B.ws, abut: ab, gores: B.gore ? [B.gore] : [], seams: B.seam ? [B.seam] : [], arrows: B.arrows, branch: true }); }
       } else if (!ground(c).length) pushCurb(c, 0, 'both', c.t0, c.t1);   // a single-level road reaches the face through a frontage core
     } else {
       const above = cands.some(o => o.level === 1 && real(o.road) === real(c.road) && o.line === c.line && o.out.x === c.out.x && o.out.y === c.out.y && o.t1 > c.t0 && o.t0 < c.t1 && (o.m.type === 'checkin' || o.m.type === 'security'));
@@ -257,6 +265,22 @@ const RAMP = {
 /** v0.28: where the gore ends and grass begins between the ramp and the road (m apart), and the gap at which the ramp
  *  starts to climb: it stays at grade until it is clear of the road. */
 const GORE = { len: 9, climb: 2 };
+/** v0.64: a flyover ramp. It parts from the approach road on the side away from the terminal, climbs beside it for
+ *  `climb` m (9 m of rise at about 8%: AASHTO's Green Book allows ramp grades of 6–8% at these speeds; from memory, not
+ *  checked) drawing `out` m further off it, then turns over the road on a `radius` m curve to land on the deck. */
+const FLY = { climb: 110, out: 7, radius: 70, least: 0.7 };
+/** v0.64: a loop flyover. The deck runs on past the corner, `over` m beyond the approach road it crosses, turns down
+ *  alongside it on a `radius` m curve (a loop ramp's usual 40–50 m at 30–40 km/h) and swings back to the road's far
+ *  edge over `back` m, coming down all the way (9 m in about 150 m: 6%). */
+const EAR = { over: 24, radius: 42, back: 120 };
+export const EAR_ID = 4800000;
+/** v0.64: the ways a hall's forecourt reaches its departures deck, chosen by what the site allows. */
+export const FORECOURTS = {
+  flyover: { name: 'Flyovers', why: 'both approach roads are long enough for a ramp to climb beside them and cross over the corner, so traffic passes the doors with the kerb on its right' },
+  corner: { name: 'Corner ramps', why: 'the approach roads are too short for a flyover (or its far side is built on), so each ramp leaves its road near the corner and cuts inside it' },
+  trumpet: { name: 'Trumpet', why: 'only one road reaches the hall, so both ramps hang on it: one up inside the corner, one down over it' },
+  none: { name: 'Straight ramps', why: 'no approach road meets the frontage square, so the deck comes down along its own road at each end' },
+};
 /** v0.28: the radius the ground road takes round a forecourt corner. 35 m is a comfortable kerb radius for buses and
  *  coaches at low speed (a 12 m bus needs about 12–13 m to its outer wheel; AASHTO's 30 km/h minimum curve is about 30 m). */
 export const CORNER = { radius: 35, min: 12 };
@@ -282,25 +306,28 @@ function rampLine(rg: RampGeo, W: number): RampLine {
   for (let k = 0; k <= 6; k++) { const w = (wl * k) / 6; pts.push(along((Lt * k) / 6, h + w / 2)); ws.push(w); zs.push(0); nIn.push(n); }
   for (let k = 1; k <= 4; k++) { pts.push(along(Lt + (Lp * k) / 4, h + wl / 2)); ws.push(wl); zs.push(0); nIn.push(n); }
   // the curve, with its arc length; then where the gore opens enough for the ramp to start climbing
-  const M = 40; const cv: Pt[] = []; const cum = [0];
+  const M = rg.path ? rg.path.length - 1 : 40; const cv: Pt[] = []; const cum = [0];
   const quad = (a: Pt, c: Pt, b: Pt, t: number): Pt => { const v = 1 - t; return { x: v * v * a.x + 2 * v * t * c.x + t * t * b.x, y: v * v * a.y + 2 * v * t * c.y + t * t * b.y }; };
-  for (let i = 1; i <= M; i++) { const t = (2 * i) / M; cv.push(t <= 1 ? quad(N, C, Mid, t) : quad(Mid, C2, D, t - 1)); cum.push(cum[i - 1] + dist(i > 1 ? cv[i - 2] : N, cv[i - 1])); }
+  for (let i = 1; i <= M; i++) { const t = (2 * i) / M; cv.push(rg.path ? rg.path[i] : t <= 1 ? quad(N, C, Mid, t) : quad(Mid, C2, D, t - 1)); cum.push(cum[i - 1] + dist(i > 1 ? cv[i - 2] : N, cv[i - 1])); }
   const lat = (p: Pt) => dot(sub(p, T), n);
   let s0 = cum[M]; for (let i = 1; i <= M; i++) if (lat(cv[i - 1]) - wl / 2 - h >= GORE.climb) { s0 = cum[i]; break; }
+  const sMid = cum[Math.floor(M / 2)];   // (a flyover is at full height by M, where it turns over the road)
   const ease = (x: number) => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t); };
   const gore: Pt[] = [], edge: Pt[] = []; let goreOpen = true;
   gore.push(along(Lt + Lp, h)); edge.push(along(Lt + Lp, h));
   for (let i = 1; i <= M; i++) {
     const p = cv[i - 1], s = cum[i];
-    const zk = ease((s - s0) / Math.max(1, cum[M] - s0));
-    const w = zk >= 0.6 ? DECK.two + (W - DECK.two) * ease((zk - 0.6) / 0.4) : wl + (DECK.two - wl) * ease((s - s0 - 6) / 25);
+    const zk = rg.path ? ease((s - s0) / Math.max(1, cum[rg.top ?? M] - s0)) : rg.fly ? ease((s - s0) / Math.max(1, sMid - s0)) : ease((s - s0) / Math.max(1, cum[M] - s0));
+    const w = rg.path ? Math.max(Math.min(wl + (DECK.two - wl) * ease((s - s0 - 6) / 25), Math.max(wl, 2 * (lat(p) - h))), s > cum[M] - 45 ? DECK.two + (W - DECK.two) * ease((s - (cum[M] - 45)) / 40) : 0)
+      : rg.fly ? (s > sMid ? DECK.two + (W - DECK.two) * ease((s - sMid) / Math.max(1, cum[M] - sMid) * 1.6 - 0.6) : wl + (DECK.two - wl) * ease((s - s0 - 6) / 25))
+      : zk >= 0.6 ? DECK.two + (W - DECK.two) * ease((zk - 0.6) / 0.4) : wl + (DECK.two - wl) * ease((s - s0 - 6) / 25);
     pts.push(p); ws.push(w); zs.push(i === M ? 1 : zk);
-    const gap = lat(p) - w / 2 - h; nIn.push(gap < 0.3 ? n : null);
+    const gap = lat(p) - w / 2 - h; nIn.push(gap < 0.3 && !(rg.fly && (s > sMid || (!!rg.path && s > 30))) ? n : null);
     if (goreOpen) {
       // the ramp's edge nearer the road, and the road edge abreast of it
       const q = i < M ? cv[i] : D; const tg = norm(sub(q, i > 1 ? cv[i - 2] : N)); let pr = { x: -tg.y, y: tg.x }; if (dot(pr, n) > 0) pr = { x: -pr.x, y: -pr.y };
       const inner = { x: p.x + pr.x * w / 2, y: p.y + pr.y * w / 2 };
-      if (lat(inner) - h > GORE.len || zk > 0.3) goreOpen = false;
+      if (lat(inner) - h > GORE.len || zk > 0.3 || (rg.fly && (s > sMid || (!!rg.path && s > 60)))) goreOpen = false;
       else { gore.push(inner); const sl = -dot(sub(inner, T), u); edge.push(along(sl, h)); }
     }
   }
@@ -324,7 +351,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     // the player drew its frontage (v0.39: a curved road too, along a curved face or a straight one)
     if (sides.some(q => q.L >= FRONTAGE.minLen && drawn.some(r => { const rr = opposite(r, q.sd, q.L, q.al); return !!rr && !!fronts(rr, q.sd, q.L, q.al); }))) continue;
     if (out.some(w => w.fore === 'face' && sides.some(q => q.L >= FRONTAGE.minLen && fronts(w, q.sd, q.L, q.al)))) continue;   // a neighbour's forecourt already serves it
-    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[]; chain?: Pt[] } | null = null;
+    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[]; chain?: Pt[]; scheme: NonNullable<Way['scheme']> } | null = null;
     // the faces a forecourt might front: each straight side, and (v0.34) each curved wall, whose frontage road follows
     // it as a chain of chords
     type FC = { a: Pt; b: Pt; ends: [Pt, Pt, Pt][]; chain?: Pt[] };
@@ -362,7 +389,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     }
     for (const fc of fcs) {
       const { a, b } = fc;
-      const legs: { a: Pt; b: Pt }[] = []; let cost = 0; const rampsHere: RampGeo[] = [];
+      const legs: { a: Pt; b: Pt }[] = []; let cost = 0; let rampsHere: RampGeo[] = []; const flies: (RampGeo | null)[] = [], corners0: (RampGeo | null)[] = [], hasLeg: boolean[] = [];
       for (const [E, away, oE] of fc.ends) {
         // straight out from the building first, else straight on along the frontage
         let leg: { a: Pt; b: Pt; d: number; via?: Pt } | null = null;
@@ -420,11 +447,46 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
           const M = cub(0.5), tm = norm(sub(cub(0.52), cub(0.48)));
           const C = meet(N, { x: -u.x, y: -u.y }, M, tm) ?? lerpPt(N, M, 0.5), C2 = meet(M, tm, D, inside) ?? lerpPt(M, D, 0.5);
           const up = u.y * n.x - u.x * n.y > 0;   // the ramp is on the right of traffic coming in towards the terminal
-          if (g >= RAMP.minNose && !blocked(N, D, fam) && !blocked(P, N, fam)) rampsHere.push({ T, P, N, C, M, C2, D, u, n, h, up });
-        }
+          const cornerR = g >= RAMP.minNose && !blocked(N, D, fam) && !blocked(P, N, fam) ? { T, P, N, C, M, C2, D, u, n, h, up } : null;
+          // v0.64: or a flyover on the road's far side: taper and lane as before, a climb beside the road drawing a
+          // little off it, then a turn over the road and the corner beneath to land on the deck from outside
+          let flyR: RampGeo | null = null, earR: RampGeo | null = null;
+          { const nO = { x: -n.x, y: -n.y }; let Lc: number = FLY.climb, Lp2: number = RAMP.lane, Lt2: number = RAMP.taper; const sM = FLY.radius;
+            const k = Math.min(1, (avail - sM) / (Lc + Lp2 + Lt2));
+            if (k >= FLY.least) { Lc *= k; Lp2 *= k; Lt2 *= k;
+              const atO = (t: number, q: number): Pt => ({ x: E.x + u.x * t + nO.x * q, y: E.y + u.y * t + nO.y * q });
+              const Tf = atO(sM + Lc + Lp2 + Lt2, 0), Pf = atO(sM + Lc + Lp2, o), Nf = atO(sM + Lc, o), Mf = atO(sM, o + FLY.out);
+              const X = meet(Mf, { x: -u.x, y: -u.y }, E, inside);
+              if (X) { const Df = { x: X.x + inside.x * dist(X, Mf), y: X.y + inside.y * dist(X, Mf) };
+                // (clear ground under its climb, and nothing but road under its turn)
+                if (dot(sub(Df, E), inside) > CORNER.radius + 4 && dot(sub(Df, E), inside) < ext - 6 && !blocked(Pf, Mf, fam) && !blocked(atO(sM + Lc, o + 9), atO(sM, o + FLY.out + 9), fam) && !blocked(Mf, X, fam) && !blocked(Mf, Df, fam))
+                  flyR = { T: Tf, P: Pf, N: Nf, C: lerpPt(Nf, Mf, 0.5), M: Mf, C2: X, D: Df, u, n: nO, h, up: u.y * nO.x - u.x * nO.y > 0, fly: true }; } } }
+          // or, where the ground beyond the corner is open and the road comes square to the frontage, a loop: the deck
+          // crosses over the road, turns down beside it and swings back to its far edge
+          if (Math.abs(dot(u, inside)) < 0.02) { const nO = { x: -n.x, y: -n.y }; let Ls: number = EAR.back, Lp3: number = RAMP.lane, Lt3: number = RAMP.taper; const R1 = EAR.radius, a = EAR.over;
+            const k = Math.min(1, (avail - R1) / (Ls + Lp3 + Lt3));
+            if (k >= FLY.least) { Ls *= k; Lp3 *= k; Lt3 *= k; const sN = R1 + Ls;
+              const pt = (q: number, s: number): Pt => ({ x: E.x + nO.x * q + u.x * s, y: E.y + nO.y * q + u.y * s });   // q m out from the road's centreline, s m down it
+              const path: Pt[] = []; const far = a + R1;
+              for (let j = 0; j <= 12; j++) { const t = j / 12, v = 1 - t; const q = v * v * v * o + 3 * v * v * t * o + 3 * v * t * t * far + t * t * t * far, s = v * v * v * sN + 3 * v * v * t * (sN - Ls * 0.5) + 3 * v * t * t * (R1 + Ls * 0.5) + t * t * t * R1; path.push(pt(q, s)); }
+              for (let j = 1; j <= 8; j++) { const th = (j / 8) * Math.PI / 2; path.push(pt(a + R1 * Math.cos(th), R1 - R1 * Math.sin(th))); }
+              const dIn = CORNER.radius + 8; for (const q of [a * 0.5, 0, -dIn * 0.5, -dIn]) path.push(pt(q, 0));
+              const clear = path.every((q, j) => j === 0 || !blocked(path[j - 1], q, fam)) && !blocked(pt(far + 8, R1 + Ls * 0.6), pt(far + 8, R1 * 0.4), fam);
+              if (clear) earR = { T: pt(0, sN + Lp3 + Lt3), P: pt(o, sN + Lp3), N: path[0], C: path[0], M: path[12], C2: path[20], D: path[path.length - 1], u, n: nO, h, up: u.y * nO.x - u.x * nO.y > 0, fly: true, path, top: 16 }; } }   // (at full height half way round the turn, well before it crosses the road)
+          corners0.push(cornerR); flies.push(earR ?? flyR);
+        } else { corners0.push(null); flies.push(null); }
+        hasLeg.push(!!leg);
       }
       if (!legs.length) continue;
-      if (!best || cost < best.cost) best = { a, b, legs, cost, ramps: rampsHere, ...(fc.chain ? { chain: fc.chain } : {}) };
+      // v0.64: which way up suits the site. Two long approach roads: a flyover on each (traffic then passes the doors
+      // with the kerb on its right). One road only: both ramps on it, one inside the corner and one over it. Else a
+      // ramp inside each corner, as before.
+      const one = hasLeg.filter(Boolean).length === 1 ? hasLeg.indexOf(true) : -1;
+      let scheme: NonNullable<Way['scheme']> = 'none';
+      if (flies.length === 2 && flies[0] && flies[1]) { rampsHere = [flies[0], flies[1]]; scheme = 'flyover'; }
+      else if (one >= 0 && corners0[one] && flies[one]) { rampsHere = [corners0[one]!, flies[one]!]; scheme = 'trumpet'; }
+      else { rampsHere = corners0.filter((q): q is RampGeo => !!q); if (rampsHere.length) scheme = 'corner'; }
+      if (!best || cost < best.cost) best = { a, b, legs, cost, ramps: rampsHere, scheme, ...(fc.chain ? { chain: fc.chain } : {}) };
     }
     if (!best) continue;
     const id = FORE + m.id * 4;
@@ -447,18 +509,27 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     }
     // v0.34: a curved face's frontage road is a chain of chords, each a face road of its own (ids from FACE_ID)
     const faceIds: number[] = [];
-    if (chain) chain.slice(1).forEach((q, c) => { const fid = FACE_ID + m.id * 32 + c; faceIds.push(fid); out.push({ id: fid, kind: 'road', a: chain[c], b: q, cls: 0, lanes: 4, fore: 'face' }); });
-    else out.push({ id, kind: 'road', a: face.a, b: face.b, cls: 0, lanes: 4, fore: 'face' });
+    if (chain) chain.slice(1).forEach((q, c) => { const fid = FACE_ID + m.id * 32 + c; faceIds.push(fid); out.push({ id: fid, kind: 'road', a: chain[c], b: q, cls: 0, lanes: 4, fore: 'face', scheme: best!.scheme }); });
+    else out.push({ id, kind: 'road', a: face.a, b: face.b, cls: 0, lanes: 4, fore: 'face', scheme: best.scheme });
     // (a ramp belongs to the chord nearest where it lands, of those that front the hall: not the straight run past an end)
     const faceNear = (p: Pt) => { if (!chain) return id; let bi = 1; for (let c = 1; c < chain.length - 2; c++) if (segDist(p, chain[c], chain[c + 1]) < segDist(p, chain[bi], chain[bi + 1])) bi = c; return faceIds[Math.min(bi, faceIds.length - 1)]; };
     legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
     corners.forEach((k, i) => out.push({ id: RAMP_ID + m.id * 16 + 12 + i, kind: 'road', a: k.a, b: k.b, c: k.c, cls: 0, lanes: 4, fore: 'corner' }));
     // each ramp: the taper and the speed-change lane one lane wide, the curve two; all one-way in the ramp's direction
     best.ramps.forEach((rg, i) => {
+      if (rg.path) {
+        // a loop: its taper and lane as ever, then its line chord by chord, one bridge from the nose to the deck
+        const P = rg.path; const grp = EAR_ID + m.id * 64 + i * 32; const one = (p: Pt, q: Pt) => (rg.up ? [p, q] : [q, p]);
+        const base = { kind: 'road' as const, cls: 0, oneway: true, fore: 'ramp' as const, face: faceNear(rg.D) };
+        { const [a, b] = one(rg.T, rg.P); out.push({ ...base, id: RAMP_ID + m.id * 16 + i * 4, a, b, lanes: 1, part: 'taper' }); }
+        { const [a, b] = one(rg.P, rg.N); out.push({ ...base, id: RAMP_ID + m.id * 16 + i * 4 + 1, a, b, lanes: 1, part: 'lane' }); }
+        for (let j = 0; j + 1 < P.length; j++) { const [a, b] = one(P[j], P[j + 1]); out.push({ ...base, id: grp + j, a, b, lanes: 2, part: j === 0 ? 'curve' : 'climb', ...(j === 0 ? { rg } : {}), bridge: grp }); }
+        return;
+      }
       const parts: [Pt, Pt, Pt | undefined, 'taper' | 'lane' | 'curve' | 'climb', number][] = [[rg.T, rg.P, undefined, 'taper', 1], [rg.P, rg.N, undefined, 'lane', 1], [rg.N, rg.M, rg.C, 'curve', 2], [rg.M, rg.D, rg.C2, 'climb', 2]];
       parts.forEach(([p, q, c, part, lanes], k) => {
         const [a, b] = rg.up ? [p, q] : [q, p];
-        out.push({ id: RAMP_ID + m.id * 16 + i * 4 + k, kind: 'road', a, b, ...(c ? { c } : {}), cls: 0, lanes, oneway: true, fore: 'ramp', face: faceNear(rg.D), part, ...(part === 'curve' ? { rg } : {}) });
+        out.push({ id: RAMP_ID + m.id * 16 + i * 4 + k, kind: 'road', a, b, ...(c && !(rg.fly && part === 'curve') ? { c } : {}), cls: 0, lanes, oneway: true, fore: 'ramp', face: faceNear(rg.D), part, ...(part === 'curve' ? { rg } : {}), ...(rg.fly && part === 'climb' ? { bridge: RAMP_ID + m.id * 16 + i * 4 + k } : {}) });
       });
     });
   }

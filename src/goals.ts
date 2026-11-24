@@ -20,7 +20,7 @@ export const GOALS: Goal[] = [
   { id: 'day', title: 'Fly a full day', hint: 'Let a day run to midnight with flights operating.', reward: 5e6,
     progress: (s, r) => [r && r.stats.flights > 0 ? 1 : 0, 1] },
   { id: 'deck', title: 'Build a two-level frontage road', hint: 'Stack check-in on Level 1 over bag claim, then run a road along that face.', reward: 8e6,
-    progress: s => [Math.min(1, s.d.decks.length), 1] },
+    progress: s => [Math.min(1, s.d.decks.filter(q => !q.branch).length), 1] },
   { id: 'pax3', title: '3,000 departures in a day', hint: 'More gates, more runway, a fair slot fee.', reward: 15e6,
     progress: (s, r) => [Math.round(r?.stats.paxDep ?? 0), 3000] },
   { id: 'lots', title: 'Lease 40 commercial lots', hint: 'Footfall leases lots: put shops where departing passengers walk.', reward: 10e6,
