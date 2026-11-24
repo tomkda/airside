@@ -21,7 +21,7 @@ const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
 import { AREA, CURVE_MIN } from './config';
 import { Los, losKind, losDay, losNow, losFix } from './los';
 import { Advice, advise } from './advisor';
-import { runwayExits, rapidExit } from './airfield';
+import { runwayExits, rapidExit, exitFactor } from './airfield';
 import { EXITS } from './config';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { parallelTaxi, canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
@@ -2164,12 +2164,12 @@ export class UI {
       const cov = windSamples().filter(w => runwayUsable(r, w)).length / windSamples().length;
       const usable = runwayUsable(r, s.wind);
       const ladder = CLASSES.map(c => `<li class="${r.length >= c.minRunway ? 'yes' : 'no'}"><b>${c.example}</b><span>${c.minRunway.toLocaleString()} m</span></li>`).join('');
-      const X = runwayExits(s.d, r); const per = 60 / TUNE.separationMin; const more = r.cls >= 0 && X.n < EXITS.factor.length - 1 ? rapidExit(this.world, s.d, r, s.d.aprons) : null;
+      const X = runwayExits(s.d, r); const per = 60 / TUNE.separationMin; const more = r.cls >= 0 && X.n < X.full ? rapidExit(this.world, s.d, r, s.d.aprons) : null;
       const exits = r.cls < 0 ? '' : `<h3>Exits</h3>
         <dl class="kv">
           <dt>Landing ${X.fromA ? r.labels[0] : r.labels[1]}</dt><dd>${CLASSES[X.cls].example}s turn off ${n0(X.lo)}–${n0(X.hi)} m on</dd>
           <dt>Exits in that stretch</dt><dd class="${X.n < 2 ? 'bad' : ''}">${X.n}${X.at.length ? ` · at ${X.at.map(q => n0(q)).join(', ')} m` : ''}</dd>
-          <dt>Movements an hour</dt><dd>${Math.floor(per * X.factor)}${X.n < EXITS.factor.length - 1 ? ` · ${Math.floor(per * EXITS.factor[X.n + 1])} with one more` : ' · the most one runway takes'}</dd>
+          <dt>Movements an hour</dt><dd>${Math.floor(per * X.factor)}${more && !('why' in more) ? ` · ${Math.floor(per * exitFactor(X.n + 1, X.full))} with one more` : X.n >= X.full ? ' · the most one runway takes' : ''}</dd>
         </dl>
         ${more ? ('why' in more ? `<p class="muted small">No exit can be added in one step: ${esc(more.why)}.</p>` : `<button class="btn" data-act="rwExit">Add ${more.rapid ? 'a rapid exit' : 'an exit'} · ${money(more.cost)}</button>`) : ''}
         <p class="muted small">An aircraft that finds an exit where it has slowed clears the runway for the next; one that rolls on to the end holds it. Exits count when they are in the stretch and ${EXITS.apart} m apart (FAA AC 150/5060-5).</p>`;

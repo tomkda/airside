@@ -98,7 +98,11 @@ check('the day names where they stood', !!worst && worst[1].min > 1);
   const w1 = sampleWorld(); w1.ways = w1.ways.filter(q => !(q.kind === 'taxi' && Math.abs(q.a.y - 2300) < 1 && q.a.x > 2000 && q.a.x < 4400 && Math.abs(q.a.x - 3000) < 900));
   const d1 = derive(w1); const X1 = runwayExits(d1, d1.runways[0]);
   console.log('   with the middle links gone:', X1.n, 'exits counted of', X1.all.length, '|', cap(w1), 'an hour');
-  check('with no exit in the stretch the runway takes fewer (24 an hour)', X1.n === 0 && cap(w1) === 24); }
+  check('with no exit in the stretch the runway takes fewer (24 an hour)', X1.n === 0 && cap(w1) === 24);
+  // a stub that leads nowhere is no exit
+  const w2 = sampleWorld(); for (const x of [2800, 3050]) w2.ways.push({ id: w2.nextId++, kind: 'taxi', a: { x, y: 2300 }, b: { x, y: 2260 }, cls: 2, lanes: 0 });
+  const d2 = derive(w2); const X2 = runwayExits(d2, d2.runways[0]); console.log('   with two 40 m stubs into the grass:', X2.n, 'exits counted |', cap(w2), 'an hour');
+  check('a stub that ends in the grass does not count', X2.n === 2 && cap(w2) === 30); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;

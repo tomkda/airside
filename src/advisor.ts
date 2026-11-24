@@ -1,8 +1,8 @@
 // v0.59: the advisor. It reads the day (the schedule's turned-away flights, the airfield's holds, each module's level
 // of service) and says what is holding the airport back, worst first, each with the one upgrade that would lift it.
 // Pure: it reads the sim and decides nothing about cost or room; ui.ts works those out and lays the upgrade.
-import { TUNE, ZONES, LOS, EXITS, CLASSES, WEATHER } from './config';
-import { runwayExits } from './airfield';
+import { TUNE, ZONES, LOS, CLASSES, WEATHER } from './config';
+import { runwayExits, rapidExit, exitFactor } from './airfield';
 import type { Sim } from './sim';
 import type { Zone } from './world';
 import { Pt } from './geom';
@@ -45,8 +45,9 @@ export function advise(sim: Sim): Advice[] {
   // ---- the runway
   if (p.rejectedRunway > 0) {
     // v0.63: an exit where landing aircraft can use it comes before a second runway
-    const short = d.runways.filter(r => r.cls >= 0).map(r => ({ r, X: runwayExits(d, r) })).filter(q => q.X.n < EXITS.factor.length - 1).sort((p, q) => p.X.n - q.X.n)[0];
-    if (short) { const { r, X } = short; const per = 60 / TUNE.separationMin; const wx = WEATHER[sim.weather].cap; const now = Math.floor(per * X.factor), then = Math.floor(per * EXITS.factor[X.n + 1]);
+    // (only where one can be laid: otherwise the advice is the second runway)
+    const short = d.runways.filter(r => r.cls >= 0).map(r => ({ r, X: runwayExits(d, r) })).filter(q => q.X.n < q.X.full && !('why' in rapidExit(sim.world, d, q.r, d.aprons))).sort((p, q) => p.X.n - q.X.n)[0];
+    if (short) { const { r, X } = short; const per = 60 / TUNE.separationMin; const wx = WEATHER[sim.weather].cap; const now = Math.floor(per * X.factor), then = Math.floor(per * exitFactor(X.n + 1, X.full));
       out.push({ key: 'exit' + r.rw.id, kind: 'exit', runway: r.rw.id, at: { x: (r.rw.a.x + r.rw.b.x) / 2, y: (r.rw.a.y + r.rw.b.y) / 2 }, weight: p.rejectedRunway * 8 + 1,
         title: `A rapid exit for Runway ${r.labels[0]}/${r.labels[1]}`, why: `${plural(p.rejectedRunway, 'flight')} today found no slot in the peak hours. Landing ${X.fromA ? r.labels[0] : r.labels[1]}, the runway has ${X.n ? plural(X.n, 'exit') : 'no exit'} between ${Math.round(X.lo).toLocaleString()} and ${Math.round(X.hi).toLocaleString()} m from the threshold, where ${CLASSES[X.cls].example}s have slowed enough to turn off: it takes ${now} movements an hour${wx < 1 ? ` (${Math.floor(now * wx)} in today's ${WEATHER[sim.weather].label.toLowerCase()})` : ''}, and one more exit there makes it ${then}.` }); }
     const rw = d.runways[0];
