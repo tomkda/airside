@@ -1260,7 +1260,7 @@ export class Renderer {
         const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * ((u - cum[k]) / (cum[k + 1] - cum[k] || 1)); if (zk < 0.5) continue;
         for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.ws[k] / 2 - 1.2))); const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
       }
-      if (z > 0.45 && this.lod !== 'airfield') {
+      if (z > 0.45 && this.lod !== 'airfield' && !dk.branch) {
         const a = dk.pts[i0], b = dk.pts[i1];
         const rot = Math.atan2((b.y - a.y) * this.yScale, b.x - a.x); const up = Math.cos(rot) < 0;
         this.label('UPPER DECK · DEPARTURES', lerp2(a, b, 0.5), 0, 8, '#F4EDDF', { weight: 800, spacing: 1.4, rot: up ? rot + Math.PI : rot });
