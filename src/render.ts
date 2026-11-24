@@ -2,7 +2,7 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { runwayExits } from './airfield';
-import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon } from './geom';
+import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon, segDist } from './geom';
 import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER, LOS, STYLES, Style } from './config';
 import { Los, losKind, losNow, losDay } from './los';
 import type { Sim, Flight } from './sim';
@@ -1254,14 +1254,18 @@ export class Renderer {
         g.setLineDash([]);
       }
       // columns under the level part and the upper half of each ramp
+      // (v0.64: no column stands in a road the deck passes over)
+      const own = new Set([dk.road, ...(dk.roads ?? [])]); const underRoad = (c: Pt) => sim.d.roadPieces.some(q => !own.has(q.ref) && !sim.d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + 0.8);
       if (z > 0.6) for (let u = 0; u < L; u += 30) {
         const a = along(dk.pts, u); const n = { x: -Math.sin(a.ang), y: Math.cos(a.ang) };
         let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
         const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * ((u - cum[k]) / (cum[k + 1] - cum[k] || 1)); if (zk < 0.5) continue;
-        for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.ws[k] / 2 - 1.2))); const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
+        for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.ws[k] / 2 - 1.2))); if (underRoad(c)) continue; const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
       }
       if (z > 0.45 && this.lod !== 'airfield' && !dk.branch) {
-        const a = dk.pts[i0], b = dk.pts[i1];
+        // (v0.64: along the deck proper, between where its ramps land, not out on a loop)
+        const full = (i: number) => dk.zs[i] >= 1 && dk.ws[i] >= dk.width - 0.01; let j0 = dk.pts.findIndex((_, i) => full(i)), j1 = dk.pts.length - 1 - [...dk.pts].reverse().findIndex((_, i) => full(dk.pts.length - 1 - i)); if (j0 < 0 || j1 <= j0) { j0 = i0; j1 = i1; }
+        const a = dk.pts[j0], b = dk.pts[j1];
         const rot = Math.atan2((b.y - a.y) * this.yScale, b.x - a.x); const up = Math.cos(rot) < 0;
         this.label('UPPER DECK · DEPARTURES', lerp2(a, b, 0.5), 0, 8, '#F4EDDF', { weight: 800, spacing: 1.4, rot: up ? rot + Math.PI : rot });
         // say what the fork is, once per ramp, where it leaves the ground

@@ -9,7 +9,7 @@
 // bridges, vehicles, cars and people are instanced and move every frame. New buildings rise into place.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Pt, Rect, dist, sub, norm, add, mul, lerpPt, polyLen, sliceLine, offsetLine } from './geom';
+import { Pt, Rect, dist, sub, norm, add, mul, lerpPt, polyLen, sliceLine, offsetLine, segDist } from './geom';
 import { STYLES, Style, PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE } from './config';
 import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
@@ -390,7 +390,7 @@ export class Renderer3D {
         let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
         const t = (u - cum[k]) / (cum[k + 1] - cum[k] || 1); const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * t; if (zk < 0.35) continue;
         const p = lerpPt(dk.pts[k], dk.pts[k + 1], t); const dir = norm(sub(dk.pts[k + 1], dk.pts[k])); const w = dk.ws[k] + (dk.ws[k + 1] - dk.ws[k]) * t;
-        for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
+        for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); if (d.roadPieces.some(q => q.ref !== dk.road && !dk.roads?.includes(q.ref) && !d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + 0.8)) continue; misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
       }
     }
     for (const z of d.zones) if (z.type === 'curb') {

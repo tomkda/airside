@@ -1211,6 +1211,7 @@ export function derive(drawn: World): Derived {
     issues.push({ level: 'warn', text: 'A one-way road leads nowhere: cars can get in but not back to State Route 12, or the other way round. Close the loop, reverse it, or make it two-way.' });
   const crosswalks: Crosswalk[] = [];
   for (const w of walks) for (const r of roadSegs) {
+    if (r.bridge !== undefined) continue;   // (v0.64: a sidewalk passes under a flyover)
     const x = segIntersection(w.a, w.b, r.a, r.b);
     if (x) crosswalks.push({ p: x, ang: Math.atan2(r.b.y - r.a.y, r.b.x - r.a.x), width: r.kind === 'hwy' ? 24 : isRingRef(r.ref) ? ringWidth(rounds, r.ref) : wayWidth('road', 0, r.lanes ?? 2) });
   }

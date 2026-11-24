@@ -66,6 +66,14 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
     console.log('one approach road:', f ? f.scheme : 'no forecourt', '|', d.autoRoads.filter(q => q.fore === 'link').length, 'link(s),', g2.length, 'ramps, decks', d.decks.filter(q => !q.branch).length, '+', d.decks.filter(q => q.branch).length, 'branch |', d.terminals.map(t => t.name + (t.active ? ' open' : ' closed')).join(', '));
     check('with one road in reach the forecourt is a trumpet: a ramp up inside the corner and a flyover down over it, on the same road', !!f && f.scheme === 'trumpet' && g2.length === 2 && g2.filter(g => g.up).length === 1 && g2.filter(g => g.fly).length === 1 && Math.abs(g2[0].T.x - g2[1].T.x) < 1 && d.decks.filter(q => q.branch).length === 1 && d.terminals[0].active);
     const sim = flyDay(w, 'a day on the trumpet'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000); }
+  // a road drawn where the west loop would swing out: no ramp is laid low across it, and a roundabout there is left alone
+  { const w = sampleWorld(); w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 2760, y: 3230 }, b: { x: 2760, y: 2992 }, cls: 0, lanes: 2 });
+    const d = derive(w); const f = d.autoRoads.find(q => q.fore === 'face'); let least = 1e9;
+    for (const dk2 of d.decks) dk2.pts.forEach((p, i) => { if (dk2.zs[i] < 0.99 && p.y > 2992 && p.y < 3230) least = Math.min(least, Math.abs(p.x - 2760) - dk2.ws[i] / 2); });
+    console.log('a road drawn beyond the west corner:', f ? f.scheme : 'no forecourt', '| a ramp below deck height comes no nearer it than', least.toFixed(1), 'm |', d.terminals.map(t => t.name + (t.active ? ' open' : ' closed')).join(', '));
+    check('no ramp is laid low across a drawn road: the forecourt takes another way up', !!f && f.scheme !== 'none' && least > 4 && d.terminals[0].active);
+    const w2 = sampleWorld(); w2.rounds.push({ id: w2.nextId++, x: 2745, y: 2985, size: 0 }); const d2 = derive(w2); const g3 = d2.autoRoads.filter(q => q.rg).map(q => q.rg);
+    check('nor over a roundabout standing beyond the corner', g3.every(g => !g.path || Math.min(...g.path.map(p => Math.hypot(p.x - 2745, p.y - 2985))) > 25)); }
   // the ground outside both corners built on: no room for a flyover, so the ramps cut inside the corners as before
   { const w = sampleWorld(); const d0 = derive(w); const ls = d0.autoRoads.filter(q => q.fore === 'link');
     for (const l of ls) { const out = l.a.x < hallX ? -1 : 1; const x = l.a.x + out * 14; w.zones.push({ id: w.nextId++, type: 'parking', level: 0, x: out < 0 ? x - 120 : x, y: 2960, w: 120, h: 200, tier: 0 }); }

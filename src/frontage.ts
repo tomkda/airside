@@ -451,6 +451,15 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
           // v0.64: or a flyover on the road's far side: taper and lane as before, a climb beside the road drawing a
           // little off it, then a turn over the road and the corner beneath to land on the deck from outside
           let flyR: RampGeo | null = null, earR: RampGeo | null = null;
+          // (a far-side ramp is low for most of its length: it may not cross or crowd any road that is drawn or already
+          //  laid for another hall, a roundabout, or a building on the upper level. Its own link it runs beside.)
+          const others = [...chords, ...out.flatMap(q => waySegs(q).map(([a2, b2]) => ({ a: a2, b: b2 })))];
+          const crowded = (p: Pt, q: Pt, low: boolean) => { const nS = Math.max(1, Math.ceil(dist(p, q) / 6));
+            for (let i2 = 0; i2 <= nS; i2++) { const x = lerpPt(p, q, i2 / nS);
+              if (low && others.some(c => segDist(x, c.a, c.b) < 12)) return true;
+              if ((world.rounds ?? []).some(r => dist(x, { x: r.x, y: r.y }) < roundDef(r).icd / 2 + 10)) return true;
+              if (world.zones.some(z => z.level === 1 && !fam.includes(z) && inZone(x, z, 2))) return true; }
+            return false; };
           { const nO = { x: -n.x, y: -n.y }; let Lc: number = FLY.climb, Lp2: number = RAMP.lane, Lt2: number = RAMP.taper; const sM = FLY.radius;
             const k = Math.min(1, (avail - sM) / (Lc + Lp2 + Lt2));
             if (k >= FLY.least) { Lc *= k; Lp2 *= k; Lt2 *= k;
@@ -459,7 +468,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
               const X = meet(Mf, { x: -u.x, y: -u.y }, E, inside);
               if (X) { const Df = { x: X.x + inside.x * dist(X, Mf), y: X.y + inside.y * dist(X, Mf) };
                 // (clear ground under its climb, and nothing but road under its turn)
-                if (dot(sub(Df, E), inside) > CORNER.radius + 4 && dot(sub(Df, E), inside) < ext - 6 && !blocked(Pf, Mf, fam) && !blocked(atO(sM + Lc, o + 9), atO(sM, o + FLY.out + 9), fam) && !blocked(Mf, X, fam) && !blocked(Mf, Df, fam))
+                if (dot(sub(Df, E), inside) > CORNER.radius + 4 && dot(sub(Df, E), inside) < ext - 6 && !blocked(Pf, Mf, fam) && !blocked(atO(sM + Lc, o + 9), atO(sM, o + FLY.out + 9), fam) && !blocked(Mf, X, fam) && !blocked(Mf, Df, fam) && !crowded(Pf, Mf, true) && !crowded(Mf, X, false) && !crowded(X, Df, false))
                   flyR = { T: Tf, P: Pf, N: Nf, C: lerpPt(Nf, Mf, 0.5), M: Mf, C2: X, D: Df, u, n: nO, h, up: u.y * nO.x - u.x * nO.y > 0, fly: true }; } } }
           // or, where the ground beyond the corner is open and the road comes square to the frontage, a loop: the deck
           // crosses over the road, turns down beside it and swings back to its far edge
@@ -472,7 +481,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
               for (let j = 1; j <= 8; j++) { const th = (j / 8) * Math.PI / 2; path.push(pt(a + R1 * Math.cos(th), R1 - R1 * Math.sin(th))); }
               const dIn = CORNER.radius + 8; for (const q of [a * 0.5, 0, -dIn * 0.5, -dIn]) path.push(pt(q, 0));
               const clear = path.every((q, j) => j === 0 || !blocked(path[j - 1], q, fam)) && !blocked(pt(far + 8, R1 + Ls * 0.6), pt(far + 8, R1 * 0.4), fam);
-              if (clear) earR = { T: pt(0, sN + Lp3 + Lt3), P: pt(o, sN + Lp3), N: path[0], C: path[0], M: path[12], C2: path[20], D: path[path.length - 1], u, n: nO, h, up: u.y * nO.x - u.x * nO.y > 0, fly: true, path, top: 16 }; } }   // (at full height half way round the turn, well before it crosses the road)
+              if (clear && !crowded(pt(o, sN + Lp3), path[0], true) && path.every((q, j) => j === 0 || !crowded(path[j - 1], q, j <= 16))) earR = { T: pt(0, sN + Lp3 + Lt3), P: pt(o, sN + Lp3), N: path[0], C: path[0], M: path[12], C2: path[20], D: path[path.length - 1], u, n: nO, h, up: u.y * nO.x - u.x * nO.y > 0, fly: true, path, top: 16 }; } }   // (at full height half way round the turn, well before it crosses the road)
           corners0.push(cornerR); flies.push(earR ?? flyR);
         } else { corners0.push(null); flies.push(null); }
         hasLeg.push(!!leg);
