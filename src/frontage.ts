@@ -163,7 +163,10 @@ export function autoFrontage(world: World, extra: Way[] = []): { curbs: Zone[]; 
         // (a straight ramp lands on the road it is over, however short that road is)
         const ts = [c.road.a, c.road.b].map(p => dot(sub(p, c.a), al)); const tLo = Math.min(...ts), tHi = Math.max(...ts);
         const lal = norm(sub(last.b, last.a)); const ts2 = [last.road.a, last.road.b].map(p => dot(sub(p, last.a), lal)); const tHi2 = Math.max(...ts2);
-        const U = end(La, Lb) ?? bendEnd(c, La, Lb) ?? straight(at(Math.max(c.t0 - FRONTAGE.ramp, Math.min(tLo, c.t0 - 1)))), Dn = end(Lb, La) ?? bendEnd(last, Lb, La) ?? straight(atOf(last, Math.min(last.t1 + FRONTAGE.ramp, Math.max(tHi2, last.t1 + 1))));
+        // v0.65: a trumpet's deck has no way down at its far end: it stays level there and widens into a turning head
+        const head = (q: Pt, dv: Pt): RampLine => ({ pts: [46, 34, 14, 3].map(k2 => ({ x: q.x + dv.x * k2, y: q.y + dv.y * k2 })), zs: [1, 1, 1, 1], ws: [24, 36, 36, W], nIn: [null, null, null, null], gore: null, seam: null, arrows: [] });
+        const trumpet = c.road.scheme === 'trumpet';
+        const U = end(La, Lb) ?? bendEnd(c, La, Lb) ?? (trumpet ? head(La, { x: -al.x, y: -al.y }) : straight(at(Math.max(c.t0 - FRONTAGE.ramp, Math.min(tLo, c.t0 - 1))))), Dn = end(Lb, La) ?? bendEnd(last, Lb, La) ?? (trumpet ? head(Lb, lal) : straight(atOf(last, Math.min(last.t1 + FRONTAGE.ramp, Math.max(tHi2, last.t1 + 1)))));
         const rev = <T,>(x: T[]) => [...x].reverse();
         const pts = [...U.pts, La, ...mids, Lb, ...rev(Dn.pts)];
         const zs = [...U.zs, 1, ...mids.map(() => 1), 1, ...rev(Dn.zs)], ws = [...U.ws, W, ...mids.map(() => W), W, ...rev(Dn.ws)];
@@ -318,7 +321,7 @@ function rampLine(rg: RampGeo, W: number): RampLine {
   for (let i = 1; i <= M; i++) {
     const p = cv[i - 1], s = cum[i];
     const zk = rg.path ? ease((s - s0) / Math.max(1, cum[rg.top ?? M] - s0)) : rg.fly ? ease((s - s0) / Math.max(1, sMid - s0)) : ease((s - s0) / Math.max(1, cum[M] - s0));
-    const w = rg.path ? Math.max(Math.min(wl + (DECK.two - wl) * ease((s - s0 - 6) / 25), Math.max(wl, 2 * (lat(p) - h))), s > cum[M] - 45 ? DECK.two + (W - DECK.two) * ease((s - (cum[M] - 45)) / 40) : 0)
+    const w = rg.path ? Math.max(Math.min(wl + (DECK.two - wl) * ease((s - s0 - 6) / 25), i > (rg.top ?? M) ? 99 : Math.max(wl, 2 * (lat(p) - h))), s > cum[M] - 45 ? DECK.two + (W - DECK.two) * ease((s - (cum[M] - 45)) / 40) : 0)
       : rg.fly ? (s > sMid ? DECK.two + (W - DECK.two) * ease((s - sMid) / Math.max(1, cum[M] - sMid) * 1.6 - 0.6) : wl + (DECK.two - wl) * ease((s - s0 - 6) / 25))
       : zk >= 0.6 ? DECK.two + (W - DECK.two) * ease((zk - 0.6) / 0.4) : wl + (DECK.two - wl) * ease((s - s0 - 6) / 25);
     pts.push(p); ws.push(w); zs.push(i === M ? 1 : zk);
@@ -472,15 +475,22 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
                   flyR = { T: Tf, P: Pf, N: Nf, C: lerpPt(Nf, Mf, 0.5), M: Mf, C2: X, D: Df, u, n: nO, h, up: u.y * nO.x - u.x * nO.y > 0, fly: true }; } } }
           // or, where the ground beyond the corner is open and the road comes square to the frontage, a loop: the deck
           // crosses over the road, turns down beside it and swings back to its far edge
-          if (Math.abs(dot(u, inside)) < 0.02) { const nO = { x: -n.x, y: -n.y }; let Ls: number = EAR.back, Lp3: number = RAMP.lane, Lt3: number = RAMP.taper; const R1 = EAR.radius, a = EAR.over;
-            const k = Math.min(1, (avail - R1) / (Ls + Lp3 + Lt3));
-            if (k >= FLY.least) { Ls *= k; Lp3 *= k; Lt3 *= k; const sN = R1 + Ls;
-              const pt = (q: number, s: number): Pt => ({ x: E.x + nO.x * q + u.x * s, y: E.y + nO.y * q + u.y * s });   // q m out from the road's centreline, s m down it
-              const path: Pt[] = []; const far = a + R1;
-              for (let j = 0; j <= 12; j++) { const t = j / 12, v = 1 - t; const q = v * v * v * o + 3 * v * v * t * o + 3 * v * t * t * far + t * t * t * far, s = v * v * v * sN + 3 * v * v * t * (sN - Ls * 0.5) + 3 * v * t * t * (R1 + Ls * 0.5) + t * t * t * R1; path.push(pt(q, s)); }
-              for (let j = 1; j <= 8; j++) { const th = (j / 8) * Math.PI / 2; path.push(pt(a + R1 * Math.cos(th), R1 - R1 * Math.sin(th))); }
-              const dIn = CORNER.radius + 8; for (const q of [a * 0.5, 0, -dIn * 0.5, -dIn]) path.push(pt(q, 0));
-              const clear = path.every((q, j) => j === 0 || !blocked(path[j - 1], q, fam)) && !blocked(pt(far + 8, R1 + Ls * 0.6), pt(far + 8, R1 * 0.4), fam);
+          // (v0.65: the road need not be square to the frontage: the turn is as wide as the angle between them)
+          const cosF = -dot(inside, u);
+          if (Math.abs(cosF) < 0.72 && dot(n, inside) > 0) { const nO = { x: -n.x, y: -n.y }; let Ls: number = EAR.back, Lp3: number = RAMP.lane, Lt3: number = RAMP.taper; const R1 = EAR.radius, a = EAR.over;
+            const pt = (q: number, s: number): Pt => ({ x: E.x + nO.x * q + u.x * s, y: E.y + nO.y * q + u.y * s });   // q m out from the road's centreline, s m down it
+            const far = a + R1; const phi = Math.acos(cosF), tl = R1 * Math.tan(phi / 2);
+            // X: where the line `far` out from the road meets the frontage line; the turn starts `tl` short of it and ends `tl` past it
+            const X = meet(pt(far, 0), u, E, inside) ?? pt(far, 0); const S0 = { x: X.x + u.x * tl, y: X.y + u.y * tl }; const sA = dot(sub(S0, E), u);
+            const Aend = { x: X.x + inside.x * tl, y: X.y + inside.y * tl }; const dIn = CORNER.radius + 8; const Dp = { x: E.x + inside.x * dIn, y: E.y + inside.y * dIn };
+            const k = Math.min(1, (avail - sA) / (Ls + Lp3 + Lt3));
+            if (k >= FLY.least && sA > 15 && dot(sub(Dp, Aend), inside) > 6) { Ls *= k; Lp3 *= k; Lt3 *= k; const sN = sA + Ls;
+              const path: Pt[] = [];
+              for (let j = 0; j <= 12; j++) { const t = j / 12, v = 1 - t; const q = v * v * v * o + 3 * v * v * t * o + 3 * v * t * t * far + t * t * t * far, s2 = v * v * v * sN + 3 * v * v * t * (sN - Ls * 0.5) + 3 * v * t * t * (sA + Ls * 0.5) + t * t * t * sA; path.push(pt(q, s2)); }
+              const Cc = { x: S0.x + n.x * R1, y: S0.y + n.y * R1 };
+              for (let j = 1; j <= 8; j++) { const th = (j / 8) * phi; path.push({ x: Cc.x - n.x * R1 * Math.cos(th) - u.x * R1 * Math.sin(th), y: Cc.y - n.y * R1 * Math.cos(th) - u.y * R1 * Math.sin(th) }); }
+              for (const t of [0.25, 0.5, 0.75, 1]) path.push(lerpPt(Aend, Dp, t));
+              const clear = path.every((q, j) => j === 0 || !blocked(path[j - 1], q, fam)) && !blocked(pt(far + 8, sA + Ls * 0.6), pt(far + 8, sA * 0.4), fam);
               if (clear && !crowded(pt(o, sN + Lp3), path[0], true) && path.every((q, j) => j === 0 || !crowded(path[j - 1], q, j <= 16))) earR = { T: pt(0, sN + Lp3 + Lt3), P: pt(o, sN + Lp3), N: path[0], C: path[0], M: path[12], C2: path[20], D: path[path.length - 1], u, n: nO, h, up: u.y * nO.x - u.x * nO.y > 0, fly: true, path, top: 16 }; } }   // (at full height half way round the turn, well before it crosses the road)
           corners0.push(cornerR); flies.push(earR ?? flyR);
         } else { corners0.push(null); flies.push(null); }
