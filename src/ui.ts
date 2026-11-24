@@ -22,6 +22,7 @@ import { AREA, CURVE_MIN } from './config';
 import { Los, losKind, losDay, losNow, losFix } from './los';
 import { Advice, advise } from './advisor';
 import { runwayExits, rapidExit, exitFactor } from './airfield';
+import { FORE, FACE_ID, FORECOURTS } from './frontage';
 import { EXITS } from './config';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { parallelTaxi, canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
@@ -1861,7 +1862,7 @@ export class UI {
   }
 
   buildWay(kind: WayKind, a: Pt, b: Pt, cls: number, lanes: number, extras: WaySpec[] = [], c?: Pt, oneway = false) {
-    const curbs0 = this.sim.d.zones.filter(z => z.auto).length, decks0 = this.sim.d.decks.length;
+    const curbs0 = this.sim.d.zones.filter(z => z.auto).length, decks0 = this.sim.d.decks.filter(q => !q.branch).length;
     let cost = wayLen({ a, b, c }) * wayCostPerM(kind, cls, lanes);
     const nw: Way = { id: this.world.nextId++, kind, a, b, cls, lanes };
     if (c) nw.c = c; if (oneway) nw.oneway = true;
@@ -1871,7 +1872,7 @@ export class UI {
     this.changed();
     this.ren.float(`− ${money(cost)}`, lerpPt(a, b, 0.5), PAL_BAD);
     // the road adapting to the terminal is the point: say so
-    const dc = this.sim.d.zones.filter(z => z.auto).length - curbs0, dd = this.sim.d.decks.length - decks0;
+    const dc = this.sim.d.zones.filter(z => z.auto).length - curbs0, dd = this.sim.d.decks.filter(q => !q.branch).length - decks0;
     if (dd > 0) { this.toast('Two-level frontage road: departures drop off on the upper deck, arrivals pick up below.'); this.ren.float('+ upper deck', lerpPt(a, b, 0.5), '#C2852E', 9); }
     else if (dc > 0) { this.toast(`${dc} curb${dc > 1 ? 's' : ''} grown along the terminal face.`); this.ren.float(`+ ${dc} curb${dc > 1 ? 's' : ''}`, lerpPt(a, b, 0.5), '#C2852E'); }
     if (extras.length) this.toast(`Taxiway linked to the runway with ${extras.length} connector${extras.length > 1 ? 's' : ''} · ${money(cost)}`);
@@ -2360,6 +2361,7 @@ export class UI {
           <span class="muted">of ${u.max} that fit</span></dd>` : ''}
         ${stats}
         ${this.losHTML(z)}
+        ${this.forecourtHTML(z)}
       </dl>
       ${clsSeg}
       ${z.auto ? `<p class="muted small">This curb belongs to the road beside the terminal: move the road or the building and it follows; remove the road and it goes.</p>` : `<div class="tier">
@@ -2564,6 +2566,15 @@ export class UI {
       return { label: `Fit ${to - u.count}`, cost: 0, run: () => { z.units = to; this.changed(); this.toast(`${ZONES[z.type].short}: ${to} ${ZONES[z.type].unit} fitted. Staff them in Operations.`); } };
     }
     return null;
+  }
+  /** v0.64: how a hall's own forecourt reaches its departures deck, and why that way suits the site. */
+  forecourtHTML(z: Zone) {
+    if (z.type !== 'checkin' && z.type !== 'claim') return '';
+    const ids = [z.id, this.twin(z)?.id].filter((q): q is number => q !== undefined);
+    const f = this.sim.d.autoRoads.find(w => w.fore === 'face' && ids.some(id => w.id === FORE + id * 4 || (w.id >= FACE_ID + id * 32 && w.id < FACE_ID + id * 32 + 32)));
+    if (!f?.scheme) return '';
+    const F = FORECOURTS[f.scheme];
+    return `<h3>Forecourt</h3><dl class="kv"><dt>Way up to the deck</dt><dd>${F.name}</dd></dl><p class="muted small">Laid by the hall itself: ${F.why}. It is laid again whenever the roads or the ground around it change.</p>`;
   }
   /** v0.63: one more exit for a runway, where landing aircraft can take it. */
   layExit(id: number) {

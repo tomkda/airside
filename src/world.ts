@@ -6,7 +6,7 @@ import {
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
   polyLen, along,
 } from './geom';
-import { STYLES, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
+import { STYLES, Style, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, wayPts, curveOK, roundOuter, roundDef, chordWays } from './ways';
@@ -65,13 +65,22 @@ export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lan
   /** v0.28: a generated deck ramp is three one-way ways in a row: the `taper` where the road widens, the speed-change
    *  `lane` that runs beside it, and the `curve` and `climb` that leave it and rise to the deck. The curve carries the
    *  ramp's shape (`rg`). */
-  part?: 'taper' | 'lane' | 'curve' | 'climb'; rg?: RampGeo }
+  part?: 'taper' | 'lane' | 'curve' | 'climb'; rg?: RampGeo;
+  /** v0.64: it passes over whatever it crosses, joining the network only at its two ends (a flyover's last piece) */
+  bridge?: number;
+  /** v0.64: on a forecourt's frontage road: how its deck is reached (`FORECOURTS` in frontage.ts) */
+  scheme?: 'corner' | 'flyover' | 'trumpet' | 'none' }
 /** v0.28: one deck ramp's geometry, all on its approach road's frame. `u` runs along the approach road away from the
  *  frontage and `n` across it towards the side the ramp is on; `h` is the road's half width. T (on the road's
  *  centreline) is where the taper starts, P where the full lane begins, N the nose of the gore, where the ramp parts
  *  from the road; the curve runs from N through M to D (on the frontage road) as two quadratic pieces with control
  *  points C and C2 (v0.28: so it leaves the road soon after the nose instead of hugging it). `up`: traffic climbs it. */
-export interface RampGeo { T: Pt; P: Pt; N: Pt; C: Pt; M: Pt; C2: Pt; D: Pt; u: Pt; n: Pt; h: number; up: boolean }
+export interface RampGeo { T: Pt; P: Pt; N: Pt; C: Pt; M: Pt; C2: Pt; D: Pt; u: Pt; n: Pt; h: number; up: boolean;
+  /** v0.64: a flyover: it leaves the road on its far side from the terminal, climbs beside it from N to M, and from M
+   *  to D crosses over the road and the corner beneath on a bridge. */
+  fly?: boolean;
+  /** v0.64: a loop: the ramp's line from N to D point by point, in place of the two curves; `top` is the point by which it is at deck height */
+  path?: Pt[]; top?: number }
 export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[];
   /** v0.32: cut-outs: polygons taken away from the buildings they are drawn over. */
   cuts?: Cut[] }
@@ -163,6 +172,10 @@ function groupModules(zones: Zone[]): Zone[][] {
 }
 
 /** The site a module belongs to: its own, else the one it sits in. */
+/** v0.61: the architecture a module is built in: its own site's, else its terminal's (the first style if none is set). */
+export function styleOfZone(world: World, d: { termOf: Map<number, Terminal> }, z?: Zone): Style {
+  return STYLES[(z && ((z.site !== undefined ? world.sites?.find(q => q.id === z.site)?.style : undefined) ?? d.termOf.get(z.id)?.site?.style)) || 0] ?? STYLES[0];
+}
 export function siteOf(world: World, z: Rect & { site?: number }): Site | undefined {
   const own = z.site !== undefined ? world.sites?.find(st => st.id === z.site) : undefined;
   if (own) return own;
@@ -1170,7 +1183,12 @@ export function derive(drawn: World): Derived {
   // along the frontage), and every road that reaches a roundabout is cut back to its ring.
   const rounds = world.rounds ?? [];
   const pieces = roadPieces(roads, rounds, curbCuts(FR.curbs, roads));
-  for (const p of pieces) if (dist(p.a, p.b) > 1) roadSegs.push({ a: p.a, b: p.b, kind: 'road', cls: 0, ref: p.ref, lanes: p.lanes, ow: p.ow });
+  // (v0.64: a bridge is one or more ways with the same `bridge` number: its own two ends are the points only one of them ends at)
+  const bridges = new Map(roads.filter(q => q.bridge !== undefined).map(q => [q.id, q.bridge!]));
+  const bEnds = new Map<number, Pt[]>(); for (const q of roads) if (q.bridge !== undefined) { const l = bEnds.get(q.bridge) ?? []; l.push(q.a, q.b); bEnds.set(q.bridge, l); }
+  for (const p of pieces) if (dist(p.a, p.b) > 1) { const bg = bridges.get(p.ref); const ends = bg !== undefined ? bEnds.get(bg)! : [];
+    const mid = (e: Pt) => ends.filter(q => dist(q, e) < 0.5).length !== 1;
+    roadSegs.push({ a: p.a, b: p.b, kind: 'road', cls: 0, ref: p.ref, lanes: p.lanes, ow: p.ow, ...(bg !== undefined ? { bridge: bg, mid: [mid(p.a), mid(p.b)] as [boolean, boolean] } : {}) }); }
   for (const w of roads) if (w.fore !== 'ramp') for (const e of [w.a, w.b]) {   // (v0.28: a ramp's pieces join their road, never the highway)
     const dy = Math.abs(e.y - HY);
     if (dy > 4 && dy <= 20) roadSegs.push({ a: e, b: { x: e.x, y: HY }, kind: 'road', cls: 0, ref: w.id, lanes: w.lanes });
@@ -1193,6 +1211,7 @@ export function derive(drawn: World): Derived {
     issues.push({ level: 'warn', text: 'A one-way road leads nowhere: cars can get in but not back to State Route 12, or the other way round. Close the loop, reverse it, or make it two-way.' });
   const crosswalks: Crosswalk[] = [];
   for (const w of walks) for (const r of roadSegs) {
+    if (r.bridge !== undefined) continue;   // (v0.64: a sidewalk passes under a flyover)
     const x = segIntersection(w.a, w.b, r.a, r.b);
     if (x) crosswalks.push({ p: x, ang: Math.atan2(r.b.y - r.a.y, r.b.x - r.a.x), width: r.kind === 'hwy' ? 24 : isRingRef(r.ref) ? ringWidth(rounds, r.ref) : wayWidth('road', 0, r.lanes ?? 2) });
   }

@@ -67,7 +67,7 @@ export function chordWays<T extends Curved & { kind: string }>(ws: T[]): T[] {
  * Every road as straight pieces: curves in chords, straight roads split at `cuts` (where curbs begin and end),
  * everything cut back to the ring of any roundabout it reaches, and the rings themselves.
  */
-export function roadPieces(roads: { id: number; a: Pt; b: Pt; c?: Pt; lanes: number; oneway?: boolean }[], rounds: Round[], cuts: Map<number, Pt[]>): Piece[] {
+export function roadPieces(roads: { id: number; a: Pt; b: Pt; c?: Pt; lanes: number; oneway?: boolean; bridge?: number }[], rounds: Round[], cuts: Map<number, Pt[]>): Piece[] {
   const out: Piece[] = [];
   const entries = rounds.map(() => [] as { ang: number; piece: Piece; end: 'a' | 'b' }[]);
   for (const w of roads) {
@@ -80,7 +80,7 @@ export function roadPieces(roads: { id: number; a: Pt; b: Pt; c?: Pt; lanes: num
       const a = pts[i], b = pts[i + 1]; const L = dist(a, b); if (L <= 1) continue;
       // the stretches of this chord inside a roundabout's ring are removed
       const holes: { t0: number; t1: number; ri: number }[] = [];
-      rounds.forEach((r, ri) => {
+      if (w.bridge === undefined) rounds.forEach((r, ri) => {   // (v0.64: a flyover passes over a roundabout uncut)
         const R = roundR(r); const dx = b.x - a.x, dy = b.y - a.y, fx = a.x - r.x, fy = a.y - r.y;
         const A = dx * dx + dy * dy, B = 2 * (fx * dx + fy * dy), C = fx * fx + fy * fy - R * R;
         const D = B * B - 4 * A * C; if (D <= 0) return;

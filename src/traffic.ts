@@ -122,14 +122,14 @@ export function carPoses(sim: Sim): Map<Car, Pose> {
 /** How high a car bound for (or leaving) a departures deck is: it climbs with the ramp it is on. */
 function deckHeight(sim: Sim, c: Car, p: Pt): number {
   const tag = c.curb?.zone.auto; if (!tag || tag.deck !== 'dep') return 0;
-  const dk = sim.d.decks.find(q => q.road === tag.road || q.roads?.includes(tag.road)); if (!dk) return 0;
   let best = 0, bd = 9;
+  for (const dk of sim.d.decks) { if (!(dk.road === tag.road || dk.roads?.includes(tag.road))) continue;
   for (let i = 1; i < dk.pts.length; i++) {
     const a = dk.pts[i - 1], b = dk.pts[i]; const dx = b.x - a.x, dy = b.y - a.y; const l2 = dx * dx + dy * dy || 1;
     const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
     const dd = Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t);
     if (dd < bd) { bd = dd; best = dk.zs[i - 1] + (dk.zs[i] - dk.zs[i - 1]) * t; }
-  }
+  } }
   return best;
 }
 

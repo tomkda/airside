@@ -3,24 +3,30 @@
 import { Pt, dist, segDist, projT, segIntersection } from './geom';
 
 /** `ow`: one-way, travelled from a to b only (v0.11). */
-export interface NSeg { a: Pt; b: Pt; kind: string; cls: number; ref: number; lanes?: number; ow?: boolean }
+/** v0.64: `bridge` (its way's id): a piece that passes over whatever it crosses: it joins the network only at its
+ *  way's own two ends; `mid` says which of this piece's ends are joints inside the bridge. */
+export interface NSeg { a: Pt; b: Pt; kind: string; cls: number; ref: number; lanes?: number; ow?: boolean; bridge?: number; mid?: [boolean, boolean] }
 export interface Edge { id: number; u: number; v: number; len: number; kind: string; cls: number; ref: number; lanes: number; ow: boolean }
 export interface Net { nodes: Pt[]; edges: Edge[]; adj: number[][] }
 export interface DJ { dist: Float64Array; prev: Int32Array }
 
 export function buildNet(segs: NSeg[], tol = 4): Net {
-  const nodes: Pt[] = [];
-  const add = (p: Pt) => {
+  const nodes: Pt[] = []; const owner: number[] = [];
+  // (a joint inside a bridge is a node of that bridge alone: nothing on the ground merges with it)
+  const add = (p: Pt, own = 0) => {
     for (let i = 0; i < nodes.length; i++) {
       const q = nodes[i];
-      if (Math.abs(q.x - p.x) <= tol && Math.abs(q.y - p.y) <= tol && dist(q, p) <= tol) return i;
+      if (owner[i] === own && Math.abs(q.x - p.x) <= tol && Math.abs(q.y - p.y) <= tol && dist(q, p) <= tol) return i;
     }
-    nodes.push({ x: p.x, y: p.y });
+    nodes.push({ x: p.x, y: p.y }); owner.push(own);
     return nodes.length - 1;
   };
-  const marks = segs.map(s => [{ t: 0, n: add(s.a) }, { t: 1, n: add(s.b) }]);
+  const ownOf = (s: NSeg, k: 0 | 1) => (s.bridge !== undefined && s.mid?.[k] ? s.bridge : 0);
+  const marks = segs.map(s => [{ t: 0, n: add(s.a, ownOf(s, 0)) }, { t: 1, n: add(s.b, ownOf(s, 1)) }]);
   const tee = (S: NSeg, si: number, O: NSeg) => {
-    for (const e of [O.a, O.b]) {
+    if (S.bridge !== undefined) return;   // nothing joins a bridge part way along
+    for (const [k, e] of [O.a, O.b].entries()) {
+      if (O.bridge !== undefined && O.mid?.[k]) continue;
       const t = projT(e, S.a, S.b);
       if (t > 1e-4 && t < 1 - 1e-4 && segDist(e, S.a, S.b) <= tol) marks[si].push({ t, n: add(e) });
     }
@@ -29,7 +35,7 @@ export function buildNet(segs: NSeg[], tol = 4): Net {
     const A = segs[i], B = segs[j];
     if (Math.max(A.a.x, A.b.x) + tol < Math.min(B.a.x, B.b.x) || Math.max(B.a.x, B.b.x) + tol < Math.min(A.a.x, A.b.x) ||
         Math.max(A.a.y, A.b.y) + tol < Math.min(B.a.y, B.b.y) || Math.max(B.a.y, B.b.y) + tol < Math.min(A.a.y, A.b.y)) continue;
-    const x = segIntersection(A.a, A.b, B.a, B.b);
+    const x = A.bridge !== undefined || B.bridge !== undefined ? null : segIntersection(A.a, A.b, B.a, B.b);
     if (x) { const n = add(x); marks[i].push({ t: projT(x, A.a, A.b), n }); marks[j].push({ t: projT(x, B.a, B.b), n }); }
     tee(A, i, B); tee(B, j, A);
   }

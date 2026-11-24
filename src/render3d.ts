@@ -9,11 +9,11 @@
 // bridges, vehicles, cars and people are instanced and move every frame. New buildings rise into place.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Pt, Rect, dist, sub, norm, add, mul, lerpPt, polyLen, sliceLine, offsetLine } from './geom';
+import { Pt, Rect, dist, sub, norm, add, mul, lerpPt, polyLen, sliceLine, offsetLine, segDist } from './geom';
 import { STYLES, Style, PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE } from './config';
 import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
-import { wayWidth, runwayWidth, siteOf, Zone, Site } from './world';
+import { wayWidth, runwayWidth, siteOf, Zone, Site, styleOfZone } from './world';
 import { scenery } from './scenery';
 import { roadPlan } from './roads';
 import { carPoses, CAR_COLS } from './traffic';
@@ -390,7 +390,7 @@ export class Renderer3D {
         let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
         const t = (u - cum[k]) / (cum[k + 1] - cum[k] || 1); const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * t; if (zk < 0.35) continue;
         const p = lerpPt(dk.pts[k], dk.pts[k + 1], t); const dir = norm(sub(dk.pts[k + 1], dk.pts[k])); const w = dk.ws[k] + (dk.ws[k + 1] - dk.ws[k]) * t;
-        for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
+        for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); if (d.roadPieces.some(q => q.ref !== dk.road && !dk.roads?.includes(q.ref) && !d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + 0.8)) continue; misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
       }
     }
     for (const z of d.zones) if (z.type === 'curb') {
@@ -408,9 +408,12 @@ export class Renderer3D {
       };
       const strip = (v0: number, v1: number, h: number, c: string) => misc.push({ ...fbox(D * v0, D * v1), z0: zz, z1: zz + h, c });
       strip(0, 0.26, 0.22, '#EFE8DA'); strip(0.6, 0.7, 0.25, '#A9B28A');
-      misc.push({ ...fbox(0, 7), z0: zz + 5.2, z1: zz + 5.7, c: ROOF });
+      // (v0.64: the canopy is the terminal's architecture too: its roof colour, a fascia in its eave colour, its columns)
+      const CS = styleOfZone(sim.world, d, z); const plainS = CS === STYLES[0];
+      misc.push({ ...fbox(0, 7), z0: zz + 5.2, z1: zz + 5.7, c: plainS ? ROOF : CS.roofC });
+      if (!plainS) misc.push({ ...fbox(6.7, 7.1), z0: zz + 5.0, z1: zz + 5.8, c: CS.edgeC });
       const L = dist(a, b); const al = norm(sub(b, a));
-      for (let s = 6; s < L - 3; s += 12) { const p = add(add(a, mul(al, s)), mul(inw, 6.4)); misc.push({ x: p.x - 0.2, y: p.y - 0.2, w: 0.4, h: 0.4, z0: zz, z1: zz + 5.2, c: '#7C725F' }); }
+      for (let s = 6; s < L - 3; s += 12) { const p = add(add(a, mul(al, s)), mul(inw, 6.4)); misc.push({ x: p.x - 0.2, y: p.y - 0.2, w: 0.4, h: 0.4, z0: zz, z1: zz + 5.2, c: plainS ? '#7C725F' : CS.finC }); }
     }
 
     // ---- landside facilities (v0.10): garages, hotels, rental centres, bus stations, rideshare lots, the AirTrain
@@ -485,7 +488,7 @@ export class Renderer3D {
     // a plinth, glass walls round every ring, courtyards included, and the roof, with no boxes of its pieces)
     // (v0.61: a building takes the architecture of the terminal it belongs to)
     // (its own site's where it has one, else that of the terminal it joins)
-    const styleOf = (z?: Zone): Style => STYLES[(z && ((z.site !== undefined ? sim.world.sites?.find(q => q.id === z.site)?.style : undefined) ?? d.termOf.get(z.id)?.site?.style)) || 0] ?? STYLES[0];
+    const styleOf = (z?: Zone): Style => styleOfZone(sim.world, d, z);
     // which walls of an upright or turned building another building or a curb on its level stands against
     const touching = (z: Zone) => { const c = centreOf(z); const at = (dx: number, dy: number) => (z.rot ? turn({ x: c.x + dx, y: c.y + dy }, c, z.rot) : { x: c.x + dx, y: c.y + dy });
       const hit = (p: Pt) => d.zones.some(o => o.id !== z.id && o.level === z.level && (ZONES[o.type].terminal || o.type === 'curb') && inZone(p, o, 0.5));

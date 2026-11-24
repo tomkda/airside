@@ -2,8 +2,8 @@
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { runwayExits } from './airfield';
-import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER, LOS } from './config';
+import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon, segDist } from './geom';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER, LOS, STYLES, Style } from './config';
 import { Los, losKind, losNow, losDay } from './los';
 import type { Sim, Flight } from './sim';
 import { Zone, Shop, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
@@ -16,7 +16,7 @@ import { isRingRef, wayPts, wayMid } from './ways';
 import { DECK } from './frontage';
 import { inJunction } from './shell';
 import { polyCentre, turn, centreOf, hallPts, shaped, gripsOf, Grip, zonePts, frameOf, bendPath, toWorld as shapeToWorld, heart, Shaped } from './shapes';
-import { gripsFor } from './world';
+import { gripsFor, styleOfZone } from './world';
 const lerp2 = (a: Pt, b: Pt, t: number): Pt => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 /** Sequential ramp for the commercial heatmap, pale sand to rust, in the print's palette. */
 export function heatRamp(v: number, alpha = 1) {
@@ -682,9 +682,9 @@ export class Renderer {
         labels.push([zn, top]);
       } else if (isActive && this.lod === 'landside') {
         if (this.overlay) this.heat(sim, zn, top);
-        this.roofPlan(zn, top);
+        this.roofPlan(zn, top, styleOfZone(sim.world, sim.d, zn), this.touchSides(sim, zn));
         labels.push([zn, top]);
-      } else if (isActive) this.roofPlan(zn, top);
+      } else if (isActive) this.roofPlan(zn, top, styleOfZone(sim.world, sim.d, zn), this.touchSides(sim, zn));
       this.selectOutline(zn, top);
     }
     // v0.25: the spaces a building keeps for itself where its pieces meet: a hall, a food court or a garden, and
@@ -1052,8 +1052,64 @@ export class Renderer {
   }
 
   /** A roof plan for a module seen as massing: parapet line, a clerestory down a concourse, plant enclosures. */
-  roofPlan(zn: Zone, top: number) {
+  /** v0.64: which long walls of a module another terminal module on its level stands against (no eave or fins there):
+   *  [the wall at the frame's low side, the one at its high side]. */
+  touchSides(sim: Sim, zn: Zone): [boolean, boolean] {
+    const F = frameOf(zn); const horiz = F.w >= F.h; const out: [boolean, boolean] = [false, false];
+    if (shaped(zn) || zn.bend) return out;
+    for (const o of sim.d.zones) { if (o === zn || o.level !== zn.level || !(ZONES[o.type].terminal || o.type === 'curb') || shaped(o)) continue;
+      const lap = horiz ? Math.min(o.x + o.w, zn.x + zn.w) - Math.max(o.x, zn.x) : Math.min(o.y + o.h, zn.y + zn.h) - Math.max(o.y, zn.y); if (lap < 4) continue;
+      const lo = horiz ? Math.abs(o.y + o.h - zn.y) : Math.abs(o.x + o.w - zn.x), hi = horiz ? Math.abs(o.y - (zn.y + zn.h)) : Math.abs(o.x - (zn.x + zn.w));
+      if (lo < 1.5) out[0] = true; if (hi < 1.5) out[1] = true; }
+    return out;
+  }
+  /** v0.64: a terminal's architecture in the roof plan: the roof's colour, a vault's ridge and courses or the roof
+   *  lights across it, the eave line where the roof oversails, fins as ticks along the long walls. */
+  styledRoof(zn: Zone, top: number, S: Style, touch: [boolean, boolean]): boolean {
+    if (S === STYLES[0] || zn.sides || zn.poly || (zn.type !== 'concourse' && zn.type !== 'checkin')) return false;
+    const F = frameOf(zn); const horiz = F.w >= F.h; const L = horiz ? F.w : F.h, A = horiz ? F.h : F.w; if (A < 18 || L < 30) return false;
+    const g = this.ctx; const z = this.cam.zoom;
+    const rgba = (hex: string, a: number) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+    // a rectangle given along (u0..u1 from the frame's start) and across (v0..v1 from its low wall), as the zone's shape
+    const R = (u0: number, u1: number, v0: number, v1: number) => this.part(zn, horiz ? { x: F.x + u0, y: F.y + v0, w: u1 - u0, h: v1 - v0 } : { x: F.x + v0, y: F.y + u0, w: v1 - v0, h: u1 - u0 });
+    const ln = (u0: number, v0: number, u1: number, v1: number) => { const q = R(u0, u1, v0, v1); return [q[0], q[2]] as [Pt, Pt]; };
+    const stroke = (pts: Pt[], c: string, w = 1) => { g.strokeStyle = c; g.lineWidth = w; this.path(pts, top, false); g.stroke(); };
+    const inShell = this.shellIds.has(zn.id) && this.tilt <= 0.02;
+    this.poly(R(0.6, L - 0.6, 0.6, A - 0.6), rgba(S.roofC, 0.62), top);
+    // the eave: the roof's edge out past the wall, on the long walls nothing stands against
+    if (S.eave > 1 && !inShell && z > 0.3) for (const [k, v] of [[0, -S.eave], [1, A + S.eave]] as [number, number][]) if (!touch[k]) {
+      this.poly(R(0, L, Math.min(v, k ? A : 0), Math.max(v, k ? A : 0)), rgba(S.roofC, 0.5), top); stroke(R(0, L, v, v).slice(0, 2), rgba(S.edgeC, 0.95), 1.4); }
+    const vault = S.roof === 'vault' && !zn.mezz;
+    if (vault) {
+      // courses falling away from the ridge, closer together towards the eaves as a curve seen from above is
+      for (const side of [-1, 1]) for (let i = 1; i <= 4; i++) { const v = A / 2 + side * (A / 2) * Math.sin((i / 5) * Math.PI / 2);
+        if (z > 0.3) stroke(R(2, L - 2, v, v).slice(0, 2), 'rgba(40,36,30,0.13)', 0.8);
+        if (i >= 3) this.poly(R(1, L - 1, side > 0 ? v : 1, side > 0 ? A - 1 : v), 'rgba(40,36,30,0.045)', top); }
+      const rw = Math.min(3.2, A * 0.1); const ridge = R(4, L - 4, A / 2 - rw / 2, A / 2 + rw / 2);
+      this.poly(ridge, rgba(S.glass ?? '#B0C0C4', 0.85), top); stroke([...ridge, ridge[0]], 'rgba(40,36,30,0.3)', 0.8);
+    } else if (S.roof === 'monitors' && !zn.mezz) {
+      // roof lights across the building every 15 m, as in the model
+      const n = Math.max(1, Math.round(L / 15)); const step = L / n; const in0 = Math.min(4, A * 0.12);
+      if (z > 0.25) for (let i = 0; i < n; i++) { const u = (i + 0.5) * step; const q = R(u - 1.6, u + 1.6, in0, A - in0);
+        this.poly(q, rgba(S.glass ?? '#B0C0C4', 0.8), top); stroke([...q, q[0]], 'rgba(40,36,30,0.28)', 0.8); }
+    } else {
+      const wC = Math.min(12, A * 0.28); const q = R(8, L - 8, A / 2 - wC / 2 - (zn.mezz ? 5 : 0), A / 2 + wC / 2 + (zn.mezz ? 5 : 0));
+      this.poly(q, zn.mezz ? rgba(S.roofC, 0.9) : rgba(S.glass ?? '#B0C0C4', 0.6), top); stroke([...q, q[0]], 'rgba(40,36,30,0.28)', 0.8);
+    }
+    // a concrete band reads as a heavy double edge
+    if (S.band > 0 && z > 0.4 && !inShell) stroke([...R(2.2, L - 2.2, 2.2, A - 2.2), R(2.2, L - 2.2, 2.2, A - 2.2)[0]], rgba(S.edgeC, 0.9), 1.6);
+    // fins: ticks square to the long walls at half bays
+    if (S.fins && z > 0.5 && !inShell) { g.strokeStyle = rgba(S.finC, 0.95); g.lineWidth = Math.max(1, 0.5 * z); g.beginPath();
+      const n = Math.max(1, Math.round(L / 3.75)); for (let k = 0; k < 2; k++) if (!touch[k]) for (let i = 0; i <= n; i++) { const u = (i / n) * L; const [a, b] = ln(u, k ? A : -S.eave + 0.4, u, k ? A + S.eave - 0.4 : 0);
+        const [x0, y0] = this.P(a.x, a.y, top), [x1, y1] = this.P(b.x, b.y, top); g.moveTo(x0, y0); g.lineTo(x1, y1); }
+      g.stroke(); }
+    // the parapet line
+    if (!inShell) stroke([...R(0, L, 0, A), R(0, L, 0, A)[0]], 'rgba(40,36,30,0.4)', 1);
+    return true;
+  }
+  roofPlan(zn: Zone, top: number, S: Style = STYLES[0], touch: [boolean, boolean] = [false, false]) {
     const z = this.cam.zoom; if (z < 0.2 || zn.poly) return;
+    if (this.styledRoof(zn, top, S, touch)) return;
     const g = this.ctx; const k = Math.min(2.5, 1.2 / Math.max(z, 0.3));
     g.strokeStyle = 'rgba(244,237,223,0.55)'; g.lineWidth = 1;
     if (!this.shellIds.has(zn.id) || this.tilt > 0.02) { const F = frameOf(zn); this.path(zn.sides ? this.rectPts({ x: zn.x + k, y: zn.y + k, w: zn.w - 2 * k, h: zn.h - 2 * k, rot: zn.rot, sides: zn.sides }) : this.part(zn, { x: F.x + k, y: F.y + k, w: F.w - 2 * k, h: F.h - 2 * k }), top); g.stroke(); }
@@ -1198,14 +1254,18 @@ export class Renderer {
         g.setLineDash([]);
       }
       // columns under the level part and the upper half of each ramp
+      // (v0.64: no column stands in a road the deck passes over)
+      const own = new Set([dk.road, ...(dk.roads ?? [])]); const underRoad = (c: Pt) => sim.d.roadPieces.some(q => !own.has(q.ref) && !sim.d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + 0.8);
       if (z > 0.6) for (let u = 0; u < L; u += 30) {
         const a = along(dk.pts, u); const n = { x: -Math.sin(a.ang), y: Math.cos(a.ang) };
         let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
         const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * ((u - cum[k]) / (cum[k + 1] - cum[k] || 1)); if (zk < 0.5) continue;
-        for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.ws[k] / 2 - 1.2))); const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
+        for (const side of [-1, 1]) { const c = add(a.p, mul(n, side * (dk.ws[k] / 2 - 1.2))); if (underRoad(c)) continue; const [x, y] = this.P(c.x, c.y); g.fillStyle = PAL.ink2; g.fillRect(x - 1.5, y - 1.5, 3, 3); }
       }
-      if (z > 0.45 && this.lod !== 'airfield') {
-        const a = dk.pts[i0], b = dk.pts[i1];
+      if (z > 0.45 && this.lod !== 'airfield' && !dk.branch) {
+        // (v0.64: along the deck proper, between where its ramps land, not out on a loop)
+        const full = (i: number) => dk.zs[i] >= 1 && dk.ws[i] >= dk.width - 0.01; let j0 = dk.pts.findIndex((_, i) => full(i)), j1 = dk.pts.length - 1 - [...dk.pts].reverse().findIndex((_, i) => full(dk.pts.length - 1 - i)); if (j0 < 0 || j1 <= j0) { j0 = i0; j1 = i1; }
+        const a = dk.pts[j0], b = dk.pts[j1];
         const rot = Math.atan2((b.y - a.y) * this.yScale, b.x - a.x); const up = Math.cos(rot) < 0;
         this.label('UPPER DECK · DEPARTURES', lerp2(a, b, 0.5), 0, 8, '#F4EDDF', { weight: 800, spacing: 1.4, rot: up ? rot + Math.PI : rot });
         // say what the fork is, once per ramp, where it leaves the ground
