@@ -6,7 +6,7 @@ import {
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
   polyLen, along,
 } from './geom';
-import { STYLES, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
+import { STYLES, Style, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, wayPts, curveOK, roundOuter, roundDef, chordWays } from './ways';
@@ -163,6 +163,10 @@ function groupModules(zones: Zone[]): Zone[][] {
 }
 
 /** The site a module belongs to: its own, else the one it sits in. */
+/** v0.61: the architecture a module is built in: its own site's, else its terminal's (the first style if none is set). */
+export function styleOfZone(world: World, d: { termOf: Map<number, Terminal> }, z?: Zone): Style {
+  return STYLES[(z && ((z.site !== undefined ? world.sites?.find(q => q.id === z.site)?.style : undefined) ?? d.termOf.get(z.id)?.site?.style)) || 0] ?? STYLES[0];
+}
 export function siteOf(world: World, z: Rect & { site?: number }): Site | undefined {
   const own = z.site !== undefined ? world.sites?.find(st => st.id === z.site) : undefined;
   if (own) return own;
