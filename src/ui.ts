@@ -1621,6 +1621,7 @@ export class UI {
     // an edit from anywhere else ends a drag in progress and puts its shape back: nothing unpaid is ever kept
     if (this.live) { this.endLive(false); this.drag = null; this.ren.ghost = null; }
     this.liveStale = false;
+    this.rev++;
     if (this.snap) { this.undoStack.push(this.snap); if (this.undoStack.length > 50) this.undoStack.shift(); this.redoStack = []; }
     this.sim.relayout(); this.adopt(); this.refresh(true); this.ctl.save();
     this.snap = this.snapshot();
@@ -1638,6 +1639,7 @@ export class UI {
   snapshot() { return JSON.stringify({ w: this.sim.world, m: this.sim.money, st: this.sim.staff }); }   // (v0.59: and the staff roll, so a hire is undone with what it was hired for)
   restore(s: string) {
     this.endLive(false); this.drag = null;
+    this.rev++;
     const o = JSON.parse(s) as { w: World; m: number; st?: Record<string, number> };
     // (the optional lists go first: a snapshot taken before the first cut-out, say, has none to put back)
     const ws = this.sim.world; delete ws.cuts; delete ws.rounds; delete ws.sites;
@@ -2430,7 +2432,7 @@ export class UI {
 
   // ------------------------------------------------------------ the advisor (v0.59)
   /** What an upgrade would cost and do, or why it cannot be done here. `run` lays it. */
-  resolveAdvice(a: Advice): { label: string; cost: number; per?: string; run: () => void } | { why: string } | null {
+  resolveAdvice(a: Advice): { label: string; cost: number; per?: string; run: () => void; alt?: { label: string; cost: number; run: () => void } } | { why: string } | null {
     const s = this.sim; const z = a.zone !== undefined ? this.world.zones.find(q => q.id === a.zone) : undefined;
     if (a.kind === 'stands') {
       // the places beside stands already built first, so runs grow and share a taxilane; only those that would be
@@ -2494,6 +2496,52 @@ export class UI {
         if (p && a.need !== undefined && pool !== 'handlers' && (z.staff !== undefined || same.length > 1)) z.staff = Math.min(p.maxServers, a.need);
         this.changed(); this.toast(n ? `${n} ${pool === 'handlers' ? 'baggage handlers' : pool} hired for ${ZONES[z.type].short.toLowerCase()}` : `${ZONES[z.type].short}: ${a.need} ${ZONES[z.type].unit} staffed`); } };
     }
+    if (a.kind === 'grow' && z) {
+      // v0.62: a module that is too small is enlarged where it stands, or fitted out to do more on the floor it has
+      const tw = this.twin(z); const name = ZONES[z.type].short;
+      const desks = z.type === 'checkin' || z.type === 'security' || z.type === 'passport';
+      const up = z.tier === 0 && desks ? { label: ZONES[z.type].tierNames[1], cost: floorArea(z) * ZONES[z.type].tierCostPerM2, run: () => {
+        const c = floorArea(z) * ZONES[z.type].tierCostPerM2; if (!this.sim.canAfford(c)) { this.toast(`That costs ${money(c)}`, 'bad'); return; }
+        this.sim.spend(c); z.tier = 1; this.changed(); this.toast(`${name} upgraded: ${ZONES[z.type].tierNames[1]}`); } } : undefined;
+      let big: { label: string; cost: number; run: () => void } | undefined, why = 'no side has room to grow', bestScore = -1;
+      if (!z.rot && !z.bend && !z.twist && !z.poly) {
+        const g0 = geomOf(z); const T0 = s.d.termOf.get(z.id); const max0 = s.d.units.get(z.id)?.max ?? 0;
+        // its own curbs, by the road each grows on: growing may not move them to another road or face, nor lay a new forecourt
+        const mine = new Set([z.id, ...(tw ? [tw.id] : [])]); const curbsOf = (d: Derived) => d.zones.filter(q => q.type === 'curb' && q.auto && mine.has(q.auto.module)).map(q => `${q.auto!.road}:${q.auto!.deck}:${q.level}`).sort().join('|');
+        const faces = (d: Derived) => d.autoRoads.filter(q => q.fore === 'face').length; const curbs0 = curbsOf(s.d), faces0 = faces(s.d);
+        const step = (v: number) => Math.max(16, Math.round(v * 0.25 / 4) * 4); const dw = step(z.w), dh = step(z.h);
+        // the long way first (more desks in a row), each end; then deeper
+        const longW = z.w >= z.h; const cands: Geom[] = [];
+        const along: Geom[] = longW ? [{ ...g0, w: z.w + dw }, { ...g0, x: z.x - dw, w: z.w + dw }] : [{ ...g0, h: z.h + dh }, { ...g0, y: z.y - dh, h: z.h + dh }];
+        const deep: Geom[] = longW ? [{ ...g0, h: z.h + dh }, { ...g0, y: z.y - dh, h: z.h + dh }] : [{ ...g0, w: z.w + dw }, { ...g0, x: z.x - dw, w: z.w + dw }];
+        cands.push(...along, ...deep);
+        for (const g of cands) {
+          const chk = this.placeGeom(z, g); if (!chk.ok) { why = chk.reason ?? why; continue; }
+          // tried on the layout: the terminal must stay open with its curbs, and the module must gain desks or floor
+          setGeom(z, g); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h });
+          let ok = false, max1 = max0;
+          try { const d = derive(this.world); const T1 = d.termOf.get(z.id); max1 = d.units.get(z.id)?.max ?? 0;
+            ok = (!T0?.active || !!T1?.active) && curbsOf(d) === curbs0 && faces(d) <= faces0 && d.gates.length >= s.d.gates.length; }
+          finally { setGeom(z, g0); if (tw) setGeom(tw, { x: g0.x, y: g0.y, w: g0.w, h: g0.h }); }
+          if (!ok) { why = 'growing would move it off its curbs or onto its road, or cost it gates'; continue; }
+          // (a desk module grows only where the new floor takes more desks)
+          if (desks && max1 <= max0) { why = 'growing would add no desks'; continue; }
+          const cost = this.geomCost(z, g) - this.geomCost(z, g0); const by = Math.round(g.w * g.h - g0.w * g0.h) * (tw ? 2 : 1);
+          // (of the ways that fit, the one that gains the most desks for the money; failing any, the first)
+          const score = max1 > max0 ? 1 + (max1 - max0) / Math.max(1, cost) * 1e9 : 0; if (score <= bestScore) continue; bestScore = score;
+          big = { label: `Enlarge ${n0(by)} m²`, cost, run: () => {
+            if (!this.sim.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return; }
+            setGeom(z, g); if (tw) setGeom(tw, { x: g.x, y: g.y, w: g.w, h: g.h });
+            // (every desk the larger floor has room for is fitted with it)
+            if (z.units !== undefined && z.units >= max0 && max1 > max0) z.units = max1;   // (only where every desk that fitted was already there)
+            this.sim.spend(cost); const site = siteOf(this.world, z); if (site && z.site !== undefined) fitSite(this.world, site);
+            this.changed(); this.toast(`${name} enlarged by ${n0(by)} m²${max1 > max0 ? `: room for ${max1} ${ZONES[z.type].unit}` : ''}`); } };
+        }
+      } else why = 'a turned or bent module is reshaped by its grips';
+      if (big) return { ...big, alt: up };
+      if (up) return up;
+      return { why };
+    }
     if (a.kind === 'desks' && z && a.n) {
       const u = s.d.units.get(z.id); if (!u) return null; const to = Math.min(u.max, u.count + a.n);
       return { label: `Fit ${to - u.count}`, cost: 0, run: () => { z.units = to; this.changed(); this.toast(`${ZONES[z.type].short}: ${to} ${ZONES[z.type].unit} fitted. Staff them in Operations.`); } };
@@ -2510,10 +2558,12 @@ export class UI {
   }
   /** Upgrades taken today (by card): the day's figures do not move when the player acts, so a card acted on is put away until tomorrow's are in. */
   private advDone = new Map<string, number>();
+  /** (counts every change to the world: what an upgrade would be is worked out again after each) */
+  private rev = 0;
   /** (worked out once per state of the world: the checks lay each upgrade out on a copy) */
   private advCache = new Map<string, { rev: string; r: ReturnType<UI['resolveAdvice']> }>();
   private advOf(a: Advice) {
-    const rev = `${this.snap.length}:${this.undoStack.length}:${this.sim.day}:${Math.round(this.sim.money / 1e5)}`;
+    const rev = `${this.rev}:${this.sim.day}:${Math.round(this.sim.money / 1e5)}`;
     const c = this.advCache.get(a.key); if (c && c.rev === rev) return c.r;
     const r = this.resolveAdvice(a); this.advCache.set(a.key, { rev, r }); return r;
   }
@@ -2524,7 +2574,7 @@ export class UI {
     if (!list.length) return `<p class="muted small">Nothing is holding the airport back today: no flight turned away, no aircraft kept standing, no queue past its limit. Lower the slot fee or win a route to bring more flights.</p>`;
     return `<ul class="advice">${list.map(a => { const r = this.advOf(a);
       return `<li data-adv="${esc(a.key)}"><b>${esc(a.title)}</b><span class="muted small">${esc(a.why)}</span>
-        <span class="row">${r && 'run' in r ? `<button class="btn small" data-advrun="${esc(a.key)}">${esc(r.label)}${r.cost ? ` · ${money(r.cost)}${r.per ? ' ' + r.per : ''}` : ''}</button>` : r ? `<span class="muted small">Cannot be done in one step: ${esc(r.why)}.</span>` : ''}
+        <span class="row">${r && 'run' in r ? `<button class="btn small" data-advrun="${esc(a.key)}|main|${Math.round(r.cost)}|${esc(r.label)}">${esc(r.label)}${r.cost ? ` · ${money(r.cost)}${r.per ? ' ' + r.per : ''}` : ''}</button>${r.alt ? `<button class="btn small" data-advrun="${esc(a.key)}|alt|${Math.round(r.alt.cost)}|${esc(r.alt.label)}">${esc(r.alt.label)} · ${money(r.alt.cost)}</button>` : ''}` : r ? `<span class="muted small">Cannot be done in one step: ${esc(r.why)}.</span>` : ''}
         ${a.at ? `<button class="btn small ghost" data-advshow="${esc(a.key)}">Show</button>` : ''}</span></li>`; }).join('')}</ul>`;
   }
   /** v0.58: what aircraft went through on a taxiway: minutes stood and head-on stand-offs, today or the last day. */
@@ -2769,7 +2819,9 @@ export class UI {
     // (v0.57: a row of the level-of-service table opens its module, with the overlay on)
     // (v0.59: the advisor's cards)
     body.querySelectorAll<HTMLElement>('[data-advrun]').forEach(b => b.addEventListener('click', ev => { ev.stopPropagation();
-      const a = this.advList().find(q => q.key === b.dataset.advrun); const r = a && this.resolveAdvice(a);
+      const [key, which, cost, label] = (b.dataset.advrun ?? '').split('|'); const a = this.advList().find(q => q.key === key); const r0 = a && this.resolveAdvice(a); const r = r0 && 'run' in r0 && which === 'alt' ? r0.alt : r0;
+      // (the airport may have changed since the card was drawn: only what the button says is done)
+      if (a && (!r || !('run' in r) || r.label !== label || Math.round(r.cost) !== Number(cost))) { this.advCache.clear(); this.refresh(true); this.toast('The airport has changed since: look at the card again', 'warn'); return; }
       if (a && r && 'run' in r) { const m = this.sim.money, sn = this.snap; r.run(); if (this.snap !== sn || this.sim.money !== m) this.advDone.set(a.key, this.sim.day); this.advCache.clear(); this.refresh(true); } }));
     body.querySelectorAll<HTMLElement>('[data-advshow]').forEach(b => b.addEventListener('click', () => {
       const a = advise(this.sim).find(q => q.key === b.dataset.advshow); if (!a?.at) return;

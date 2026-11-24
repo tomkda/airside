@@ -43,6 +43,11 @@ const show = (name, list) => console.log(name + ':', list.length ? list.map(a =>
 { const w = sampleWorld(); const sim = day(w, s => { s.staff.screeners = 6; }); const A = advise(sim); show('six screeners (two lanes)', A);
   const st = A.find(a => a.kind === 'staff');
   check('a queue past its limit with lanes unstaffed brings the advice to hire, with how many', !!st && st.pool === 'screeners' && st.n >= 3 && st.n % 3 === 0); }
+// 6. a security checkpoint with room for two lanes, both staffed: it is too small, and the advice is to enlarge it
+{ const w = sampleWorld(); const sec = w.zones.find(z => z.type === 'security'); sec.x = 3042; sec.w = 16; sec.units = undefined;
+  const sim = day(w, s => { s.staff.screeners = 60; }); const A = advise(sim); show('a 16 m wide security checkpoint', A);
+  const L = sim.d.units.get(sec.id); console.log('   lanes that fit:', L.max, '| staffed', sim.procs.get(sec.id).servers);
+  check('a module with every desk at work and no room for more brings the advice to enlarge or upgrade it', A.some(a => a.kind === 'grow' && a.zone === sec.id)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
