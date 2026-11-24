@@ -158,6 +158,19 @@ export const rwyClass = (len: number): Cls | -1 => (len >= 3000 ? 3 : len >= 210
  *  taken from secondary sources, so check against the current edition before relying on it).
  *  `reach` is how far a taxilane will run to find a taxiway or runway; joining a runway directly counts `runwayCost` times its length. */
 export const APRON = { self: true, nose: 8, laneClear: [22.5, 22.5, 22.5, 47.5], reach: 400, runwayCost: 2.5 };
+/** v0.63: runway exits. FAA AC 150/5060-5 (Airport Capacity and Delay) scales a runway's hourly capacity by an exit
+ *  factor: the exits counted are those within a stretch from the landing threshold that depends on the aircraft mix,
+ *  each at least 750 ft from the last. Its stretches are 2,000–4,000 ft for a light mix, 3,000–5,500 and 3,500–6,500 ft
+ *  for the middle ones and 5,500–7,500 ft for the heaviest; its factors (about 40–50% arrivals, VFR) run from roughly
+ *  0.75 with no exit there through 0.86 with one and 0.93 with two or three to 1.00 with four. Here `TUNE.separationMin`
+ *  is the runway with two or three (the sample's), so the factors are those ratios. Figures from memory of the AC's
+ *  charts; check before quoting. `angle`: ICAO Annex 14's rapid exit taxiway, 30° off the runway. */
+export const EXITS = {
+  range: [[610, 1220], [915, 1675], [1065, 1980], [1675, 2285]] as [number, number][],
+  apart: 230,
+  factor: [0.81, 0.92, 1, 1.04, 1.08],   // (the AC gives two and three one value; here the third is worth half of the fourth)
+  angle: 30,
+};
 export const TAXI_CLASSES = [
   { cls: 2, name: 'Standard', note: 'up to A320', width: 23, costPerM: 9000 },
   { cls: 3, name: 'Code F', note: 'all aircraft incl. A380', width: 36, costPerM: 15000 },

@@ -81,6 +81,18 @@ const path = require('path');
     return { drawn: faces0 === 0, label: h && (h.label || h.why), same: roads() === r0, south: ci.y + ci.h === south0, faces: g.sim.d.autoRoads.filter(q => q.fore === 'face').length, open: g.sim.d.terminals[0].active }; });
   console.log('hall with a drawn frontage road:', JSON.stringify(fr));
   check('growing a hall never moves it onto its drawn frontage road: its curbs stay on that road', fr.drawn && fr.same && fr.south && fr.faces === 0 && fr.open);
+  // v0.63: a rapid exit from the card, and from the runway's inspector; undone in one step
+  const rx = await p.evaluate(() => { const g = window.__game, w = g.sim.world; const rw = w.runways[0]; const cap = () => g.sim.capacityPerHour(g.sim.d.runways);
+    const n0 = w.ways.length, c0 = cap(), m0 = g.sim.money;
+    const r = g.ui.resolveAdvice({ key: 'exit' + rw.id, kind: 'exit', runway: rw.id, title: '', why: '', weight: 1 }); const label = r && (r.label || r.why); if (r && r.run) r.run();
+    const one = { ways: w.ways.length - n0, cap: cap(), paid: Math.round(m0 - g.sim.money) };
+    g.ui.select({ kind: 'runway', id: rw.id }); const btn = document.querySelector('[data-act="rwExit"]'); const had = !!btn; if (btn) btn.click();
+    const two = { ways: w.ways.length - n0, cap: cap() };
+    g.ui.undo(); const back = { ways: g.sim.world.ways.length - n0, cap: cap() };
+    return { label, c0, one, had, two, back }; });
+  console.log('rapid exits:', JSON.stringify(rx));
+  check('the card lays one exit, paid for, and the runway takes more', /Lay/.test(rx.label) && rx.one.ways === 1 && rx.one.paid > 0 && rx.one.cap > rx.c0);
+  check('the runway inspector lays the next; undo takes one back', rx.had && rx.two.ways === 2 && rx.two.cap > rx.one.cap && rx.back.ways === 1 && rx.back.cap === rx.one.cap);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();

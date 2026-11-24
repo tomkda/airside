@@ -1,6 +1,7 @@
 // Canvas renderer. Reads sim state, never writes it.
 // Far zoom reads as an airport-diagram print; zooming in reveals fit-out, people and vehicles.
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
+import { runwayExits } from './airfield';
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon } from './geom';
 import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER, LOS } from './config';
 import { Los, losKind, losNow, losDay } from './los';
@@ -483,6 +484,16 @@ export class Renderer {
       const sel = this.selected?.kind === 'runway' && this.selected.id === r.rw.id;
       const hov = this.hover?.kind === 'runway' && this.hover.id === r.rw.id;
       if (sel || hov) { g.globalAlpha = sel ? 1 : 0.5; this.line(r.rw.a, r.rw.b, r.width + 30, 'rgba(47,93,124,0.35)'); g.globalAlpha = 1; }
+      if (sel && r.cls >= 0) {
+        // v0.63: the stretch where an exit counts, landing into the prevailing wind, and the exits counted in it
+        const X = runwayExits(d, r); const th = X.fromA ? r.rw.a : r.rw.b, dir = X.fromA ? r.dir : mul(r.dir, -1);
+        const at = (s: number, o: number) => add(add(th, mul(dir, s)), mul(r.normal, o));
+        const o = r.width / 2 + 9;
+        for (const k of [-1, 1]) this.line(at(X.lo, k * o), at(X.hi, k * o), 3, 'rgba(194,133,46,0.9)');
+        for (const s of [X.lo, X.hi]) this.line(at(s, -o - 6), at(s, o + 6), 2, 'rgba(194,133,46,0.9)');
+        for (const s of X.all) { const on = X.at.includes(s); const [x, y] = this.P(...Object.values(at(s, 0)) as [number, number]);
+          g.beginPath(); g.arc(x, y, on ? 6 : 4, 0, Math.PI * 2); g.fillStyle = on ? 'rgba(194,133,46,1)' : 'rgba(120,120,120,0.8)'; g.fill(); g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.stroke(); }
+      }
       if (sel && !this.ghost) for (const p of [r.rw.a, r.rw.b]) {
         const [x, y] = this.P(p.x, p.y);
         g.fillStyle = PAL.paveLine; g.strokeStyle = PAL.select; g.lineWidth = 2;

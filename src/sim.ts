@@ -3,6 +3,7 @@
 // Everything moves on networks: aircraft on taxiways, cars on roads, people through doors, cores and sidewalks.
 import { Pt, add, mul, dist, polyLen, along, rng, clamp, center, segDist } from './geom';
 import { BANK, Bank, GROUND, CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SITE, TUNE, ZONES, ZoneType, ShopType, COMMERCE, GROWTH, UNLOCKS, Unlock, UnlockId, WEATHER, WeatherKind, Offer, Deal, ROADS, MOVER, YIELD } from './config';
+import { runwayExits } from './airfield';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { wayLen, isRingRef } from './ways';
 import { toLocal, clampInto, frameOf, polyArea } from './shapes';
@@ -511,9 +512,11 @@ export class Sim {
 
   capacityPerHour(rs: RunwayInfo[]) {
     if (!rs.length) return 0;
-    const per = 60 / TUNE.separationMin;
-    let cap = per;
+    // v0.63: each runway's rate follows its exits (the FAA's exit factor)
+    const per0 = 60 / TUNE.separationMin;
+    let cap = per0 * runwayExits(this.d, rs[0]).factor;
     for (let i = 1; i < rs.length; i++) {
+      const per = per0 * runwayExits(this.d, rs[i]).factor;
       const par = rs.slice(0, i).some(o => Math.abs(o.dir.x * rs[i].dir.x + o.dir.y * rs[i].dir.y) > 0.996);
       const sep = par ? Math.min(...rs.slice(0, i).map(o => Math.abs((rs[i].rw.a.x - o.rw.a.x) * o.normal.x + (rs[i].rw.a.y - o.rw.a.y) * o.normal.y))) : 0;
       cap += par ? (sep >= TUNE.dependentSpacing ? per : per * 0.45) : per * 0.35;
@@ -559,7 +562,7 @@ export class Sim {
 
   bookOn(best: RunwayInfo, earliest: number): number {
     const bt = Math.max(earliest, this.rwFree.get(best.rw.id) ?? 0);
-    this.rwFree.set(best.rw.id, bt + TUNE.separationMin);
+    this.rwFree.set(best.rw.id, bt + TUNE.separationMin / runwayExits(this.d, best).factor);
     for (const o of this.d.runways) {
       if (o === best) continue;
       const par = Math.abs(o.dir.x * best.dir.x + o.dir.y * best.dir.y) > 0.996;

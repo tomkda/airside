@@ -7,6 +7,7 @@ import { derive, parallelTaxi } from './src/world';
 import { sampleWorld } from './src/sample';
 import { Sim } from './src/sim';
 import { GROUND } from './src/config';
+import { runwayExits, rapidExit } from './src/airfield';
 import * as W from './src/ways';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
@@ -78,6 +79,30 @@ check('the day names where they stood', !!worst && worst[1].min > 1);
   if (!('why' in pc)) { const P = W.wayPts(cv), Q = W.wayPts(pc.ways[0]); let least = 1e9; for (const q of Q) for (const p of P) least = Math.min(least, Math.hypot(p.x - q.x, p.y - q.y));
     console.log('   beside a curve: never nearer than', least.toFixed(1), 'm'); check('a curve is set off along its own normals: 40 m or more all the way', least >= 40); }
   else console.log('   beside a curve: refused,', pc.why); }
+// v0.63: a runway's exits set its rate, and a rapid exit is laid in one step
+{ const w = sampleWorld(); let d = derive(w); let r = d.runways[0]; const X0 = runwayExits(d, r);
+  const cap = (ww) => { const s = new Sim(ww, 7); s.relayout(); return s.capacityPerHour(s.d.runways); };
+  console.log('runway exits: sample', X0.n, 'in', X0.lo + '-' + X0.hi, 'm at', X0.at.join(', '), '| factor', X0.factor, '|', cap(w), 'an hour');
+  check('the sample has two exits in the stretch for its A320s and the rate it always had (30 an hour)', X0.n === 2 && X0.factor === 1 && cap(w) === 30);
+  const laid = [];
+  for (let i = 0; i < 3; i++) { d = derive(w); r = d.runways[0]; const x = rapidExit(w, d, r, d.aprons); if ('why' in x) { console.log('   asked again:', x.why); laid.push(null); break; }
+    const ang = Math.abs(Math.atan2(x.way.b.y - x.way.a.y, Math.abs(x.way.b.x - x.way.a.x))) * 180 / Math.PI;
+    w.ways.push({ id: w.nextId++, kind: 'taxi', a: x.way.a, b: x.way.b, cls: x.way.cls, lanes: 0 }); const X = runwayExits(derive(w), derive(w).runways[0]);
+    console.log('   exit', i + 1, 'at', Math.round(x.s), 'm,', ang.toFixed(0) + '° off the runway,', x.rapid ? 'rapid' : 'square', '| counted', X.n, '|', cap(w), 'an hour'); laid.push({ x, ang, X }); }
+  check('the first is a rapid exit, 30° off the runway, inside the stretch and 230 m from the others, and makes three', !!laid[0] && laid[0].x.rapid && Math.abs(laid[0].ang - 30) < 0.5 && laid[0].X.n === 3 && laid[0].x.s >= X0.lo && laid[0].x.s <= X0.hi);
+  check('a second makes four and the runway takes more (32 an hour); a third is refused', !!laid[1] && laid[1].X.n === 4 && cap(w) === 32 && laid[2] === null);
+  const sim = new Sim(w, 7); sim.relayout(); sim.startDay(); const d0 = sim.day; while (sim.day === d0 && sim.t % 1440 < 1425) sim.step(0.25);
+  console.log('   a day with four exits:', sim.stats.ground.moves, 'movements, missed', sim.stats.missed, 'cancelled', sim.stats.cancelled ?? 0, 'stand-offs', sim.stats.ground.standoffs);
+  check('a day flies on it with nobody missed or cancelled', sim.stats.missed === 0 && !(sim.stats.cancelled > 0));
+  // with only the links at its ends, landing aircraft roll to the far end
+  const w1 = sampleWorld(); w1.ways = w1.ways.filter(q => !(q.kind === 'taxi' && Math.abs(q.a.y - 2300) < 1 && q.a.x > 2000 && q.a.x < 4400 && Math.abs(q.a.x - 3000) < 900));
+  const d1 = derive(w1); const X1 = runwayExits(d1, d1.runways[0]);
+  console.log('   with the middle links gone:', X1.n, 'exits counted of', X1.all.length, '|', cap(w1), 'an hour');
+  check('with no exit in the stretch the runway takes fewer (24 an hour)', X1.n === 0 && cap(w1) === 24);
+  // a stub that leads nowhere is no exit
+  const w2 = sampleWorld(); for (const x of [2800, 3050]) w2.ways.push({ id: w2.nextId++, kind: 'taxi', a: { x, y: 2300 }, b: { x, y: 2260 }, cls: 2, lanes: 0 });
+  const d2 = derive(w2); const X2 = runwayExits(d2, d2.runways[0]); console.log('   with two 40 m stubs into the grass:', X2.n, 'exits counted |', cap(w2), 'an hour');
+  check('a stub that ends in the grass does not count', X2.n === 2 && cap(w2) === 30); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
