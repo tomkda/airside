@@ -1,7 +1,8 @@
 // v0.59: the advisor. It reads the day (the schedule's turned-away flights, the airfield's holds, each module's level
 // of service) and says what is holding the airport back, worst first, each with the one upgrade that would lift it.
 // Pure: it reads the sim and decides nothing about cost or room; ui.ts works those out and lays the upgrade.
-import { TUNE, ZONES, LOS } from './config';
+import { TUNE, ZONES, LOS, EXITS, CLASSES, WEATHER } from './config';
+import { runwayExits } from './airfield';
 import type { Sim } from './sim';
 import type { Zone } from './world';
 import { Pt } from './geom';
@@ -9,12 +10,12 @@ import { losDay } from './los';
 import { heart } from './shapes';
 import { wayMid } from './ways';
 
-export type AdviceKind = 'stands' | 'extend' | 'parallel' | 'staff' | 'desks' | 'grow' | 'info';
+export type AdviceKind = 'stands' | 'extend' | 'parallel' | 'staff' | 'desks' | 'grow' | 'exit' | 'info';
 export interface Advice {
   /** stable while the cause stands, so a button finds it again */
   key: string; kind: AdviceKind; title: string; why: string;
   /** what it bears on, and where to look */
-  zone?: number; way?: number; at?: Pt;
+  zone?: number; way?: number; runway?: number; at?: Pt;
   /** stands to build, staff to hire (0: only its dial is raised), desks to fit; `need` the desks the module should have staffed */
   n?: number; need?: number; pool?: 'agents' | 'screeners' | 'officers' | 'handlers';
   weight: number;
@@ -43,9 +44,14 @@ export function advise(sim: Sim): Advice[] {
   }
   // ---- the runway
   if (p.rejectedRunway > 0) {
+    // v0.63: an exit where landing aircraft can use it comes before a second runway
+    const short = d.runways.filter(r => r.cls >= 0).map(r => ({ r, X: runwayExits(d, r) })).filter(q => q.X.n < EXITS.factor.length - 1).sort((p, q) => p.X.n - q.X.n)[0];
+    if (short) { const { r, X } = short; const per = 60 / TUNE.separationMin; const wx = WEATHER[sim.weather].cap; const now = Math.floor(per * X.factor), then = Math.floor(per * EXITS.factor[X.n + 1]);
+      out.push({ key: 'exit' + r.rw.id, kind: 'exit', runway: r.rw.id, at: { x: (r.rw.a.x + r.rw.b.x) / 2, y: (r.rw.a.y + r.rw.b.y) / 2 }, weight: p.rejectedRunway * 8 + 1,
+        title: `A rapid exit for Runway ${r.labels[0]}/${r.labels[1]}`, why: `${plural(p.rejectedRunway, 'flight')} today found no slot in the peak hours. Landing ${X.fromA ? r.labels[0] : r.labels[1]}, the runway has ${X.n ? plural(X.n, 'exit') : 'no exit'} between ${Math.round(X.lo).toLocaleString()} and ${Math.round(X.hi).toLocaleString()} m from the threshold, where ${CLASSES[X.cls].example}s have slowed enough to turn off: it takes ${now} movements an hour${wx < 1 ? ` (${Math.floor(now * wx)} in today's ${WEATHER[sim.weather].label.toLowerCase()})` : ''}, and one more exit there makes it ${then}.` }); }
     const rw = d.runways[0];
-    out.push({ key: 'runway', kind: 'info', at: rw ? { x: (rw.rw.a.x + rw.rw.b.x) / 2, y: (rw.rw.a.y + rw.rw.b.y) / 2 } : undefined, weight: p.rejectedRunway * 8,
-      title: 'A second runway', why: `${plural(p.rejectedRunway, 'flight')} today found no slot in the peak hours: one runway takes a movement every ${TUNE.separationMin} minutes. A second, parallel and ${TUNE.dependentSpacing} m or more away, doubles that; closer, or crossing, adds less.` });
+    if (!short) out.push({ key: 'runway', kind: 'info', at: rw ? { x: (rw.rw.a.x + rw.rw.b.x) / 2, y: (rw.rw.a.y + rw.rw.b.y) / 2 } : undefined, weight: p.rejectedRunway * 8,
+      title: 'A second runway', why: `${plural(p.rejectedRunway, 'flight')} today found no slot in the peak hours: one runway takes about a movement every ${TUNE.separationMin} minutes. A second, parallel and ${TUNE.dependentSpacing} m or more away, doubles that; closer, or crossing, adds less.` });
   }
   if (p.rejectedAircraft > 0) out.push({ key: 'aircraft', kind: 'info', weight: p.rejectedAircraft * 6, title: 'Larger aircraft',
     why: `${plural(p.rejectedAircraft, 'flight')} today ${p.rejectedAircraft === 1 ? 'was' : 'were'} flown by aircraft nothing here can take${p.wantsSJ ? ` (${p.wantsSJ} by A380: a 3,000 m runway, Code F taxiways all the way, and A380 stands)` : ''}. Lengthen the runway, widen the taxiways on the way, or size a concourse for them.` });

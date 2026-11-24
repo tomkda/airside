@@ -1373,7 +1373,7 @@ export const segDistWay = (p: Pt, w: { a: Pt; b: Pt; c?: Pt }) => wayDist(p, w);
 
 // ------------------------------------------------------------ auto-connect: taxiways drawn beside a runway
 export type WaySpec = { a: Pt; b: Pt; cls: number };
-const landsFromA = (heading: number) => Math.abs(((SITE.windFrom - heading + 540) % 360) - 180) <= 90;
+export const landsFromA = (heading: number) => Math.abs(((SITE.windFrom - heading + 540) % 360) - 180) <= 90;
 const PAR_MIN = 90, PAR_MAX = 450;   // parallel taxiway offset from runway centreline, m
 
 /** Along-runway positions of taxiways that already touch this runway. */

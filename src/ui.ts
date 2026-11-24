@@ -21,6 +21,8 @@ const cutShape = (k: Cut) => ({ ...polyBox(k.pts), poly: k.pts });
 import { AREA, CURVE_MIN } from './config';
 import { Los, losKind, losDay, losNow, losFix } from './los';
 import { Advice, advise } from './advisor';
+import { runwayExits, rapidExit } from './airfield';
+import { EXITS } from './config';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { parallelTaxi, canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
 import { holdScenery } from './scenery';
@@ -2162,6 +2164,15 @@ export class UI {
       const cov = windSamples().filter(w => runwayUsable(r, w)).length / windSamples().length;
       const usable = runwayUsable(r, s.wind);
       const ladder = CLASSES.map(c => `<li class="${r.length >= c.minRunway ? 'yes' : 'no'}"><b>${c.example}</b><span>${c.minRunway.toLocaleString()} m</span></li>`).join('');
+      const X = runwayExits(s.d, r); const per = 60 / TUNE.separationMin; const more = r.cls >= 0 && X.n < EXITS.factor.length - 1 ? rapidExit(this.world, s.d, r, s.d.aprons) : null;
+      const exits = r.cls < 0 ? '' : `<h3>Exits</h3>
+        <dl class="kv">
+          <dt>Landing ${X.fromA ? r.labels[0] : r.labels[1]}</dt><dd>${CLASSES[X.cls].example}s turn off ${n0(X.lo)}–${n0(X.hi)} m on</dd>
+          <dt>Exits in that stretch</dt><dd class="${X.n < 2 ? 'bad' : ''}">${X.n}${X.at.length ? ` · at ${X.at.map(q => n0(q)).join(', ')} m` : ''}</dd>
+          <dt>Movements an hour</dt><dd>${Math.floor(per * X.factor)}${X.n < EXITS.factor.length - 1 ? ` · ${Math.floor(per * EXITS.factor[X.n + 1])} with one more` : ' · the most one runway takes'}</dd>
+        </dl>
+        ${more ? ('why' in more ? `<p class="muted small">No exit can be added in one step: ${esc(more.why)}.</p>` : `<button class="btn" data-act="rwExit">Add ${more.rapid ? 'a rapid exit' : 'an exit'} · ${money(more.cost)}</button>`) : ''}
+        <p class="muted small">An aircraft that finds an exit where it has slowed clears the runway for the next; one that rolls on to the end holds it. Exits count when they are in the stretch and ${EXITS.apart} m apart (FAA AC 150/5060-5).</p>`;
       return `
         <h2><span class="des">${r.labels[0]}<i>/</i>${r.labels[1]}</span> Runway</h2>
         <dl class="kv">
@@ -2172,6 +2183,7 @@ export class UI {
           <dt>Taxiway links</dt><dd class="${r.nodes.length > 2 || s.d.air.adj[r.nodeA]?.length > 1 ? '' : 'bad'}">${Math.max(0, r.nodes.length - 2 + [r.nodeA, r.nodeB].filter(n => n >= 0 && s.d.air.adj[n].length > 1).length)}</dd>
         </dl>
         <h3>Aircraft it can serve</h3><ul class="ladder">${ladder}</ul>
+        ${exits}
         <p class="muted">Drag either end on the map to extend or shorten the runway; parallel taxiways stretch with it. Planes exit onto the first connected taxiway after their landing roll.</p>
         <button class="btn danger" data-act="demolish">Demolish runway</button>`;
     }
@@ -2485,6 +2497,11 @@ export class UI {
       const par = parallelTaxi(this.world, w, s.d.aprons); if ('why' in par) return par.has ? null : { why: par.why.toLowerCase() };
       return { label: 'Lay it', cost: par.len * TAXI_CLASSES[w.cls >= 3 ? 1 : 0].costPerM, run: () => this.layParallel(w) };
     }
+    if (a.kind === 'exit') {
+      const r = s.d.runways.find(q => q.rw.id === a.runway); if (!r) return null;
+      const x = rapidExit(this.world, s.d, r, s.d.aprons); if ('why' in x) return { why: x.why };
+      return { label: x.rapid ? 'Lay it' : 'Lay a square exit', cost: x.cost, run: () => this.layExit(r.rw.id) };
+    }
     if (a.kind === 'staff' && z && a.pool) {
       const pool = a.pool; const cap = { agents: 200, screeners: 240, handlers: 160, officers: 80 }[pool];
       const n = Math.min(a.n ?? 0, cap - (s.staff[pool] ?? 0));
@@ -2547,6 +2564,16 @@ export class UI {
       return { label: `Fit ${to - u.count}`, cost: 0, run: () => { z.units = to; this.changed(); this.toast(`${ZONES[z.type].short}: ${to} ${ZONES[z.type].unit} fitted. Staff them in Operations.`); } };
     }
     return null;
+  }
+  /** v0.63: one more exit for a runway, where landing aircraft can take it. */
+  layExit(id: number) {
+    const s = this.sim; const r = s.d.runways.find(q => q.rw.id === id); if (!r) return;
+    const x = rapidExit(this.world, s.d, r, s.d.aprons); if ('why' in x) { this.toast(`No exit laid: ${x.why}`, 'warn'); return; }
+    if (!s.canAfford(x.cost)) { this.toast(`That costs ${money(x.cost)}`, 'bad'); return; }
+    s.spend(x.cost);
+    this.world.ways.push({ id: this.world.nextId++, kind: 'taxi', a: x.way.a, b: x.way.b, cls: x.way.cls, lanes: 0 });
+    this.changed(); const r1 = s.d.runways.find(q => q.rw.id === id) ?? r; const X = runwayExits(s.d, r1);
+    this.toast(`${x.rapid ? 'Rapid exit' : 'Exit'} laid ${Math.round(x.s).toLocaleString()} m from the threshold: the runway now takes ${Math.floor(60 / TUNE.separationMin * X.factor)} movements an hour`);
   }
   layParallel(w: Way) {
     const par = parallelTaxi(this.world, w, this.sim.d.aprons); if ('why' in par) { this.toast(`No room for a parallel taxiway: ${par.why}`, 'warn'); return; }
@@ -2909,6 +2936,8 @@ export class UI {
       if (c > cur && !pay((c - cur) * floorArea(z) * 350)) return;
       z.cls = c; z.units = undefined; this.changed();
       { const n = s.d.units.get(z.id)?.count ?? 0, idle = this.idleStands(z).length; this.toast(`Concourse sized for ${CLASSES[c].example}: ${n} gate${n === 1 ? '' : 's'}${idle ? ` · ${idle} smaller stand${idle > 1 ? 's' : ''} no longer fit: build stands of the new size` : ''}`); }
+    } else if (a === 'rwExit' && this.ren.selected?.kind === 'runway') {
+      const id = this.ren.selected.id; this.layExit(id); this.ren.selected = { kind: 'runway', id }; this.refresh(true);
     } else if (a === 'taxiPar' && w && w.kind === 'taxi') {
       // v0.58: one click lays a second taxiway beside this one
       this.layParallel(w); this.ren.selected = { kind: 'way', id: w.id }; this.refresh(true);

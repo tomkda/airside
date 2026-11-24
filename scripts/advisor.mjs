@@ -48,6 +48,15 @@ const show = (name, list) => console.log(name + ':', list.length ? list.map(a =>
   const sim = day(w, s => { s.staff.screeners = 60; }); const A = advise(sim); show('a 16 m wide security checkpoint', A);
   const L = sim.d.units.get(sec.id); console.log('   lanes that fit:', L.max, '| staffed', sim.procs.get(sec.id).servers);
   check('a module with every desk at work and no room for more brings the advice to enlarge or upgrade it', A.some(a => a.kind === 'grow' && a.zone === sec.id)); }
+// 7. a runway with no exit where landing aircraft slow, and more flights wanted than it takes: a rapid exit
+{ const w = sampleWorld(); w.ways = w.ways.filter(q => !(q.kind === 'taxi' && Math.abs(q.a.y - 2300) < 1 && Math.abs(q.a.x - 3200) < 900));
+  // (on a day of fog, when the runway takes 60% of its rate: the first one that seed has)
+  let sim, k = 0; do { k++; sim = new Sim(w, 7); sim.relayout(); sim.addBank('meridian', 7); sim.addBank('larkspur', 7); sim.day = k; sim.startDay(); } while (sim.weather !== 'fog' && k < 200);
+  { const d0 = sim.day; while (sim.day === d0 && sim.t % 1440 < 1425) sim.step(0.25); }
+  const A = advise(sim); show('no exit in the stretch, two banks in one hour and fog (day ' + k + ')', A);
+  console.log('   turned away for the runway', sim.plan.rejectedRunway, '| gates', sim.plan.rejectedGates);
+  const ex = A.find(a => a.kind === 'exit');
+  check('flights turned away for the runway bring the advice to add a rapid exit, not a second runway', sim.plan.rejectedRunway > 0 && !!ex && ex.runway === sim.d.runways[0].rw.id && !A.some(a => a.key === 'runway')); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
 `;
