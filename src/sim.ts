@@ -480,9 +480,10 @@ export class Sim {
     const usable = d.runways.filter(r => r.cls >= 0 && runwayUsable(r, prevailing));
     const capHr = this.capacityPerHour(usable.length ? usable : d.runways.filter(r => r.cls >= 0).slice(0, 1)) * WEATHER[this.weather].cap;
     const perHour = new Map<number, number>();
-    const gateFree = new Map<string, number>(); const bankTerm = new Map<number, Terminal>();
+    const gateFree = new Map<string, number>(); const bankTerm = new Map<number, Terminal>(); const bankGate = new Map<number, Gate>();
     const flightNo = new Map<string, number>();
-    for (const c of cands) {
+    // (v0.71: a bank's flights are placed first, so that they can stand together; with no bank the order is as it was)
+    for (const c of [...cands.filter(q => q.bank), ...cands.filter(q => !q.bank)]) {
       const ac = CLASSES[c.cls];
       const dep = c.bank ? Math.max(c.arr + ac.turn + 5, Math.round(c.bank.hour * 60 + BANK.window + BANK.connect + (c.k ?? 0) * BANK.stagger)) : c.arr + ac.turn + 5;
       const hA = Math.floor(c.arr / 60), hD = Math.floor(dep / 60);
@@ -491,10 +492,16 @@ export class Sim {
       const home = open.length ? open[AIRLINES.indexOf(c.airline) % open.length] : undefined;
       // (v0.60: a bank keeps to the terminal its first flight was given, so its passengers can walk between its gates)
       const mine = c.bank ? bankTerm.get(c.bank.id) ?? home : home;
-      const rank = (g: Gate) => g.cls * 10 + (d.termOf.get(g.zone.id) === mine ? 0 : c.bank ? 5 : 1);
+      // v0.71: and its flights keep their gates together: the first takes the gate nearest the middle of its terminal's
+      // gates on foot, the rest the free gates nearest that one (within a size and a terminal, never before either)
+      const anchor = c.bank ? bankGate.get(c.bank.id) : undefined;
+      const near = (g: Gate) => { if (!c.bank) return 0; if (anchor) { const w = this.gateWalk(anchor, g); return isFinite(w) ? Math.min(0.9, w / 30) : 0.95; }
+        const T = d.termOf.get(g.zone.id); const gs = d.gates.filter(o => d.termOf.get(o.zone.id) === T); let sum = 0; for (const o of gs) { const w = this.gateWalk(g, o); sum += isFinite(w) ? w : 30; }
+        return Math.min(0.9, sum / Math.max(1, gs.length) / 30); };
+      const rank = (g: Gate) => g.cls * 10 + (d.termOf.get(g.zone.id) === mine ? 0 : c.bank ? 5 : 1) + near(g);
       const gate = d.gates.filter(g => d.gateUsable(g, c.cls) && (!c.airline.intl || d.termOf.get(g.zone.id)?.intl)).sort((p, q) => rank(p) - rank(q)).find(g => (gateFree.get(g.id) ?? 0) + 8 <= c.arr);
       if (!gate) { plan.rejectedGates++; if (c.bank) plan.bankLost++; continue; }
-      gateFree.set(gate.id, dep); if (c.bank && !bankTerm.has(c.bank.id)) { const T = d.termOf.get(gate.zone.id); if (T) bankTerm.set(c.bank.id, T); }
+      gateFree.set(gate.id, dep); if (c.bank && !bankGate.has(c.bank.id)) bankGate.set(c.bank.id, gate); if (c.bank && !bankTerm.has(c.bank.id)) { const T = d.termOf.get(gate.zone.id); if (T) bankTerm.set(c.bank.id, T); }
       perHour.set(hA, (perHour.get(hA) ?? 0) + 1); perHour.set(hD, (perHour.get(hD) ?? 0) + 1);
       const no = (flightNo.get(c.airline.iata) ?? (100 + Math.floor(this.r() * 300))) + 7;
       flightNo.set(c.airline.iata, no);

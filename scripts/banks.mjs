@@ -66,13 +66,18 @@ check('nearly all make their connection, nobody is stranded and nothing is cance
   check('the sample changes between its furthest gates in the fixed ' + BANK.mct + ' min and a walk of 3 to 12 min, well inside a bank', m.walk > 3 && m.walk < 12 && Math.abs(m.min - BANK.mct - m.walk) < 1e-9 && m.min < BANK.window + BANK.connect);
   const R0 = run(sampleWorld(), s => { s.addBank('meridian', 7); });
   check('so every connection of its morning bank is sold, as before', R0.plan.bankTooFar === 0 && R0.st.xfer > 300);
-  // the same bank with no time on the ground between its last arrival and first departure: the walk no longer fits
-  const keep = { connect: BANK.connect, window: BANK.window }; BANK.connect = 0; BANK.window = 20;
+  // v0.71: the bank's flights stand together: the walk between its furthest gates is well under the terminal's
+  { const gs = [...new Set(R0.flights.filter(f => f.bank !== undefined).map(f => f.gate))]; let far = 0; for (const p of gs) for (const q of gs) far = Math.max(far, R0.sim.gateWalk(p, q));
+    console.log('   the bank stands at', gs.map(g => g.num).sort().join(' '), '| furthest apart', far.toFixed(1), 'min on foot (the terminal:', m.walk.toFixed(1) + ')');
+    check('a bank keeps its gates together: eight gates no further apart than 70% of the furthest pair in the terminal', gs.length === 8 && far <= m.walk * 0.7); }
+  // the same bank where a change takes 55 minutes before the walk (as it might through passport control): it no longer
+  // fits between every pair of flights
+  const keep = BANK.mct; BANK.mct = 55;
   const R1 = run(sampleWorld(), s => { s.addBank('meridian', 7); }); const A1 = advise(R1.sim).find(a => a.key === 'mct');
   // (the advice reads today's plan: the day after, with the same bank)
   const sim2 = new Sim(sampleWorld(), 7); sim2.moneyOn = false; sim2.relayout(); sim2.addBank('meridian', 7); sim2.startDay(); const A2 = advise(sim2).find(a => a.key === 'mct');
-  BANK.connect = keep.connect; BANK.window = keep.window;
-  console.log('   a bank with no time on the ground:', R1.plan.bankTooFar, 'connections not sold |', R1.st.xfer, 'connected (', R0.st.xfer, 'with the usual 40 min) | advice:', A2 ? A2.title : 'none');
+  BANK.mct = keep;
+  console.log('   a bank where a change takes 55 min and the walk:', R1.plan.bankTooFar, 'connections not sold |', R1.st.xfer, 'connected (', R0.st.xfer, 'with the usual 28 min) | advice:', A2 ? A2.title : 'none');
   check('connections whose walk does not fit are not sold, fewer change aircraft, and the advisor says the gates are too far apart', R1.plan.bankTooFar > 0 && R1.st.xfer < R0.st.xfer && !!A2 && /furthest gates/.test(A2.why)); }
 console.log(bad ? bad + ' CHECK(S) FAILED' : 'all checks passed');
 if (bad) process.exit(1);
