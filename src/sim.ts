@@ -86,6 +86,8 @@ export interface PlanInfo {
   limit: string; loadFactor: number;
   /** v0.60: bank flights asked for today, and those of them turned away */
   bankAsked: number; bankLost: number;
+  /** v0.70: connections not offered because the walk between the two gates would not fit the time between the flights */
+  bankTooFar: number;
 }
 export interface Report { label: string; day: number; stats: DayStats; plan: PlanInfo; profit: number; sat: number; onTime: number; money: number; periodDays: number }
 
@@ -244,9 +246,24 @@ export class Sim {
   canAfford(amount: number) { return !this.moneyOn || this.money >= amount; }
 
   // ---------------------------------------------------------------- layout changes
+  /** v0.70: minutes on foot (and by people mover) from one gate's door to another's; Infinity with no way. */
+  private walkCache = new Map<string, number>();
+  gateWalk(a: Gate, b: Gate): number {
+    if (a === b) return 0; const k = a.id < b.id ? a.id + '|' + b.id : b.id + '|' + a.id; let v = this.walkCache.get(k);
+    if (v === undefined) { const r = this.d.pedRoute(a.door, a.zone.level, b.door, b.zone.level); v = r ? r.len / TUNE.walkSpeed : Infinity; this.walkCache.set(k, v); }
+    return v;
+  }
+  /** The minimum connecting time between two gates: the fixed part and the walk. */
+  mct(a: Gate, b: Gate) { return BANK.mct + this.gateWalk(a, b); }
+  /** A terminal's minimum connecting time: between its two gates furthest apart on foot (0 with fewer than two). */
+  terminalMct(T: Terminal): { min: number; walk: number } {
+    const gs = this.d.gates.filter(g => this.d.termOf.get(g.zone.id) === T); let walk = 0;
+    for (let i = 0; i < gs.length; i++) for (let j = i + 1; j < gs.length; j++) { const w = this.gateWalk(gs[i], gs[j]); if (isFinite(w)) walk = Math.max(walk, w); }
+    return { min: gs.length > 1 ? BANK.mct + walk : 0, walk };
+  }
   relayout() {
     this.d = derive(this.world);
-    this.airCache.clear(); this.roadCache.clear(); this.shopLoad.clear();
+    this.airCache.clear(); this.roadCache.clear(); this.shopLoad.clear(); this.walkCache.clear();
     for (const f of this.flights) f.route = undefined;   // (v0.58: the airfield's nodes are new ones)
     this.roadLoad = new Float32Array(this.d.road.edges.length);
     // v0.11: how much of its length each road edge can use. Traffic stops and starts at a crossroads or T, so an
@@ -418,7 +435,7 @@ export class Sim {
     const lfRef = clamp(0.66 + 0.18 * this.rep, 0.6, 0.93);
     const plan: PlanInfo = {
       demand: 0, byAirline: [], rejectedGates: 0, rejectedRunway: 0, rejectedAircraft: 0, rejectedIntl: 0, wantsSJ: 0,
-      scheduled: 0, limit: '', loadFactor: lfRef, bankAsked: 0, bankLost: 0,
+      scheduled: 0, limit: '', loadFactor: lfRef, bankAsked: 0, bankLost: 0, bankTooFar: 0,
     };
     const operable = [0, 1, 2, 3].map(c => d.gates.some(g => d.gateUsable(g, c)));
     type Cand = { airline: Airline; cls: Cls; arr: number; bank?: Bank; k?: number };
@@ -499,6 +516,8 @@ export class Sim {
         for (let k = 0, j = 0; k < n && j < n * 4; j++) { const Y = F[(i + 1 + (j % (F.length - 1))) % F.length];
           // (only to a gate in the same terminal: there is no walking airside from one terminal to another)
           if (d.termOf.get(Y.gate.zone.id) !== d.termOf.get(X.gate.zone.id)) continue;
+          // v0.70: and only where the walk fits: off this aircraft, across to that gate, there before its doors close
+          if (Y.schedDep - X.schedArr < this.mct(X.gate, Y.gate)) { plan.bankTooFar++; continue; }
           if ((Y.xferIn ?? 0) + 1 > Y.paxDep * BANK.maxIn) continue; Y.xferIn = (Y.xferIn ?? 0) + 1; X.xferOut.push(Y); k++; } });
     }
     for (const f of this.flights) f.bagsArr = Math.round((f.paxArr - (f.xferOut?.length ?? 0)) * 0.62);

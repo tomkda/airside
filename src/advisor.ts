@@ -1,7 +1,7 @@
 // v0.59: the advisor. It reads the day (the schedule's turned-away flights, the airfield's holds, each module's level
 // of service) and says what is holding the airport back, worst first, each with the one upgrade that would lift it.
 // Pure: it reads the sim and decides nothing about cost or room; ui.ts works those out and lays the upgrade.
-import { TUNE, ZONES, LOS, CLASSES, WEATHER } from './config';
+import { TUNE, ZONES, LOS, BANK, CLASSES, WEATHER } from './config';
 import { runwayExits, rapidExit, exitFactor } from './airfield';
 import type { Sim } from './sim';
 import type { Zone } from './world';
@@ -58,6 +58,10 @@ export function advise(sim: Sim): Advice[] {
     why: `${plural(p.rejectedAircraft, 'flight')} today ${p.rejectedAircraft === 1 ? 'was' : 'were'} flown by aircraft nothing here can take${p.wantsSJ ? ` (${p.wantsSJ} by A380: a 3,000 m runway, Code F taxiways all the way, and A380 stands)` : ''}. Lengthen the runway, widen the taxiways on the way, or size a concourse for them.` });
   // ---- connections missed (v0.60)
   { const st = sim.stats.xfer >= 20 ? sim.stats : sim.history[sim.history.length - 1]?.stats;
+    // v0.70: connections the schedule could not offer at all: the gates are too far apart for the time between the flights
+    if (p.bankTooFar > 0) { const T = d.terminals.filter(q => q.active).map(q => ({ q, m: sim.terminalMct(q) })).sort((x, y) => y.m.min - x.m.min)[0];
+      out.push({ key: 'mct', kind: 'info', weight: 50 + Math.min(40, p.bankTooFar / 10), title: 'Gates too far apart to connect',
+        why: `${p.bankTooFar} connection${p.bankTooFar === 1 ? ' was' : 's were'} not sold today: the walk between the two gates would not fit between the flights.${T ? ` ${T.q.name} needs ${Math.round(T.m.min)} minutes for a change between its furthest gates (${Math.round(T.m.walk)} of them walking); a bank leaves ${BANK.window + BANK.connect} at most.` : ''} Keep a bank's gates together, shorten the way between them (a concourse over 300 m gets moving walkways, a satellite its people mover), or build stands nearer the middle.` }); }
     if (st && st.xfer >= 20 && st.xferMissed > st.xfer * 0.05) out.push({ key: 'xfer', kind: 'info', weight: 60 + st.xferMissed, title: 'Connections are being missed',
       why: `${st.xferMissed} of ${st.xfer} connecting passengers saw their onward flight leave without them. Their aircraft landed late or stood on a taxiway, or the walk between gates is too long: keep a bank's gates together, clear the taxiways, or link the concourses.` }); }
   if (p.rejectedIntl > 0) out.push({ key: 'intl', kind: 'info', weight: p.rejectedIntl * 6, title: 'Passport control',
