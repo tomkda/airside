@@ -97,9 +97,14 @@ const path = require('path');
   const sx = await p.evaluate(() => { const g = window.__game; g.ren.selected = { kind: 'site', id: g.sim.world.sites[0].id }; g.ui.tab = 'inspect'; g.ui.refresh(true);
     const btn = document.querySelector('[data-act="section"]'); if (btn) btn.click(); const el = document.getElementById('section');
     const open = !!el && !el.hidden && !!el.querySelector('svg'), txt = el ? el.textContent : '', line = !!g.ren.section;
-    const b2 = document.querySelector('[data-act="section"]'); if (b2) b2.click(); return { had: !!btn, open, named: /SECTION A–A/.test(txt) && /CHECK-IN/.test(txt), line, shut: !!el && el.hidden && !g.ren.section }; });
+    // v0.69: a cut placed by hand is drawn, and the terminal's own comes back at a click
+    const s0 = g.ren.section; g.ui.sectionCut = { a: { x: 2700, y: 2850 }, b: { x: 3400, y: 2850 } }; g.ui.refresh(true);
+    const placed = /THE CUT AS PLACED/.test(el.textContent) && Math.abs(g.ren.section.a.x - 2700) < 1; const own = el.querySelector('[data-sec="own"]'); if (own) own.click();
+    const back = !g.ui.sectionCut && Math.abs(g.ren.section.a.x - s0.a.x) < 1 && !!el.querySelector('[data-sec="place"]');
+    const b2 = document.querySelector('[data-act="section"]'); if (b2) b2.click(); return { had: !!btn, open, placed, back, named: /SECTION A–A/.test(txt) && /CHECK-IN/.test(txt), line, shut: !!el && el.hidden && !g.ren.section }; });
   console.log('section drawer:', JSON.stringify(sx));
   check('the terminal inspector draws a section, marks its line on the plan, and puts it away again', sx.had && sx.open && sx.named && sx.line && sx.shut);
+  check('a cut placed by hand is drawn in its place, and the terminal\'s own comes back at a click', sx.placed && sx.back);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();

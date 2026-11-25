@@ -31,7 +31,16 @@ export function sectionOf(world: World, d: Derived, site: Site): Section | null 
   let dir: Pt; let end: Pt;
   if (g) { dir = norm(sub(g.stand, O)); end = add(g.stand, mul(dir, CLASSES[g.cls].length + 170)); }
   else { const t = conc ? heart(conc) : { x: O.x, y: O.y - 1 }; dir = norm(sub(t, O)); end = add(conc ? t : O, mul(dir, 220)); }
-  const a = add(O, mul(dir, -260)), b = end; const len = dist(a, b);
+  const sec = sectionAlong(world, d, add(O, mul(dir, -260)), end, T.name, g);
+  return sec;
+}
+
+/** v0.69: the cut along any line: what it passes through and crosses from a to b. `g`: the gate whose aircraft to show;
+ *  with none given, the first stand the line runs along (its door and stand both within 10 m of it). */
+export function sectionAlong(world: World, d: Derived, a: Pt, b: Pt, name: string, g0?: Derived['gates'][number]): Section {
+  const len = dist(a, b); const dir = norm(sub(b, a));
+  const off = (p: Pt) => Math.abs((p.x - a.x) * dir.y - (p.y - a.y) * dir.x), along = (p: Pt) => (p.x - a.x) * dir.x + (p.y - a.y) * dir.y;
+  const g = g0 ?? d.gates.filter(q => off(q.door) < 10 && off(q.stand) < 10 && along(q.door) > 0 && along(q.stand) < len && along(q.stand) > along(q.door)).sort((p, q) => along(p.door) - along(q.door))[0];
   const at = (s: number) => add(a, mul(dir, s));
   // modules: sampled every metre along the cut
   const slabs: SecSlab[] = [];
@@ -59,7 +68,7 @@ export function sectionOf(world: World, d: Derived, site: Site): Section | null 
   // (two crossings of one road within a few metres are one road)
   strips.sort((p, q) => p.s - q.s);
   const merged: SecStrip[] = []; for (const q of strips) { const l = merged[merged.length - 1]; if (l && l.kind === q.kind && Math.abs(l.s - q.s) < 4 && Math.abs(l.z - q.z) < 1) continue; merged.push(q); }
-  const sec: Section = { a, b, len, slabs, strips: merged, name: T.name };
+  const sec: Section = { a, b, len, slabs, strips: merged, name };
   if (g) { const door = dist(a, g.door); const L = CLASSES[g.cls].length; const nose = dist(a, g.stand) - L / 2; sec.aircraft = { s: Math.max(door + 4, nose), len: L, cls: g.cls, door, gate: g.num }; }
   return sec;
 }
