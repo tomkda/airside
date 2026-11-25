@@ -3047,8 +3047,8 @@ function sectionSVG(sec: Section, W: number, H: number): string {
   for (const [z, t] of [[0, 'G ±0'], [LEVELS[1].z0, `L1 +${LEVELS[1].z0}`], [LEVELS[1].z1, `+${LEVELS[1].z1}`]] as [number, string][]) { line(pad - 6, Y(z), W - 10, Y(z), 'rgba(40,36,30,0.18)', 0.7, '2 4'); text(pad - 9, Y(z) + 3, t, 8, 'end', 'rgba(40,36,30,0.7)', 500); }
   // the ground, and what the cut crosses on it
   line(pad - 6, base, W - 10, base, INK, 1.4);
-  const NAME = { road: 'ROAD', taxi: 'TAXIWAY', runway: 'RUNWAY', walk: '', deck: '' } as const;
-  for (const q of sec.strips) if (q.kind !== 'deck') { const x0 = X(q.s - q.w / 2), x1 = X(q.s + q.w / 2);
+  const NAME = { road: 'ROAD', taxi: 'TAXIWAY', runway: 'RUNWAY', walk: '', deck: '', bridge: '' } as const;
+  for (const q of sec.strips) if (q.kind !== 'deck' && q.kind !== 'bridge') { const x0 = X(q.s - q.w / 2), x1 = X(q.s + q.w / 2);
     rect(x0, base, x1, base + 4, q.kind === 'runway' ? '#2a2f3a' : q.kind === 'taxi' ? '#8a857a' : q.kind === 'walk' ? '#cfc8b8' : '#6b665d', 'none', 0);
     if (NAME[q.kind] && x1 - x0 > 9) text((x0 + x1) / 2, base + 15, NAME[q.kind], 7.5, 'middle', 'rgba(40,36,30,0.75)', 600);
     if (q.kind === 'road') for (const o of [-q.w / 4, q.w / 4]) rect(X(q.s + o - 0.9), Y(1.5), X(q.s + o + 0.9), base, '#8d5a46', 'none', 0); }
@@ -3083,6 +3083,11 @@ function sectionSVG(sec: Section, W: number, H: number): string {
     rect(x0, y, x1, y + Math.max(2.5, 0.9 * vk), '#8e8a83');
     for (const o of [-q.w / 4, q.w / 4]) rect(X(q.s + o - 0.9), y - 1.5 * vk, X(q.s + o + 0.9), y, '#7b8a99', 'none', 0);
     if (q.z > 6) text(x1, y - 1.5 * vk - 4, 'DEPARTURES DECK', 7, 'end', 'rgba(40,36,30,0.8)'); }
+  // a footbridge, seen from the side: its deck and glazed sides, a stair tower where it comes down
+  for (const q of sec.strips) if (q.kind === 'bridge' && q.s0 !== undefined && q.s1 !== undefined) { const x0 = X(q.s0), x1 = X(q.s1), y = Y(q.z);
+    rect(x0, y - 2.9 * vk, x1, y, 'rgba(185,202,205,0.55)', INK, 0.7); rect(x0, y, x1, y + Math.max(2, 0.5 * vk), '#d9d2c2'); line(x0, y - 2.9 * vk, x1, y - 2.9 * vk, INK, 1.4);
+    q.towers?.forEach((t, i) => { if (!t) return; const xt = i ? x1 : x0 - 7 * k; rect(xt, y - 3.6 * vk, xt + 7 * k, base, '#e4dccb'); for (let j = 1; j < 5; j++) line(xt, base - (base - y) * j / 5, xt + 7 * k, base - (base - y) * (j - 0.5) / 5, INK, 0.5); });
+    text((x0 + x1) / 2, y - 2.9 * vk - 4, 'FOOTBRIDGE', 7, 'middle', 'rgba(40,36,30,0.8)'); }
   // the aircraft, nose to the building, and its bridge from Level 1
   if (sec.aircraft) { const A = sec.aircraft, g = A.len / 38; const n = A.s, t = A.s + A.len; const belly = 1.9 * g + 0.6, top = belly + 4.1 * g;
     const P = (s: number, z: number) => `${f(X(s))} ${f(Y(z))}`;

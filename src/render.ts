@@ -3,7 +3,7 @@
 // "2.5D" is an oblique projection: y compresses and heights lift toward the top of the screen.
 import { runwayExits } from './airfield';
 import { Pt, Rect, add, mul, sub, norm, clamp, center, dist, sliceLine, offsetLine, polyLen, along, ribbon, segDist } from './geom';
-import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER, LOS, STYLES, Style } from './config';
+import { PAL, SITE, ZONES, LEVELS, Level, TUNE, TAXI_CLASSES, CLASSES, COMMERCE, FRONTAGE, Lod, GROWTH, WeatherKind, MOVER, LOS, STYLES, Style, FOOT } from './config';
 import { Los, losKind, losNow, losDay } from './los';
 import type { Sim, Flight } from './sim';
 import { Zone, Shop, Frame, WayKind, wayWidth, runwayWidth, siteOf, padRect } from './world';
@@ -192,6 +192,7 @@ export class Renderer {
     if (lod !== 'airfield') this.drawWalks(sim);
     this.drawScenery(sim);
     this.drawDecks(sim);
+    this.drawFootbridges(sim);
     this.drawTrain(sim);
     this.drawStands(sim);
     this.drawGateSlots(sim);   // (v0.56: at every level of detail: the places a stand could be built are the invitation)
@@ -1202,6 +1203,23 @@ export class Renderer {
   }
 
   /** Two-level frontage roads: the upper deck over the road, on columns, with ramps at either end. */
+  /** v0.67: footbridges: the sidewalk carried over a road, with its shadow, parapets and a stair tower where it comes down. */
+  drawFootbridges(sim: Sim) {
+    const g = this.ctx; const z = this.cam.zoom; if (z < 0.2) return;
+    for (const fb of sim.d.footbridges) { const dv = norm(sub(fb.b, fb.a)), n = { x: -dv.y, y: dv.x }; const hw = FOOT.width / 2;
+      const quad = (o: Pt) => [add(add(fb.a, mul(n, hw)), o), add(add(fb.b, mul(n, hw)), o), add(add(fb.b, mul(n, -hw)), o), add(add(fb.a, mul(n, -hw)), o)];
+      const sh = fb.z * 0.35; this.poly(quad({ x: sh, y: sh }), 'rgba(40,36,30,0.16)');
+      this.poly(quad({ x: 0, y: 0 }), '#EFE8DA'); g.strokeStyle = 'rgba(40,36,30,0.75)'; g.lineWidth = 1.2;
+      for (const k of [hw, -hw]) { this.path([add(fb.a, mul(n, k)), add(fb.b, mul(n, k))], 0, false); g.stroke(); }
+      if (z > 0.6) { g.strokeStyle = 'rgba(40,36,30,0.22)'; g.lineWidth = 0.8; const L = dist(fb.a, fb.b); for (let s = 3; s < L; s += 3) { const q = add(fb.a, mul(dv, s)); this.path([add(q, mul(n, hw)), add(q, mul(n, -hw))], 0, false); g.stroke(); } }
+      ([fb.a, fb.b] as Pt[]).forEach((p, k) => { if (fb.ends[k] !== 'tower') return;
+        // a stair and lift tower: a square with its flights drawn across it
+        const c = add(p, mul(dv, k ? 3.5 : -3.5)); const box = [add(add(c, mul(dv, 3.5)), mul(n, 4)), add(add(c, mul(dv, 3.5)), mul(n, -4)), add(add(c, mul(dv, -3.5)), mul(n, -4)), add(add(c, mul(dv, -3.5)), mul(n, 4))];
+        this.poly(box.map(q => add(q, { x: sh, y: sh })), 'rgba(40,36,30,0.16)'); this.poly(box, '#E4DCCB'); g.strokeStyle = 'rgba(40,36,30,0.8)'; g.lineWidth = 1.2; this.path(box, 0); g.stroke();
+        if (z > 0.6) { g.lineWidth = 0.7; for (let i = 1; i < 6; i++) { const t = i / 6; this.path([add(add(c, mul(dv, 3.5 - 7 * t)), mul(n, 4)), add(add(c, mul(dv, 3.5 - 7 * t)), mul(n, 0))], 0, false); g.stroke(); } } });
+      if (z > 0.9 && this.lod !== 'airfield' && dist(fb.a, fb.b) > 18) { const rot = Math.atan2(dv.y * this.yScale, dv.x); this.label('FOOTBRIDGE', lerp2(fb.a, fb.b, 0.5), 0, 7, PAL.ink2, { weight: 700, spacing: 1.2, rot: Math.cos(rot) < 0 ? rot + Math.PI : rot }); }
+    }
+  }
   drawDecks(sim: Sim) {
     const z = this.cam.zoom; const g = this.ctx;
     for (const dk of sim.d.decks) {

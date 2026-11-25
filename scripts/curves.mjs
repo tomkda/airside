@@ -151,11 +151,13 @@ for (const [name, extra] of [['a straight tapered pier', { taper: 40, h: 60, y: 
   check('a path is one building: no people mover, and the far leg has working gates', T && T.active && T.gateAreas === 4 && d.trainLinks.filter(l => l.apm).length === 0 && g2.length >= 6 && g2.every(g => g.rwys[0].size > 0)); }
 { // two days of flying from the bent pier alone
   const { w, z } = mk(-110, { w: 420 });
+  // (v0.67: someone on a footbridge is on the upper level and in no building, and is where they should be)
+  const onBridge = (sm, p) => sm.d.footbridges.some(fb => { const dx = fb.b.x - fb.a.x, dy = fb.b.y - fb.a.y, t = Math.max(0, Math.min(1, ((p.x - fb.a.x) * dx + (p.y - fb.a.y) * dy) / (dx * dx + dy * dy || 1))); return Math.hypot(p.x - fb.a.x - dx * t, p.y - fb.a.y - dy * t) < 4; });
   const sim = new Sim(w, 7); const main = sim.world.zones.find(q => q.type === 'concourse' && q !== z); sim.relayout(); main.off = sim.d.gateSlots.filter(q => q.zone.id === main.id).map(q => q.key);   // every stand of the main concourse, whatever it is called
   sim.relayout(); sim.startDay(); let outside = 0, seen = 0, tick = 0; const used = new Set(); let st = null;
   sim.onDayEnd = r => { st = r.stats; console.log('flying:', r.label, '| flights', st.flights, '(' + used.size + ' at the bent pier so far)', 'missed', st.missed, 'stranded', st.stranded, '| people seen in the pier', seen, '(outside any building: ' + outside + ')'); };
   while (sim.day < 2) { sim.step(0.25); for (const f of sim.flights) if (f.gate && f.gate.zone.id === z.id) used.add(f.id);
-    if (tick++ % 8 === 0) for (const p of sim.pax) if (p.level === 1 && !p.ride) { if (inZone(p, z, 1)) seen++; else if (!sim.d.zones.some(q => q.level === 1 && inZone(p, q, 4))) outside++; } }
+    if (tick++ % 8 === 0) for (const p of sim.pax) if (p.level === 1 && !p.ride) { if (inZone(p, z, 1)) seen++; else if (!sim.d.zones.some(q => q.level === 1 && inZone(p, q, 4)) && !onBridge(sim, p)) outside++; } }
   check('every flight uses the bent pier', used.size >= st.flights && st.flights > 10);
   check('nobody stranded and nobody outside a building', st.stranded === 0 && outside === 0 && seen > 1000);
   check('nobody misses a flight', st.missed === 0); }

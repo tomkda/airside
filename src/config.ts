@@ -180,6 +180,12 @@ export const ROAD_LANES = [
   { lanes: 4, name: '4 lanes', width: 16, costPerM: 6500 },
 ];
 export const WALK = { width: 4, costPerM: 900 };
+/** v0.67: footbridges. A sidewalk that crosses a road of four lanes or more, a forecourt road, a ramp or a deck is
+ *  carried over it. `clear`: headroom over what it crosses (pedestrian overpasses are built about 5.2–5.7 m over a
+ *  road: AASHTO asks 17 ft, a foot more than a road bridge; from memory, not checked). `land`: how far beyond the road's
+ *  edge it comes down; crossings within `join` m share one bridge; an end within `snap` m of the sidewalk's own end runs
+ *  on to it. `stairs`: the walk a stair and lift tower is worth, in metres. */
+export const FOOT = { clear: 5.5, land: 9, join: 30, snap: 16, width: 4.5, stairs: 20 };
 // v0.11. Roundabouts follow FHWA's "Roundabouts: An Informational Guide" (NCHRP Report 672, ch. 6): an inscribed
 // circle of 27–55 m for one circulating lane and 46–67 m for two, with 4.3–4.9 m per circulating lane plus a
 // truck apron round the island. Capacity is in the same guide's planning range: about 1,800 vehicles an hour

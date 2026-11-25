@@ -69,6 +69,35 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
     const main = d.decks.find(q => !q.branch); const endZ = [main.zs[0], main.zs[main.zs.length - 1]], wide = Math.max(...main.ws);
     check('its deck stays level at the far end and widens into a turning head (' + wide + ' m)', endZ.filter(v => v === 1).length === 1 && wide >= 30);
     const sim = flyDay(w, 'a day on the trumpet'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000); }
+  // v0.67: footbridges: the car park's sidewalk is carried over the forecourt, and lands at the hall with a way to both levels
+  { const w = sampleWorld(); const d = derive(w); const fb = d.footbridges[0]; const ci = w.zones.find(z => z.type === 'checkin'), cl = w.zones.find(z => z.type === 'claim'), pk = w.zones.find(z => z.type === 'parking');
+    const c = z => ({ x: z.x + z.w / 2, y: z.y + z.h / 2 }); const onB = r => !!r && r.pts.some((p, i) => r.lvs[i] === 1 && Math.hypot(p.x - fb.a.x, p.y - fb.a.y) < 2);
+    const up = d.pedRoute(c(pk), 0, c(ci), 1), down = d.pedRoute(c(cl), 0, c(pk), 0);
+    console.log('footbridges:', d.footbridges.length, fb ? 'z ' + fb.z + ' m, ' + Math.round(Math.hypot(fb.b.x - fb.a.x, fb.b.y - fb.a.y)) + ' m long, ' + fb.ends.join(' to ') : '', '| zebra crossings', d.crosswalks.length, '| car park to check-in', up ? Math.round(up.len) + ' m' : 'none', '| claim to car park', down ? Math.round(down.len) + ' m' : 'none');
+    check('the sample has one footbridge, from a tower on the car park side to the hall, 5.5 m clear of the deck it passes over', d.footbridges.length === 1 && fb.ends[0] === 'tower' && fb.ends[1] === 'hall' && fb.z >= 9 + 5.5 && inZone(fb.b, ci, 1));
+    check('nobody crosses the forecourt road on the level: no zebra crossing is left on it', d.crosswalks.length === 0);
+    check('the way from the car park to check-in on Level 1, and from bag claim on Ground back to the car park, both go over the bridge', onB(up) && onB(down));
+    const sim = flyDay(w, 'a day with the footbridge'); check('a day flies with 0 missed and 0 stranded', sim.stats.missed === 0 && sim.stats.stranded === 0);
+    // a sidewalk drawn across a four-lane road and a two-lane one, away from any hall
+    const w2 = sampleWorld(); const rd = (x, lanes) => w2.ways.push({ id: w2.nextId++, kind: 'road', a: { x, y: 3900 }, b: { x, y: 4300 }, cls: 0, lanes });
+    rd(2200, 4); rd(2400, 2); w2.ways.push({ id: w2.nextId++, kind: 'road', a: { x: 2200, y: 3900 }, b: { x: 2780, y: 3900 }, cls: 0, lanes: 2 }); const wid = w2.nextId; w2.ways.push({ id: w2.nextId++, kind: 'walk', a: { x: 2100, y: 4100 }, b: { x: 2500, y: 4100 }, cls: 0, lanes: 0 });
+    const d2 = derive(w2); const f2 = d2.footbridges.filter(q => q.way === wid);
+    console.log('   a sidewalk across a four-lane and a two-lane road:', f2.length, 'bridge(s)', f2.map(q => 'z ' + q.z + ' ' + q.ends.join('/')).join(', '), '| zebra crossings', d2.crosswalks.length);
+    check('the four-lane road is bridged 6 m up with a tower each side; the two-lane road keeps its zebra crossing', f2.length === 1 && f2[0].z === 6 && f2[0].ends.every(e => e === 'tower') && Math.abs((f2[0].a.x + f2[0].b.x) / 2 - 2200) < 1 && d2.crosswalks.some(q => Math.abs(q.p.x - 2400) < 1));
+    const far = d2.pedRoute({ x: 2105, y: 4100 }, 0, { x: 2495, y: 4100 }, 0); check('and the sidewalk is still one way through, over the bridge', !!far && far.len > 390 && far.len < 480);
+    // sidewalks that join the bridged one close to the road stay joined to it
+    const w3 = sampleWorld(); w3.ways.push({ id: w3.nextId++, kind: 'road', a: { x: 2200, y: 3900 }, b: { x: 2200, y: 4300 }, cls: 0, lanes: 4 }, { id: w3.nextId++, kind: 'road', a: { x: 2200, y: 3900 }, b: { x: 2780, y: 3900 }, cls: 0, lanes: 2 });
+    const wk = (ax, ay, bx, by) => w3.ways.push({ id: w3.nextId++, kind: 'walk', a: { x: ax, y: ay }, b: { x: bx, y: by }, cls: 0, lanes: 0 });
+    wk(2185, 4000, 2185, 4250); wk(2215, 4000, 2215, 4250); wk(2185, 4150, 2215, 4150);   // one each side of the road, and a short one across
+    wk(2100, 4050, 2300, 4050); wk(2210, 4050, 2210, 4010);                                // one across, and another off it 10 m past the road
+    const d3 = derive(w3); const r1 = d3.pedRoute({ x: 2185, y: 4240 }, 0, { x: 2215, y: 4240 }, 0), r2 = d3.pedRoute({ x: 2105, y: 4050 }, 0, { x: 2210, y: 4012 }, 0);
+    console.log('   sidewalks joining a bridged one beside the road:', d3.footbridges.length, 'bridge piece(s) | across between the two parallels', r1 ? Math.round(r1.len) + ' m' : 'no way', '| onto the side path', r2 ? Math.round(r2.len) + ' m' : 'no way');
+    check('a short crossing between two sidewalks either side of a road still joins them, and a path off a bridged sidewalk is still reached', !!r1 && r1.len < 320 && !!r2 && r2.len < 260);
+    // a curved sidewalk and one drawn in two pieces are bridged right across, not to the middle of the road
+    const w4 = sampleWorld(); w4.ways.push({ id: w4.nextId++, kind: 'road', a: { x: 2200, y: 3900 }, b: { x: 2200, y: 4300 }, cls: 0, lanes: 4 }, { id: w4.nextId++, kind: 'road', a: { x: 2200, y: 3900 }, b: { x: 2780, y: 3900 }, cls: 0, lanes: 2 });
+    w4.ways.push({ id: w4.nextId++, kind: 'walk', a: { x: 2100, y: 4200 }, b: { x: 2204, y: 4200 }, cls: 0, lanes: 0 }, { id: w4.nextId++, kind: 'walk', a: { x: 2204, y: 4200 }, b: { x: 2320, y: 4200 }, cls: 0, lanes: 0 });
+    const d4 = derive(w4); const xs = d4.footbridges.filter(q => Math.abs(q.a.y - 4200) < 1).flatMap(q => [q.a.x, q.b.x]);
+    check('a sidewalk drawn in two pieces that meet in the road is bridged from one side to the other (' + Math.round(Math.min(...xs)) + ' to ' + Math.round(Math.max(...xs)) + ')', xs.length > 0 && Math.min(...xs) <= 2184 && Math.max(...xs) >= 2216 && !d4.crosswalks.some(q => Math.abs(q.p.y - 4200) < 2)); }
   // v0.66: the section through the sample's terminal
   { const w = sampleWorld(); const d = derive(w); const sec = sectionOf(w, d, w.sites[0]);
     const of = t => sec.slabs.filter(q => q.type === t); const ci = of('checkin')[0], cl = of('claim')[0], co = of('concourse')[0], se = of('security')[0];
