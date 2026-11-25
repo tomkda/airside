@@ -6,7 +6,7 @@ import {
   rectsOverlap, intersectRect, inRect, rectSegDist, rectCorners, clampToRect, segIntersection, segsIntersect, pointInPoly, deg, segDist,
   polyLen, along,
 } from './geom';
-import { STYLES, Style, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
+import { STYLES, Style, FOOT, LEVELS, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
 import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, wayPts, curveOK, roundOuter, roundDef, chordWays } from './ways';
@@ -212,6 +212,9 @@ export interface Frame { a: Pt; b: Pt; along: Pt; inward: Pt; edgeLen: number; d
 export interface PNode { p: Pt; level: Level; zones: number[] }
 export interface Route { pts: Pt[]; lvs: Level[]; len: number }
 export interface Crosswalk { p: Pt; ang: number; width: number }
+/** v0.67: a stretch of sidewalk carried over roads: `z` its deck height; each end is a stair and lift `tower` on open
+ *  ground or lands at a `hall` (a gallery with a way to each of its levels). */
+export interface Footbridge { a: Pt; b: Pt; z: number; ends: ['tower' | 'hall', 'tower' | 'hall']; way: number }
 export interface TaxiLabel { text: string; p: Pt; ang: number }
 /** A commercial lot carved from a concourse: what it is, how big, and how many customers it holds. */
 export interface Shop {
@@ -255,7 +258,7 @@ export interface Derived {
   pads: Pt[][];
   air: Net; airExtra: { a: Pt; b: Pt; cls: number }[]; taxiLabels: TaxiLabel[]; taxiLetter: Map<number, string>;
   hotspots: Pt[]; cores: Core[]; ped: PNode[];
-  road: Net; hwyEnds: number[]; attach: Map<number, number[]>; roadOK: Set<number>; crosswalks: Crosswalk[];
+  road: Net; hwyEnds: number[]; attach: Map<number, number[]>; roadOK: Set<number>; crosswalks: Crosswalk[]; footbridges: Footbridge[];
   units: Map<number, Units>; frames: Map<number, Frame>; issues: Issue[]; links: MissingLink[];
   shops: Map<number, Shop[]>; terminals: Terminal[]; termOf: Map<number, Terminal>; gateLetter: Map<number, string>;
   gateSlots: GateSlot[]; gateGuides: SideGuide[];
@@ -1051,10 +1054,45 @@ export function derive(drawn: World): Derived {
     }
   }
   const walks = [...world.ways.filter(w => w.kind === 'walk'), ...laid];
-  const walkNet = buildNet(walks.map(w => ({ a: w.a, b: w.b, kind: 'walk', cls: 0, ref: w.id })), 4);
+  // v0.67: footbridges. Where a sidewalk crosses a road of four lanes or more, a forecourt road, a ramp or a deck, that
+  // stretch of it is a bridge: clear over the road (and over a deck where there is one), with a stair and lift tower
+  // where it comes down on open ground, and a gallery where it lands at a hall, with a way to each of the hall's levels.
+  const footbridges: Footbridge[] = []; const groundWalks: { a: Pt; b: Pt; ref: number }[] = [];
+  { const over: { a: Pt; b: Pt; half: number; high: boolean }[] = [{ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, half: 12, high: false }];
+    for (const r of [...world.ways.filter(q => q.kind === 'road'), ...fore, ...laidDrives]) { if (r.lanes < 4 && !r.fore) continue; for (const [a, b] of waySegs(r)) over.push({ a, b, half: r.lanes >= 4 ? 8 : 4.5, high: r.fore === 'ramp' }); }
+    for (const dk of FR.decks) for (let i = 1; i < dk.pts.length; i++) if (Math.max(dk.zs[i - 1], dk.zs[i]) > 0.05) over.push({ a: dk.pts[i - 1], b: dk.pts[i], half: Math.max(dk.ws[i - 1], dk.ws[i]) / 2, high: true });
+    for (const wk of walks) { const L = dist(wk.a, wk.b); if (L < 2) { groundWalks.push({ a: wk.a, b: wk.b, ref: wk.id }); continue; }
+      const dv = norm(sub(wk.b, wk.a)); const at = (s: number): Pt => ({ x: wk.a.x + dv.x * s, y: wk.a.y + dv.y * s });
+      const xs: { lo: number; hi: number; high: boolean }[] = [];
+      for (const r of over) { const x = segIntersection(wk.a, wk.b, r.a, r.b); if (!x) continue; const s = dist(wk.a, x);
+        // (a road met at a slant is wider along the walk)
+        const sn = Math.abs(dv.x * (r.b.y - r.a.y) - dv.y * (r.b.x - r.a.x)) / (dist(r.a, r.b) || 1); const half = r.half / Math.max(0.35, sn);
+        xs.push({ lo: s - half - FOOT.land, hi: s + half + FOOT.land, high: r.high }); }
+      xs.sort((p, q) => p.lo - q.lo); const spans: { lo: number; hi: number; high: boolean }[] = [];
+      for (const x of xs) { const l = spans[spans.length - 1]; if (l && x.lo <= l.hi + FOOT.join) { l.hi = Math.max(l.hi, x.hi); l.high = l.high || x.high; } else spans.push({ ...x }); }
+      let s0 = 0;
+      for (const sp of spans) { let lo = Math.max(0, sp.lo), hi = Math.min(L, sp.hi); if (lo < FOOT.snap) lo = 0; if (L - hi < FOOT.snap) hi = L;
+        if (lo - s0 > 1) groundWalks.push({ a: at(s0), b: at(lo), ref: wk.id });
+        footbridges.push({ a: at(lo), b: at(hi), z: (sp.high ? LEVELS[1].z0 : 0) + FOOT.clear + 0.5, ends: ['tower', 'tower'], way: wk.id }); s0 = hi; }
+      if (L - s0 > 1) groundWalks.push({ a: at(s0), b: wk.b, ref: wk.id }); } }
+  const walkNet = buildNet(groundWalks.map(w => ({ a: w.a, b: w.b, kind: 'walk', cls: 0, ref: w.ref })), 4);
   const wOff = ped.length;
   for (const p of walkNet.nodes) ped.push({ p, level: 0, zones: zs.filter(z => z.level === 0 && inRect(p, z, 3)).map(z => z.id) });
   for (const e of walkNet.edges) pedE.push([wOff + e.u, wOff + e.v, e.len]);
+  for (const fb of footbridges) { const top: number[] = [];
+    ([fb.a, fb.b] as Pt[]).forEach((p, k) => {
+      // the ground under this end: the sidewalk's own node there, or the ground-level module it stands at
+      let G = walkNet.nodes.findIndex(q => dist(q, p) < 1.5); G = G >= 0 ? wOff + G : ped.push({ p, level: 0, zones: zs.filter(z => z.level === 0 && inRect(p, z, 3)).map(z => z.id) }) - 1;
+      const up = zs.filter(z => z.level === 1 && ZONES[z.type].terminal || (z.level === 1 && z.type === 'curb')).filter(z => inZone(p, z, 3)).map(z => z.id);
+      const hall = up.length > 0 || ped[G].zones.some(id => { const z = zs.find(q => q.id === id); return !!z && (z.type === 'curb' || ZONES[z.type].terminal); });
+      fb.ends[k] = hall ? 'hall' : 'tower';
+      // (at a hall the bridge runs on over the curb to the building's own face)
+      if (hall) { const e = norm(sub(p, k ? fb.a : fb.b)); for (let t = 2; t <= 44; t += 2) { const q = { x: p.x + e.x * t, y: p.y + e.y * t };
+        if (zs.some(z => ZONES[z.type].terminal && inZone(q, z))) { if (k) fb.b = q; else fb.a = q; break; } } }
+      // (the bridge's own end: at a hall it is on the upper level's floor plan, a gallery over it, a short flight from it)
+      const B = ped.push({ p, level: 1, zones: up }) - 1; platNodes.add(B); top.push(B);
+      pedE.push([B, G, FOOT.stairs + (fb.z > LEVELS[1].z0 ? 14 : 0)]); });
+    pedE.push([top[0], top[1], dist(fb.a, fb.b)]); }
   const byZone = new Map<number, number[]>();
   ped.forEach((n, i) => { for (const z of n.zones) byZone.set(z, [...(byZone.get(z) ?? []), i]); });
   for (const ns of byZone.values()) for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++)
@@ -1210,7 +1248,7 @@ export function derive(drawn: World): Derived {
   if (world.ways.some(w => w.kind === 'road' && w.oneway && [nearestNode(road, w.a, 5), nearestNode(road, w.b, 5)].some(n => n >= 0 && isFinite(djH.dist[n]) !== isFinite(djBack.dist[n]))))
     issues.push({ level: 'warn', text: 'A one-way road leads nowhere: cars can get in but not back to State Route 12, or the other way round. Close the loop, reverse it, or make it two-way.' });
   const crosswalks: Crosswalk[] = [];
-  for (const w of walks) for (const r of roadSegs) {
+  for (const w of groundWalks) for (const r of roadSegs) {
     if (r.bridge !== undefined) continue;   // (v0.64: a sidewalk passes under a flyover)
     const x = segIntersection(w.a, w.b, r.a, r.b);
     if (x) crosswalks.push({ p: x, ang: Math.atan2(r.b.y - r.a.y, r.b.x - r.a.x), width: r.kind === 'hwy' ? 24 : isRingRef(r.ref) ? ringWidth(rounds, r.ref) : wayWidth('road', 0, r.lanes ?? 2) });
@@ -1377,7 +1415,7 @@ export function derive(drawn: World): Derived {
   { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {
     runways, aprons, gates, shells, shellOf, junctions, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
-    road, hwyEnds, attach, roadOK, crosswalks, units, frames, issues, links, longest, maxCls, coverage,
+    road, hwyEnds, attach, roadOK, crosswalks, footbridges, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, inCut: (p: Pt, lv: Level) => !!inWall(p, lv) && !onFloor(p, lv), zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,   // (inCut: in a cut-out, and off the floor: a notch's rounded corners keep a little of it)
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
     roadPieces: pieces, rounds, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),

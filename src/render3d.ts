@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Pt, Rect, dist, sub, norm, add, mul, lerpPt, polyLen, sliceLine, offsetLine, segDist } from './geom';
-import { STYLES, Style, PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE } from './config';
+import { STYLES, Style, PAL, SITE, ZONES, LEVELS, ZoneType, FRONTAGE, CLASSES, GROWTH, TUNE, FOOT } from './config';
 import type { Sim, Flight } from './sim';
 import type { Renderer } from './render';
 import { wayWidth, runwayWidth, siteOf, Zone, Site, styleOfZone } from './world';
@@ -393,6 +393,13 @@ export class Renderer3D {
         for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); if (d.roadPieces.some(q => q.ref !== dk.road && !dk.roads?.includes(q.ref) && !d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + 0.8)) continue; misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
       }
     }
+    // v0.67: footbridges: a slab with glazed sides on slender legs, and a stair and lift tower where it comes down
+    for (const fb of d.footbridges) { const L = dist(fb.a, fb.b), ang = Math.atan2(fb.b.y - fb.a.y, fb.b.x - fb.a.x); const c = lerpPt(fb.a, fb.b, 0.5); const dv = norm(sub(fb.b, fb.a));
+      const along = (cx: Pt, len: number, wd: number, z0: number, z1: number, col: string) => misc.push({ x: cx.x - len / 2, y: cx.y - wd / 2, w: len, h: wd, z0, z1, c: col, rot: ang });
+      along(c, L, FOOT.width, fb.z - 0.5, fb.z, '#D9D2C2'); along(c, L, FOOT.width + 0.3, fb.z + 2.9, fb.z + 3.2, '#F1ECE2');
+      for (const k of [-1, 1]) along(add(c, { x: -dv.y * k * FOOT.width / 2, y: dv.x * k * FOOT.width / 2 }), L, 0.15, fb.z, fb.z + 2.9, '#B9CACD');
+      for (let s = 6; s < L - 4; s += 14) { const q = add(fb.a, mul(dv, s)); if (!d.roadPieces.some(o => !d.rampRefs.has(o.ref) && segDist(q, o.a, o.b) < (o.lanes >= 4 ? 8 : 4.5) + 0.8)) misc.push({ x: q.x - 0.4, y: q.y - 0.4, w: 0.8, h: 0.8, z0: 0, z1: fb.z - 0.5, c: '#8C8576' }); }
+      ([fb.a, fb.b] as Pt[]).forEach((p, k) => { if (fb.ends[k] === 'tower') along(add(p, mul(dv, k ? 3.5 : -3.5)), 7, 8, 0, fb.z + 3.6, '#E4DCCB'); }); }
     for (const z of d.zones) if (z.type === 'curb') {
       const zz = LEVELS[z.level].z0; if (z.level === 1) misc.push({ ...z, z0: zz - 0.6, z1: zz, c: '#B4AEA2' });
       const f = d.frames.get(z.id); if (!f) continue;
@@ -727,7 +734,9 @@ export class Renderer3D {
       for (const q of sim.pax) {
         if (q.stage === 'done' || p >= 8000) continue;
         if (q.ride) continue;   // on the AirTrain
-        o.position.set(q.x, LEVELS[q.level].z0 + 0.5, q.y); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1); o.updateMatrix();
+        // (v0.67: on a footbridge, at its height)
+        let fz = -1; if (q.level === 1) for (const fb of sim.d.footbridges) if (segDist(q, fb.a, fb.b) < 2.5) { fz = fb.z; break; }
+        o.position.set(q.x, (fz >= 0 ? fz : LEVELS[q.level].z0) + 0.5, q.y); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1); o.updateMatrix();
         this.people.setMatrixAt(p, o.matrix); this.people.setColorAt(p, this.col.set(q.mood ? cols[q.mood] : q.id % 3 ? '#3E5A72' : q.id % 2 ? '#8A6BB0' : '#5E7A55')); p++;
       }
     }

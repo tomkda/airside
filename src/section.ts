@@ -9,7 +9,7 @@ import { Derived, World, Zone, Site, styleOfZone, wayWidth, runwayWidth } from '
 /** A stretch of the cut inside one module: from s0 to s1 along it (metres from its landside end), floor to roof. */
 export interface SecSlab { s0: number; s1: number; z0: number; z1: number; type: ZoneType; level: number; style: Style; mezz?: boolean; floors?: number; auto?: boolean }
 /** Something the cut crosses: a road, a deck, a taxiway or a runway, `w` wide, at height z. */
-export interface SecStrip { s: number; w: number; z: number; kind: 'road' | 'deck' | 'taxi' | 'runway' | 'walk' }
+export interface SecStrip { s: number; w: number; z: number; kind: 'road' | 'deck' | 'taxi' | 'runway' | 'walk' | 'bridge'; /** a footbridge: where along the cut it runs from and to, and which of its ends is a tower */ s0?: number; s1?: number; towers?: [boolean, boolean] }
 export interface Section {
   a: Pt; b: Pt; len: number; slabs: SecSlab[]; strips: SecStrip[];
   /** the aircraft on the stand the cut runs through: its nose at `s`, nose towards the building */
@@ -51,6 +51,10 @@ export function sectionOf(world: World, d: Derived, site: Site): Section | null 
     if (zk > 0.08) strips.push({ s: sOf(x), w: dk.ws[i - 1] + (dk.ws[i] - dk.ws[i - 1]) * t, z: zk * LEVELS[1].z0, kind: 'deck' }); }
   for (const w of d.wayPieces) { const x = segIntersection(a, b, w.a, w.b); if (x) strips.push({ s: sOf(x), w: wayWidth(w.kind, w.cls, w.lanes), z: 0, kind: w.kind === 'taxi' ? 'taxi' : 'walk' }); }
   for (const l of d.airExtra) { const x = segIntersection(a, b, l.a, l.b); if (x) strips.push({ s: sOf(x), w: wayWidth('taxi', l.cls, 0), z: 0, kind: 'taxi' }); }
+  // (a footbridge is seen from the side where the cut runs along it, within a few metres)
+  for (const fb of d.footbridges) { const off = (p: Pt) => Math.abs((p.x - a.x) * dir.y - (p.y - a.y) * dir.x); if (off(fb.a) > 30 || off(fb.b) > 30) continue;
+    const sa = (fb.a.x - a.x) * dir.x + (fb.a.y - a.y) * dir.y, sb = (fb.b.x - a.x) * dir.x + (fb.b.y - a.y) * dir.y; if (Math.abs(sb - sa) < 6) continue;
+    const fwd = sa <= sb; strips.push({ s: (sa + sb) / 2, w: Math.abs(sb - sa), z: fb.z, kind: 'bridge', s0: Math.min(sa, sb), s1: Math.max(sa, sb), towers: fwd ? [fb.ends[0] === 'tower', fb.ends[1] === 'tower'] : [fb.ends[1] === 'tower', fb.ends[0] === 'tower'] }); }
   for (const r of d.runways) { const x = segIntersection(a, b, r.rw.a, r.rw.b); if (x) strips.push({ s: sOf(x), w: runwayWidth(r.length), z: 0, kind: 'runway' }); }
   // (two crossings of one road within a few metres are one road)
   strips.sort((p, q) => p.s - q.s);
