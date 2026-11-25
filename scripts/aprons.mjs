@@ -92,12 +92,21 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
     wk(2100, 4050, 2300, 4050); wk(2210, 4050, 2210, 4010);                                // one across, and another off it 10 m past the road
     const d3 = derive(w3); const r1 = d3.pedRoute({ x: 2185, y: 4240 }, 0, { x: 2215, y: 4240 }, 0), r2 = d3.pedRoute({ x: 2105, y: 4050 }, 0, { x: 2210, y: 4012 }, 0);
     console.log('   sidewalks joining a bridged one beside the road:', d3.footbridges.length, 'bridge piece(s) | across between the two parallels', r1 ? Math.round(r1.len) + ' m' : 'no way', '| onto the side path', r2 ? Math.round(r2.len) + ' m' : 'no way');
-    check('a short crossing between two sidewalks either side of a road still joins them, and a path off a bridged sidewalk is still reached', !!r1 && r1.len < 320 && !!r2 && r2.len < 260);
+    check('a short crossing between two sidewalks either side of a road still joins them, and a path off a bridged sidewalk is still reached', !!r1 && r1.len > 150 && r1.len < 320 && !!r2 && r2.len < 260);   // (v0.68: and by the bridge, not straight across the road)
     // a curved sidewalk and one drawn in two pieces are bridged right across, not to the middle of the road
     const w4 = sampleWorld(); w4.ways.push({ id: w4.nextId++, kind: 'road', a: { x: 2200, y: 3900 }, b: { x: 2200, y: 4300 }, cls: 0, lanes: 4 }, { id: w4.nextId++, kind: 'road', a: { x: 2200, y: 3900 }, b: { x: 2780, y: 3900 }, cls: 0, lanes: 2 });
     w4.ways.push({ id: w4.nextId++, kind: 'walk', a: { x: 2100, y: 4200 }, b: { x: 2204, y: 4200 }, cls: 0, lanes: 0 }, { id: w4.nextId++, kind: 'walk', a: { x: 2204, y: 4200 }, b: { x: 2320, y: 4200 }, cls: 0, lanes: 0 });
     const d4 = derive(w4); const xs = d4.footbridges.filter(q => Math.abs(q.a.y - 4200) < 1).flatMap(q => [q.a.x, q.b.x]);
     check('a sidewalk drawn in two pieces that meet in the road is bridged from one side to the other (' + Math.round(Math.min(...xs)) + ' to ' + Math.round(Math.max(...xs)) + ')', xs.length > 0 && Math.min(...xs) <= 2184 && Math.max(...xs) >= 2216 && !d4.crosswalks.some(q => Math.abs(q.p.y - 4200) < 2)); }
+  // v0.68: a sidewalk drawn across the car park is carried over it; one through a building is still refused
+  { const w = sampleWorld(); const d0 = derive(w); const pk = w.zones.find(z => z.type === 'parking'), ci = w.zones.find(z => z.type === 'claim');
+    const A = { x: pk.x + 40, y: pk.y + pk.h + 30 }, B = { x: pk.x + 40, y: pk.y - 14 }; const ok = canPlaceWay(w, 'walk', A, B, d0.aprons);
+    const bad = canPlaceWay(w, 'walk', { x: ci.x + 30, y: ci.y + ci.h + 4 }, { x: ci.x + 30, y: ci.y - 20 }, d0.aprons);
+    const id = w.nextId; w.ways.push({ id: w.nextId++, kind: 'walk', a: A, b: B, cls: 0, lanes: 0 }); const d = derive(w); const fb = d.footbridges.filter(q => q.way === id);
+    const len = fb.reduce((s, q) => s + Math.hypot(q.b.x - q.a.x, q.b.y - q.a.y), 0); const r = d.pedRoute({ x: A.x, y: A.y - 1 }, 0, { x: B.x, y: B.y + 1 }, 0);
+    console.log('a sidewalk across the car park:', ok.ok ? 'allowed' : 'refused: ' + ok.reason, '|', fb.length, 'bridge piece(s),', Math.round(len), 'm, z', fb[0] ? fb[0].z : '-', fb[0] ? fb[0].ends.join('/') : '', '| end to end', r ? Math.round(r.len) + ' m' : 'no way', '| through bag claim:', bad.ok ? 'allowed' : 'refused');
+    check('it may be drawn, and is a footbridge over the whole lot with a tower beyond each edge', ok.ok && fb.length === 1 && len >= pk.h && len < pk.h + 40 && fb[0].z >= 6 && fb[0].ends.every(e => e === 'tower') && !!r && r.len < pk.h + 110);
+    check('a sidewalk through a terminal building is still refused', !bad.ok); }
   // v0.66: the section through the sample's terminal
   { const w = sampleWorld(); const d = derive(w); const sec = sectionOf(w, d, w.sites[0]);
     const of = t => sec.slabs.filter(q => q.type === t); const ci = of('checkin')[0], cl = of('claim')[0], co = of('concourse')[0], se = of('security')[0];
