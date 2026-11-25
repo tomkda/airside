@@ -93,6 +93,13 @@ const path = require('path');
   console.log('rapid exits:', JSON.stringify(rx));
   check('the card lays one exit, paid for, and the runway takes more', /Lay/.test(rx.label) && rx.one.ways === 1 && rx.one.paid > 0 && rx.one.cap > rx.c0);
   check('the runway inspector lays the next; undo takes one back', rx.had && rx.two.ways === 2 && rx.two.cap > rx.one.cap && rx.back.ways === 1 && rx.back.cap === rx.one.cap);
+  // v0.66: the section drawer opens from the terminal's inspector and closes again
+  const sx = await p.evaluate(() => { const g = window.__game; g.ren.selected = { kind: 'site', id: g.sim.world.sites[0].id }; g.ui.tab = 'inspect'; g.ui.refresh(true);
+    const btn = document.querySelector('[data-act="section"]'); if (btn) btn.click(); const el = document.getElementById('section');
+    const open = !!el && !el.hidden && !!el.querySelector('svg'), txt = el ? el.textContent : '', line = !!g.ren.section;
+    const b2 = document.querySelector('[data-act="section"]'); if (b2) b2.click(); return { had: !!btn, open, named: /SECTION A–A/.test(txt) && /CHECK-IN/.test(txt), line, shut: !!el && el.hidden && !g.ren.section }; });
+  console.log('section drawer:', JSON.stringify(sx));
+  check('the terminal inspector draws a section, marks its line on the plan, and puts it away again', sx.had && sx.open && sx.named && sx.line && sx.shut);
   console.log(fails ? fails + ' CHECK(S) FAILED' : 'all checks passed');
   await b.close(); process.exit(fails ? 1 : 0);
 })();

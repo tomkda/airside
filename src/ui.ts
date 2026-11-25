@@ -23,6 +23,7 @@ import { Los, losKind, losDay, losNow, losFix } from './los';
 import { Advice, advise } from './advisor';
 import { runwayExits, rapidExit, exitFactor } from './airfield';
 import { FORE, FACE_ID, FORECOURTS } from './frontage';
+import { sectionOf, Section } from './section';
 import { EXITS } from './config';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { parallelTaxi, canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
@@ -2130,6 +2131,27 @@ export class UI {
     this.bindPanel();
     if (this.tab === 'report') this.drawHistory();
     this.renderCheck();
+    this.drawSection();
+  }
+
+  /** v0.66: the section drawer: a cut through the terminal in view, from the car park to the aircraft. */
+  sectionOn = false;
+  sectionSite(): Site | undefined {
+    const sel = this.ren.selected; const sites = this.world.sites ?? [];
+    if (sel?.kind === 'site') return sites.find(q => q.id === sel.id);
+    if (sel?.kind === 'zone') { const z = this.sim.d.zones.find(q => q.id === sel.id); const T = z && this.sim.d.termOf.get(z.id); if (T?.site) return T.site; }
+    if (this.ren.focus !== null) return sites.find(q => q.id === this.ren.focus);
+    return this.sim.d.terminals.find(t => t.active)?.site ?? this.sim.d.terminals[0]?.site;
+  }
+  drawSection() {
+    let el = document.getElementById('section');
+    if (!el) { el = document.createElement('div'); el.id = 'section'; el.hidden = true; document.getElementById('app')?.appendChild(el) ?? document.body.appendChild(el); }
+    const st = this.sectionOn ? this.sectionSite() : undefined; const sec = st ? sectionOf(this.world, this.sim.d, st) : null;
+    this.ren.section = sec ? { a: sec.a, b: sec.b } : null;
+    if (!this.sectionOn) { el.hidden = true; return; }
+    el.hidden = false;
+    const W = Math.max(480, el.clientWidth || 960), H = 210;
+    el.innerHTML = sec ? sectionSVG(sec, W, H) : `<p class="muted small" style="padding:14px">No section yet: a terminal needs a hall to cut through.</p>`;
   }
 
   liveNumbers() {
@@ -2425,6 +2447,7 @@ export class UI {
         <dt>Curbs</dt><dd class="${curbs.length ? '' : 'muted'}">${curbs.length ? `${curbs.length} grown by roads${decks ? ' · two-level frontage road (departures above, arrivals below)' : ''}` : 'none: run a road along the landside face'}</dd>
       </dl>
       <button class="btn" data-act="open">Open terminal (Enter)</button>
+      <button class="btn${this.sectionOn ? ' on' : ''}" data-act="section">${this.sectionOn ? 'Hide the section' : 'Draw a section through it'}</button>
       <p class="muted small">Inside, lay out check-in, security, concourses and bag claim; modules snap flush to each other. Double-click any terminal on the map to open it; Esc steps back out.</p>
       <button class="btn danger" data-act="demolish">Demolish terminal and its modules</button>`;
   }
@@ -2903,6 +2926,7 @@ export class UI {
     const w = sel?.kind === 'way' ? s.world.ways.find(q => q.id === sel.id) : undefined;
     const pay = (cost: number) => { if (!s.canAfford(cost)) { this.toast(`That costs ${money(cost)}`, 'bad'); return false; } s.spend(cost); return true; };
     if (a === 'offerYes') { s.acceptOffer(); this.toast('Deal signed. It applies from tomorrow\'s schedule.'); this.refresh(true); this.ctl.save(); return; }
+    if (a === 'section') { this.sectionOn = !this.sectionOn; this.refresh(true); return; }
     if (a.startsWith('style:') && sel?.kind === 'site') { const st = this.world.sites?.find(q => q.id === sel.id); const i = Number(a.split(':')[1]);
       if (st && STYLES[i] && (st.style ?? 0) !== i) { if (i) st.style = i; else delete st.style; this.changed(); this.ren.selected = { kind: 'site', id: st.id }; this.refresh(true); this.toast(`${this.siteName(st)}: ${STYLES[i].name.toLowerCase()}`); } return; }
     if (a.startsWith('bankAsk:')) { const [, id, i] = a.split(':'); const sl = BANK.slots[Number(i)]; if (!sl) return;
@@ -3008,3 +3032,69 @@ const CLASS_EX = (c: number) => CLASSES[c].example;
 const TERMINAL_TOOLS = new Set<ZoneType>(['checkin', 'security', 'concourse', 'claim', 'passport']);
 const PAL_BAD = '#B0472B';
 const center4 = (r: Rect): Pt => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+
+/** v0.66: a section as an SVG drawing: modules floor to roof with their roofs in the terminal's architecture, the
+ *  forecourt's ground road and deck, the aircraft on its stand, and what lies beyond. Heights are drawn 2.6 times the
+ *  lengths' scale so two 9 m storeys read beside a 600 m cut. */
+function sectionSVG(sec: Section, W: number, H: number): string {
+  const pad = 46, k = (W - pad - 14) / sec.len, vk = Math.max(k, (H - 76) / 31), base = H - 44;
+  const X = (s: number) => pad + s * k, Y = (z: number) => base - z * vk; const f = (v: number) => v.toFixed(1);
+  const INK = '#28241e', out: string[] = [];
+  const rect = (x0: number, y0: number, x1: number, y1: number, fill: string, stroke = INK, sw = 1) => out.push(`<rect x="${f(Math.min(x0, x1))}" y="${f(Math.min(y0, y1))}" width="${f(Math.abs(x1 - x0))}" height="${f(Math.abs(y1 - y0))}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`);
+  const line = (x0: number, y0: number, x1: number, y1: number, c = INK, sw = 1, dash = '') => out.push(`<line x1="${f(x0)}" y1="${f(y0)}" x2="${f(x1)}" y2="${f(y1)}" stroke="${c}" stroke-width="${sw}"${dash ? ` stroke-dasharray="${dash}"` : ''}/>`);
+  const text = (x: number, y: number, t: string, size = 9, anchor = 'middle', c = INK, wt = 600) => out.push(`<text x="${f(x)}" y="${f(y)}" font-size="${size}" text-anchor="${anchor}" fill="${c}" font-weight="${wt}" letter-spacing="0.8">${t}</text>`);
+  // datums
+  for (const [z, t] of [[0, 'G ±0'], [LEVELS[1].z0, `L1 +${LEVELS[1].z0}`], [LEVELS[1].z1, `+${LEVELS[1].z1}`]] as [number, string][]) { line(pad - 6, Y(z), W - 10, Y(z), 'rgba(40,36,30,0.18)', 0.7, '2 4'); text(pad - 9, Y(z) + 3, t, 8, 'end', 'rgba(40,36,30,0.7)', 500); }
+  // the ground, and what the cut crosses on it
+  line(pad - 6, base, W - 10, base, INK, 1.4);
+  const NAME = { road: 'ROAD', taxi: 'TAXIWAY', runway: 'RUNWAY', walk: '', deck: '' } as const;
+  for (const q of sec.strips) if (q.kind !== 'deck') { const x0 = X(q.s - q.w / 2), x1 = X(q.s + q.w / 2);
+    rect(x0, base, x1, base + 4, q.kind === 'runway' ? '#2a2f3a' : q.kind === 'taxi' ? '#8a857a' : q.kind === 'walk' ? '#cfc8b8' : '#6b665d', 'none', 0);
+    if (NAME[q.kind] && x1 - x0 > 9) text((x0 + x1) / 2, base + 15, NAME[q.kind], 7.5, 'middle', 'rgba(40,36,30,0.75)', 600);
+    if (q.kind === 'road') for (const o of [-q.w / 4, q.w / 4]) rect(X(q.s + o - 0.9), Y(1.5), X(q.s + o + 0.9), base, '#8d5a46', 'none', 0); }
+  // modules, ground level first
+  const FILL: Partial<Record<ZoneType, string>> = { checkin: '#ddd5c4', claim: '#d2cab9', security: '#cdc5b3', passport: '#cdc5b3', concourse: '#e6dfcf', hotel: '#d8d0bf', rental: '#d8d0bf', bus: '#d8d0bf', train: '#d8d0bf' };
+  const tall = sec.slabs.filter(q => q.type !== 'curb' && q.type !== 'parking' && q.type !== 'rideshare');
+  for (const q of sec.slabs) { const x0 = X(q.s0), x1 = X(q.s1);
+    if (q.type === 'parking' || q.type === 'rideshare') { rect(x0, Y(q.z1), x1, base, q.floors ? '#c9c2b2' : '#b8b2a4', q.floors ? INK : 'none', q.floors ? 1 : 0);
+      if (!q.floors) for (let s = q.s0 + 3; s < q.s1 - 2; s += 5.2) rect(X(s), Y(1.5), X(s + 1.9), base, ['#7b8a99', '#8d5a46', '#9a9588'][Math.floor(s) % 3], 'none', 0);
+      else for (let i = 1; i < q.floors; i++) line(x0, Y(i * 3.2), x1, Y(i * 3.2), INK, 0.6);
+      text((x0 + x1) / 2, base + 15, q.floors ? 'GARAGE' : 'CAR PARK', 7.5, 'middle', 'rgba(40,36,30,0.75)'); continue; }
+    if (q.type === 'curb') { rect(x0, Y(q.z1), x1, Y(q.z0), '#efe8da', INK, 0.8);
+      // its canopy, on slender columns
+      const S = q.style; line(x0, Y(q.z0 + 5.4), Math.min(x1, x0 + 7 * k) , Y(q.z0 + 5.4), S === STYLES[0] ? INK : S.edgeC, 2); line(Math.min(x1, x0 + 6.4 * k), Y(q.z0 + 5.4), Math.min(x1, x0 + 6.4 * k), Y(q.z0 + 0.4), INK, 0.7); continue; }
+    rect(x0, Y(q.z1), x1, Y(q.z0), FILL[q.type] ?? '#d8d0bf');
+    if (q.mezz) line(x0 + (x1 - x0) * 0.3, Y(q.z0 + 4.6), x1 - (x1 - x0) * 0.3, Y(q.z0 + 4.6), INK, 0.8);
+    if (x1 - x0 > 34) { text((x0 + x1) / 2, (Y(q.z1) + Y(q.z0)) / 2 + 3, ZONES[q.type].short.toUpperCase(), 8); }
+  }
+  // roofs: over each top-level module, in its terminal's architecture
+  for (const q of tall) { if (tall.some(o => o !== q && o.level > q.level && o.s0 < q.s1 - 1 && o.s1 > q.s0 + 1)) continue;
+    const S = q.style, x0 = X(q.s0 - S.eave), x1 = X(q.s1 + S.eave), y = Y(q.z1), wide = q.s1 - q.s0 >= 18 && (q.type === 'concourse' || q.type === 'checkin');
+    if (S.roof === 'vault' && wide && !q.mezz) { const rise = Math.min(6, (q.s1 - q.s0) * 0.14) * vk;
+      out.push(`<path d="M${f(x0)} ${f(y)} Q${f((x0 + x1) / 2)} ${f(y - rise * 2)} ${f(x1)} ${f(y)} Z" fill="${S.roofC}" stroke="${INK}" stroke-width="1"/>`); rect((x0 + x1) / 2 - 1.6 * k, y - rise - 2, (x0 + x1) / 2 + 1.6 * k, y - rise + 1, S.glass ?? '#b0c0c4', INK, 0.6); }
+    else { rect(x0, y - 0.9 * vk, x1, y, S.roofC, INK, 1);
+      if (S.roof === 'monitors' && wide) for (let s = q.s0 + 7.5; s < q.s1 - 3; s += 15) rect(X(s - 1.6), y - 0.9 * vk - 1.6 * vk, X(s + 1.6), y - 0.9 * vk, S.glass ?? '#b0c0c4', INK, 0.6);
+      else if (q.type === 'concourse' && q.s1 - q.s0 > 20) rect(X((q.s0 + q.s1) / 2 - 5), y - 0.9 * vk - 1.8 * vk, X((q.s0 + q.s1) / 2 + 5), y - 0.9 * vk, 'rgba(176,192,196,0.9)', INK, 0.6); }
+    if (S.band > 0) rect(X(q.s0), Y(q.z0 + S.band), X(q.s0) + 2, Y(q.z0), S.bandC, 'none', 0);
+  }
+  // the deck over its road
+  for (const q of sec.strips) if (q.kind === 'deck') { const x0 = X(q.s - q.w / 2), x1 = X(q.s + q.w / 2), y = Y(q.z);
+    for (const x of [x0 + 1.5, x1 - 1.5]) line(x, y, x, base, INK, 1.2);
+    rect(x0, y, x1, y + Math.max(2.5, 0.9 * vk), '#8e8a83');
+    for (const o of [-q.w / 4, q.w / 4]) rect(X(q.s + o - 0.9), y - 1.5 * vk, X(q.s + o + 0.9), y, '#7b8a99', 'none', 0);
+    if (q.z > 6) text(x1, y - 1.5 * vk - 4, 'DEPARTURES DECK', 7, 'end', 'rgba(40,36,30,0.8)'); }
+  // the aircraft, nose to the building, and its bridge from Level 1
+  if (sec.aircraft) { const A = sec.aircraft, g = A.len / 38; const n = A.s, t = A.s + A.len; const belly = 1.9 * g + 0.6, top = belly + 4.1 * g;
+    const P = (s: number, z: number) => `${f(X(s))} ${f(Y(z))}`;
+    out.push(`<path d="M${P(n, belly + 1.6 * g)} Q${P(n + 0.6 * g, top)} ${P(n + 5 * g, top)} L${P(t - 9 * g, top)} L${P(t - 5.5 * g, top + 6.6 * g)} L${P(t - 1.2 * g, top + 6.6 * g)} L${P(t - 2.6 * g, top - 0.4 * g)} L${P(t, top - 1.2 * g)} L${P(t - 11 * g, belly)} L${P(n + 4 * g, belly)} Q${P(n + 0.8 * g, belly)} ${P(n, belly + 1.6 * g)} Z" fill="#f4efe6" stroke="${INK}" stroke-width="1"/>`);
+    out.push(`<path d="M${P(n + 13 * g, belly + 0.9 * g)} L${P(n + 21 * g, belly + 0.9 * g)} L${P(n + 22.5 * g, belly + 0.2 * g)} L${P(n + 14 * g, belly + 0.2 * g)} Z" fill="#cfc8b8" stroke="${INK}" stroke-width="0.7"/>`);
+    for (const s of [n + 5 * g, n + 18 * g]) line(X(s), Y(belly), X(s), base - 1.2, INK, 1);
+    out.push(`<path d="M${P(A.door, LEVELS[1].z0 + 3.2)} L${P(n + 5.5 * g, top - 0.3 * g)} L${P(n + 5.5 * g, top - 2.5 * g)} L${P(A.door, LEVELS[1].z0 + 0.4)} Z" fill="#d9d2c2" stroke="${INK}" stroke-width="0.8"/>`);
+    text(X((n + t) / 2), base + 15, `STAND ${A.gate} · ${CLASSES[A.cls].example.toUpperCase()}`, 7.5, 'middle', 'rgba(40,36,30,0.75)'); }
+  // title and scale
+  text(pad, 13, `SECTION A–A · ${sec.name.toUpperCase()}`, 9.5, 'start', INK, 800);
+  text(W - 12, 13, 'heights drawn ' + (vk / k).toFixed(1) + '× the lengths', 8, 'end', 'rgba(40,36,30,0.6)', 500);
+  const bar = sec.len > 500 ? 100 : 50; line(W - 14 - bar * k, H - 12, W - 14, H - 12, INK, 1.4); for (const x of [W - 14 - bar * k, W - 14]) line(x, H - 15, x, H - 9, INK, 1.2); text(W - 14 - bar * k / 2, H - 16, `${bar} m`, 8, 'middle', INK, 500);
+  text(pad, H - 9, 'A', 10, 'middle', INK, 800); text(W - 26 - bar * k, H - 9, 'A', 10, 'middle', INK, 800);
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Section through ${esc(sec.name)}" font-family="inherit">${out.join('')}</svg>`;
+}
