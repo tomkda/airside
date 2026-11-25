@@ -13,7 +13,7 @@ import { regrip, gripsOf, toWorld } from './src/shapes';
 import { segsIntersect } from './src/geom';
 import { wayPts } from './src/ways';
 import { holdArea } from './src/bands';
-import { sectionOf } from './src/section';
+import { sectionOf, sectionAlong } from './src/section';
 import { maxTwist, heart } from './src/shapes';
 let bad = 0;
 const check = (what, ok) => { if (!ok) { bad++; console.log('   FAIL: ' + what); } };
@@ -115,7 +115,12 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
     check('the cut passes the car park, check-in over claim on the same stretch, security and the concourse, in that order', !!ci && !!cl && !!co && !!se && Math.abs(ci.s0 - cl.s0) < 1.5 && Math.abs(ci.s1 - cl.s1) < 1.5 && ci.z0 === 9 && cl.z0 === 0 && of('parking').length === 1 && of('parking')[0].s1 < ci.s0 && ci.s1 <= se.s0 + 1.5 && se.s1 <= co.s0 + 1.5);
     check('the departures deck stands 9 m over its ground road, in front of the hall', !!deck && !!road && Math.abs(deck.z - 9) < 0.01 && deck.s < ci.s0 && deck.s > of('parking')[0].s1);
     check('an aircraft stands nose-in beyond the concourse, with a taxiway beyond it', !!sec.aircraft && sec.aircraft.s > co.s1 && sec.aircraft.door <= sec.aircraft.s && sec.strips.some(q => q.kind === 'taxi' && q.s > sec.aircraft.s + sec.aircraft.len));
-    const w2 = sampleWorld(); w2.zones = w2.zones.filter(z => z.type !== 'checkin' && z.type !== 'claim'); check('a terminal with no hall has no section', sectionOf(w2, derive(w2), w2.sites[0]) === null); }
+    const w2 = sampleWorld(); w2.zones = w2.zones.filter(z => z.type !== 'checkin' && z.type !== 'claim'); check('a terminal with no hall has no section', sectionOf(w2, derive(w2), w2.sites[0]) === null);
+    // v0.69: a cut placed by hand: the same line gives the same section, and one along the concourse shows it end to end
+    const same = sectionAlong(w, d, sec.a, sec.b, 'x'); check('the own line of the terminal, placed by hand, cuts the same modules and finds the same aircraft', same.slabs.length === sec.slabs.length && same.slabs.every((q, i) => q.type === sec.slabs[i].type && Math.abs(q.s0 - sec.slabs[i].s0) < 0.01) && !!same.aircraft && same.aircraft.gate === sec.aircraft.gate);
+    const cz = w.zones.find(z => z.type === 'concourse'); const longs = sectionAlong(w, d, { x: cz.x - 60, y: cz.y + cz.h / 2 }, { x: cz.x + cz.w + 60, y: cz.y + cz.h / 2 }, 'x'); const cs = longs.slabs.filter(q => q.type === 'concourse');
+    console.log('   a cut along the concourse:', Math.round(longs.len), 'm |', longs.slabs.map(q => q.type + ' ' + Math.round(q.s1 - q.s0) + ' m').join(', '), '| aircraft', longs.aircraft ? longs.aircraft.gate : 'none');
+    check('a cut along the concourse shows it from end to end, with the aircraft on the stand at its far end beyond it', cs.length === 1 && Math.abs(cs[0].s1 - cs[0].s0 - cz.w) < 3 && !!longs.aircraft && longs.aircraft.s > cs[0].s1); }
   // v0.65: a hall turned 12°: its approach roads meet the frontage off square, and it still gets a loop at each end
   { const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.rot = 12 * Math.PI / 180;
     const d = derive(w); const f = d.autoRoads.find(q => q.fore === 'face'); const g2 = d.autoRoads.filter(q => q.rg).map(q => q.rg);

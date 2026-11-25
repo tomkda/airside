@@ -248,7 +248,9 @@ export class Renderer3D {
     // ---- pavements
     for (const r of d.runways) strips.push({ a: sub(r.rw.a, mul(r.dir, 60)), b: add(r.rw.b, mul(r.dir, 60)), w: r.width + 8, z: 0.13, c: '#B7AC95' }, { a: r.rw.a, b: r.rw.b, w: r.width, z: 0.15, c: '#3A3631' });
     // (v0.46: a chord of a curve runs on half a metre past each end, so the joints have no notches)
-    for (const w of [...d.wayPieces, ...d.autoWalks]) if (w.kind !== 'road') { const e = w.chord ? mul(norm(sub(w.b, w.a)), 0.6) : { x: 0, y: 0 }; strips.push({ a: sub(w.a, e), b: add(w.b, e), w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : '#EFE8DA' }); }
+    // (v0.69: a sidewalk is laid on the ground only where it is not a footbridge)
+    const gw = d.groundWalks.map(q => ({ id: q.ref, kind: 'walk' as const, a: q.a, b: q.b, cls: 0, lanes: 0, chord: true }));
+    for (const w of [...d.wayPieces.filter(q => q.kind !== 'walk'), ...gw]) if (w.kind !== 'road') { const e = w.chord ? mul(norm(sub(w.b, w.a)), 0.6) : { x: 0, y: 0 }; strips.push({ a: sub(w.a, e), b: add(w.b, e), w: wayWidth(w.kind, w.cls, w.lanes), z: w.kind === 'taxi' ? 0.1 : 0.14, c: w.kind === 'taxi' ? '#BDB29C' : '#EFE8DA' }); }
     for (const x of d.airExtra) strips.push({ a: x.a, b: x.b, w: wayWidth('taxi', x.cls, 0), z: 0.1, c: '#BDB29C' });
     // roads (roads.ts): each one a smooth path, with junction curves and highway slip ramps so every corner has a curved kerb
     const RP = roadPlan(d);

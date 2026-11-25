@@ -23,7 +23,7 @@ import { Los, losKind, losDay, losNow, losFix } from './los';
 import { Advice, advise } from './advisor';
 import { runwayExits, rapidExit, exitFactor } from './airfield';
 import { FORE, FACE_ID, FORECOURTS } from './frontage';
-import { sectionOf, Section } from './section';
+import { sectionOf, sectionAlong, Section } from './section';
 import { EXITS } from './config';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
 import { parallelTaxi, canTurn, derive, Derived, gripsFor, canPlaceTurned, TURNABLE, BENDS, PlaceCheck } from './world';
@@ -561,6 +561,12 @@ export class UI {
   }
 
   down(e: PointerEvent) {
+    // v0.69: placing a section's cut: two clicks on the plan
+    if (this.cutPick && !this.ren.mode3d && e.button === 0) { const p = this.wpt(e);
+      if (!this.cutPick.a) { this.cutPick.a = p; this.ren.section = { a: p, b: p }; }
+      else if (dist(this.cutPick.a, p) >= 30) { this.sectionCut = { a: this.cutPick.a, b: p }; this.cutPick = null; this.hint(this.toolHint()); }
+      else { this.toast('A cut is 30 m long at least', 'warn'); return; }
+      this.refresh(true); return; }
     // in 3D the orbit controls own drags with Select; build tools still draw on the ground plane
     if (this.ren.mode3d && this.drag) return;   // (v0.43: a second finger while a grip is dragged in 3D)
     if (this.ren.mode3d && (this.tool === 'select' || e.button !== 0)) {
@@ -687,6 +693,7 @@ export class UI {
   }
 
   move(e: PointerEvent) {
+    if (this.cutPick?.a && !this.ren.mode3d) this.ren.section = { a: this.cutPick.a, b: this.wpt(e) };
     if (this.ren.mode3d && !this.drag) {
       if (this.tool === 'select') {
         // v0.43: over a grip of the selected building the pointer grabs it rather than orbiting
@@ -1309,6 +1316,7 @@ export class UI {
   /** v0.43: in 3D, whether a left drag orbits (it does not over a grip, or while one is dragged). */
   orbit3d(on: boolean) { if (this.ren.mode3d && this.ren.r3) this.ren.r3.controls.enabled = on; }
   cancelDrag() {
+    if (this.cutPick) { this.cutPick = null; this.hint(this.toolHint()); this.refresh(true); return true; }
     this.orbit3d(true); this.click3d = null; if (this.ren.mode3d) this.ren.setOrbitLeft(this.tool === 'select');   // (v0.54: a 3D press given up does not select on release)
     if (this.path) { this.path = null; this.pathLast = null; this.endLive(false); this.settle(); this.ren.ghost = null; this.hint(this.toolHint()); return true; }
     if (!this.drag) return false;
@@ -2136,6 +2144,9 @@ export class UI {
 
   /** v0.66: the section drawer: a cut through the terminal in view, from the car park to the aircraft. */
   sectionOn = false;
+  /** v0.69: a cut the player placed (else the terminal's own), and the placing of one: its first end once clicked */
+  sectionCut: { a: Pt; b: Pt } | null = null;
+  cutPick: { a?: Pt } | null = null;
   sectionSite(): Site | undefined {
     const sel = this.ren.selected; const sites = this.world.sites ?? [];
     if (sel?.kind === 'site') return sites.find(q => q.id === sel.id);
@@ -2146,12 +2157,19 @@ export class UI {
   drawSection() {
     let el = document.getElementById('section');
     if (!el) { el = document.createElement('div'); el.id = 'section'; el.hidden = true; document.getElementById('app')?.appendChild(el) ?? document.body.appendChild(el); }
-    const st = this.sectionOn ? this.sectionSite() : undefined; const sec = st ? sectionOf(this.world, this.sim.d, st) : null;
-    this.ren.section = sec ? { a: sec.a, b: sec.b } : null;
+    if (!el.dataset.bound) { el.dataset.bound = '1'; el.addEventListener('click', ev => { const act = (ev.target as HTMLElement).closest<HTMLElement>('[data-sec]')?.dataset.sec; if (!act) return;
+      if (act === 'place') { this.cutPick = {}; this.hint('Click where the cut starts, then where it ends · Esc to give up'); }
+      else if (act === 'own') { this.sectionCut = null; this.cutPick = null; }
+      else if (act === 'close') { this.sectionOn = false; this.cutPick = null; }
+      this.refresh(true); }); }
+    const st = this.sectionOn ? this.sectionSite() : undefined;
+    const sec = !this.sectionOn ? null : this.sectionCut ? sectionAlong(this.world, this.sim.d, this.sectionCut.a, this.sectionCut.b, 'the cut as placed') : st ? sectionOf(this.world, this.sim.d, st) : null;
+    if (!this.cutPick?.a) this.ren.section = sec ? { a: sec.a, b: sec.b } : null;
     if (!this.sectionOn) { el.hidden = true; return; }
     el.hidden = false;
     const W = Math.max(480, el.clientWidth || 960), H = 210;
-    el.innerHTML = sec ? sectionSVG(sec, W, H) : `<p class="muted small" style="padding:14px">No section yet: a terminal needs a hall to cut through.</p>`;
+    const bar = `<div class="secbar"><button class="btn small${this.cutPick ? ' on' : ''}" data-sec="place">${this.cutPick ? (this.cutPick.a ? 'Now click its other end' : 'Click where it starts') : 'Place the cut'}</button>${this.sectionCut ? '<button class="btn small" data-sec="own">The terminal\'s own cut</button>' : ''}<button class="btn small ghost" data-sec="close">Close</button></div>`;
+    el.innerHTML = bar + (sec ? sectionSVG(sec, W, H) : `<p class="muted small" style="padding:14px">No section yet: a terminal needs a hall to cut through. Or place the cut yourself.</p>`);
   }
 
   liveNumbers() {

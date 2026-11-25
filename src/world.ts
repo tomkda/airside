@@ -259,6 +259,8 @@ export interface Derived {
   air: Net; airExtra: { a: Pt; b: Pt; cls: number }[]; taxiLabels: TaxiLabel[]; taxiLetter: Map<number, string>;
   hotspots: Pt[]; cores: Core[]; ped: PNode[];
   road: Net; hwyEnds: number[]; attach: Map<number, number[]>; roadOK: Set<number>; crosswalks: Crosswalk[]; footbridges: Footbridge[];
+  /** v0.69: the stretches of sidewalk that are on the ground (the rest is footbridge) */
+  groundWalks: { a: Pt; b: Pt; ref: number }[];
   units: Map<number, Units>; frames: Map<number, Frame>; issues: Issue[]; links: MissingLink[];
   shops: Map<number, Shop[]>; terminals: Terminal[]; termOf: Map<number, Terminal>; gateLetter: Map<number, string>;
   gateSlots: GateSlot[]; gateGuides: SideGuide[];
@@ -1456,7 +1458,7 @@ export function derive(drawn: World): Derived {
   { const seen = new Set<string>(); for (let k = 0; k < issues.length; k++) { const key = `${issues[k].level}|${issues[k].zoneId ?? ''}|${issues[k].text}`; if (seen.has(key)) issues.splice(k--, 1); else seen.add(key); } }
   return {
     runways, aprons, gates, shells, shellOf, junctions, pads: GA.pads, air, airExtra, taxiLabels, taxiLetter, hotspots, cores, ped,
-    road, hwyEnds, attach, roadOK, crosswalks, footbridges, units, frames, issues, links, longest, maxCls, coverage,
+    road, hwyEnds, attach, roadOK, crosswalks, footbridges, groundWalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, inCut: (p: Pt, lv: Level) => !!inWall(p, lv) && !onFloor(p, lv), zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,   // (inCut: in a cut-out, and off the floor: a notch's rounded corners keep a little of it)
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
     roadPieces: pieces, rounds, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),

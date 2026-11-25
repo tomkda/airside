@@ -177,6 +177,7 @@ input[type=range] { width: 100%; accent-color: var(--ink); }
 /* v0.66: the section drawer, along the bottom between the tools and the panel */
 #section { position: absolute; left: 150px; right: 340px; bottom: 100px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r); box-shadow: 0 6px 22px rgba(40,36,30,0.18); overflow: hidden; }
 #section svg { display: block; }
+#section .secbar { position: absolute; top: 6px; right: 150px; display: flex; gap: 6px; }
 @media (max-width: 900px) { #section { left: 8px; right: 8px; bottom: 150px; } }
 /* (the general .bad rule turns text rust; on this rust bar that was red on red, so the bar sets its own) */
 #hint.bad { background: var(--rust); color: #FFF8EC !important; font-weight: 600; }
