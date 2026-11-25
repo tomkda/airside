@@ -29,7 +29,8 @@ const show = (name, list) => console.log(name + ':', list.length ? list.map(a =>
 // 3. every place built and still short: lengthen the concourse
 { const w = sampleWorld(); const c = w.zones.find(z => z.type === 'concourse'); c.x = 3000; c.w = 200;
   const d = derive(w); c.stands = d.gateSlots.filter(s => s.zone.id === c.id).map(s => ({ x: s.door.x, y: s.door.y, paid: 0, cls: s.cls }));
-  const sim = day(w); const A = advise(sim); show('a 200 m concourse, every stand built', A);
+  // (with a bank asked for, as in the case above: whatever the day's dice, more aircraft want stands at once than it has)
+  const sim = day(w, q => { q.addBank('meridian', 7); }); const A = advise(sim); show('a 200 m concourse, every stand built, and a bank of eight', A);
   console.log('   gates', sim.d.gates.length, '| turned away for gates', sim.plan.rejectedGates);
   check('with no place left the advice is to lengthen the concourse', sim.plan.rejectedGates > 0 && A.some(a => a.kind === 'extend' && a.zone === c.id)); }
 
