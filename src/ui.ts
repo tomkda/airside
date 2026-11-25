@@ -2794,9 +2794,14 @@ export class UI {
       return `<li><b>${esc(a?.name ?? b.airline)}</b> · ${esc(sl.toLowerCase())} bank at ${s.clockOf(b.hour * 60)} <span class="muted small">${F.length ? `${F.length} of ${b.n} flights fitted today · ${conn} connecting` : 'starts with the next schedule'} · ${b.until - s.day} day${b.until - s.day === 1 ? '' : 's'} left</span>
         <button class="btn small ghost" data-act="bankEnd:${b.id}">End it</button></li>`; }).join('');
     const st = s.stats; const today = st.xfer ? `<p class="muted small">Today ${n0(st.xfer)} passengers changed aircraft here${st.xferMissed ? `, and <span class="bad">${n0(st.xferMissed)} missed their connection</span>` : ''}.</p>` : '';
+    // v0.70: each open terminal's minimum connecting time, and what the schedule could not offer
+    const mcts = s.d.terminals.filter(T => T.active && T.gates > 1).map(T => { const m = s.terminalMct(T); const room = BANK.window + BANK.connect;
+      return `<li><b>${esc(T.name)}</b> <span class="${m.min > room ? 'bad' : 'muted'} small">${Math.round(m.min)} min to change between its furthest gates · ${Math.round(m.walk)} of them on foot</span></li>`; }).join('');
+    const far = s.plan.bankTooFar ? `<p class="small bad">${n0(s.plan.bankTooFar)} connections were not sold today: the walk between the gates would not fit between the flights.</p>` : '';
     const ask = AIRLINES.filter(a => !a.intl && a.id !== 'polaris').map(a => `<div class="row"><span>${esc(a.name)}</span>${BANK.slots.map((q, i) => `<button class="btn small" data-act="bankAsk:${a.id}:${i}" ${live.some(b => b.airline === a.id && b.hour === q.hour) ? 'disabled' : ''}>${q.name}</button>`).join('')}</div>`).join('');
     return `<h2>Banks</h2>
-      ${rows ? `<ul class="lostab banks">${rows}</ul>${today}` : ''}
+      ${rows ? `<ul class="lostab banks">${rows}</ul>${today}${far}` : ''}
+      ${mcts ? `<h3>Minimum connecting time</h3><ul class="lostab">${mcts}</ul><p class="muted small">${BANK.mct} minutes off one aircraft and onto the next, and the walk between the two gates. A connection is sold only where that fits between the flights.</p>` : ''}
       <p class="muted small">A bank is a wave: ${BANK.n} of one airline's flights land within ${BANK.window} minutes, stand together and leave together, so about a third of their passengers change aircraft here and never see the kerb. It needs ${BANK.n} free stands at once and brings the day's sharpest peak to the taxiways and the concourse. ${BANK.days} days; an airline that comes asking pays ${money(BANK.bonus)} on signing.</p>
       <div class="bankask">${ask}</div>`;
   }

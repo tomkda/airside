@@ -503,7 +503,10 @@ export const GROUND = { gap: 40, reach: 32, standoff: 2.5, gateHold: 6, oppCost:
  *  ground after the last has landed before the first leaves, departures `stagger` minutes apart. `share` of each
  *  flight's arriving passengers connect (hub carriers run 30–60% connecting; game tuning), and a departure takes at
  *  most `maxIn` of its seats from connections. `slots` are the hours a bank can be asked for; `bonus` is paid on signing. */
-export const BANK = { n: 8, window: 50, connect: 40, stagger: 2, share: 0.35, maxIn: 0.6, days: 14, bonus: 3_000_000,
+/** v0.70: `mct`: the minimum connecting time less the walk: off the aircraft, and at the next gate before its doors
+ *  close (airlines publish 30–45 min for a domestic change at a hub, walk included; here 28 min and the walk between
+ *  the two gates on top; game tuning within that range). */
+export const BANK = { n: 8, window: 50, connect: 40, stagger: 2, share: 0.35, maxIn: 0.6, days: 14, bonus: 3_000_000, mct: 28,
   slots: [{ name: 'Morning', hour: 7 }, { name: 'Midday', hour: 12.5 }, { name: 'Evening', hour: 17.5 }] };
 export interface Bank { id: number; airline: string; hour: number; n: number; until: number }
 
