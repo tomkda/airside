@@ -475,6 +475,8 @@ export function canPlaceRound(world: World, p: Pt, size: number, aprons: Apron[]
   for (const w of chordWays(world.ways)) if (w.kind === 'walk' && segDist(p, w.a, w.b) < R - 2) return { ok: false, reason: 'A sidewalk runs through it' };
   return { ok: true };
 }
+/** v0.68: the ground-level program a sidewalk may be drawn across: it is carried over it on a footbridge. */
+export const OVER_LOTS = new Set<ZoneType>(['parking', 'rideshare', 'rental', 'bus']);
 function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): PlaceCheck {
   const box = kind === 'taxi' ? SITE.buildable : { x: 0, y: 0, w: SITE.width, h: SITE.height };
   if (!segOnLand(a, b, box)) return { ok: false, reason: kind === 'taxi' ? 'Taxiways must stay on the airport site' : 'Must stay on land' };
@@ -492,8 +494,10 @@ function placeSeg(world: World, kind: WayKind, a: Pt, b: Pt, aprons: Apron[]): P
   for (const w of chordWays(world.ways)) if (w.kind === 'taxi' && segsIntersect(a, b, w.a, w.b)) return { ok: false, reason: `${name}s can't cross a taxiway` };
   if (kind === 'walk') for (const rd of world.rounds ?? []) if (segDist(rd, a, b) < roundOuter(rd) - 2) return { ok: false, reason: "Sidewalks go round a roundabout, not through it" };
   for (const ap of aprons) if (!ap.self && rectSegDist(inset(ap.rect, 2), a, b) === 0) return { ok: false, reason: `${name}s can't cross an apron` };
-  for (const z of world.zones) if (z.level === 0 && rectSegDist(inset(z, 2), a, b) === 0)
+  for (const z of world.zones) if (z.level === 0 && rectSegDist(inset(z, 2), a, b) === 0) {
+    if (kind === 'walk' && OVER_LOTS.has(z.type) && !shaped(z)) continue;   // v0.68: a sidewalk crosses a lot on a footbridge
     return { ok: false, reason: `${name}s end at the edge of the ${ZONES[z.type].short.toLowerCase()}; they can't run through it` };
+  }
   return { ok: true };
 }
 
@@ -1070,8 +1074,20 @@ export function derive(drawn: World): Derived {
     for (const r of over) { const x = segIntersection(wk.a, wk.b, r.a, r.b); if (!x) continue;
       const sn = Math.abs(dv.x * (r.b.y - r.a.y) - dv.y * (r.b.x - r.a.x)) / (dist(r.a, r.b) || 1); const R = r.half / Math.max(0.35, sn) + FOOT.land;
       xings.push({ x, R, dv, ref: wk.id, high: r.high });
-      // (a mark across the sidewalk where the bridge comes down, so the network has a joint there)
-      for (const k of [-1, 1]) { const q = { x: x.x + dv.x * R * k, y: x.y + dv.y * R * k }; ticks.push({ a: { x: q.x - dv.y * 0.6, y: q.y + dv.x * 0.6 }, b: { x: q.x + dv.y * 0.6, y: q.y - dv.x * 0.6 }, kind: 'tick', cls: 0, ref: 0 }); } } }
+      // (a mark across the sidewalk where the bridge comes down, so the network has a joint there; long enough that its
+      //  own ends are not taken for joints, which would pull the node off the sidewalk's line)
+      for (const k of [-1, 1]) { const q = { x: x.x + dv.x * R * k, y: x.y + dv.y * R * k }; ticks.push({ a: { x: q.x - dv.y * 5, y: q.y + dv.x * 5 }, b: { x: q.x + dv.y * 5, y: q.y - dv.x * 5 }, kind: 'tick', cls: 0, ref: 0 }); } }
+    // v0.68: and where it runs across a car park or another lot (not one it only reaches the edge of): over the whole of it,
+    // above a garage's decks where it has them
+    for (const z of zs) { if (z.level !== 0 || !OVER_LOTS.has(z.type) || shaped(z)) continue; const r = inset(z, 2);
+      let t0 = 0, t1 = 1; let hit = true;
+      for (const [p0, d0, lo, hi] of [[wk.a.x, wk.b.x - wk.a.x, r.x, r.x + r.w], [wk.a.y, wk.b.y - wk.a.y, r.y, r.y + r.h]] as [number, number, number, number][]) {
+        if (Math.abs(d0) < 1e-9) { if (p0 < lo || p0 > hi) hit = false; continue; }
+        const ta = (lo - p0) / d0, tb = (hi - p0) / d0; t0 = Math.max(t0, Math.min(ta, tb)); t1 = Math.min(t1, Math.max(ta, tb)); }
+      if (!hit || (t1 - t0) * L < 4) continue;
+      const x = lerpPt(wk.a, wk.b, (t0 + t1) / 2), R = (t1 - t0) * L / 2 + 2 + FOOT.land;
+      xings.push({ x, R, dv, ref: wk.id, high: (z.floors ?? 0) >= 1 });
+      for (const k of [-1, 1]) { const q = { x: x.x + dv.x * R * k, y: x.y + dv.y * R * k }; ticks.push({ a: { x: q.x - dv.y * 5, y: q.y + dv.x * 5 }, b: { x: q.x + dv.y * 5, y: q.y - dv.x * 5 }, kind: 'tick', cls: 0, ref: 0 }); } } }
   const walkNet = buildNet([...walks.map(w => ({ a: w.a, b: w.b, kind: 'walk', cls: 0, ref: w.id })), ...ticks], 4);
   const wOff = ped.length;
   for (const p of walkNet.nodes) ped.push({ p, level: 0, zones: zs.filter(z => z.level === 0 && inRect(p, z, 3)).map(z => z.id) });
@@ -1132,6 +1148,9 @@ export function derive(drawn: World): Derived {
   const nearPed = (p: Pt, lv: Level) => {
     const out: { n: number; c: number }[] = [];
     ped.forEach((q, i) => { if (q.level === lv && !platNodes.has(i)) { const d0 = dist(p, q.p); if (d0 < 120) out.push({ n: i, c: d0 }); } });
+    // v0.68: on the ground nobody sets off straight across a road that is bridged: the nodes on the far side of one are
+    // left out (unless there is nothing on this side at all)
+    if (lv === 0 && out.length) { const near = out.filter(o => !over.some(r => segsIntersect(p, ped[o.n].p, r.a, r.b))); if (near.length) return near.sort((a, b) => a.c - b.c).slice(0, 4); }
     return out.sort((a, b) => a.c - b.c).slice(0, 4);
   };
   // v0.20: inside a bent pier a straight line from one point to another can leave the building. Wherever two
