@@ -55,6 +55,8 @@ export class Renderer {
   mode3d = false;
   /** v0.43: a live edit is under way (ui.ts): the 3D model is rebuilt at most a few times a second meanwhile. */
   liveEdit = false;
+  /** v0.66: the line of the section being shown, drawn on the plan as A–A */
+  section: { a: Pt; b: Pt } | null = null;
   r3?: Renderer3D;
   weather: WeatherKind = 'clear';
   /** v0.9 feedback: modules pulse as they appear, and what you spent floats up from where you built. */
@@ -202,6 +204,10 @@ export class Renderer {
     this.drawAircraft(sim);
     this.drawFocus(sim);
     this.drawLinks(sim);
+    if (this.section) {   // v0.66: where the section is cut
+      const { a, b } = this.section; g.save(); g.setLineDash([14, 5, 3, 5]); g.strokeStyle = 'rgba(176,71,43,0.9)'; g.lineWidth = 1.6; this.path([a, b], 0, false); g.stroke(); g.restore();
+      const dd = norm(sub(b, a)); for (const [q, sg] of [[a, 1], [b, -1]] as [Pt, number][]) { const m = add(q, mul(dd, sg * 14)); this.label('A', m, 0, 13, '#B0472B', { weight: 800, bg: 'rgba(244,237,223,0.9)' }); }
+    }
     this.drawGrips(sim);
     this.drawGhost();
     this.drawPulses(sim);
