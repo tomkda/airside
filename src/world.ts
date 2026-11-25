@@ -214,7 +214,7 @@ export interface Route { pts: Pt[]; lvs: Level[]; len: number }
 export interface Crosswalk { p: Pt; ang: number; width: number }
 /** v0.67: a stretch of sidewalk carried over roads: `z` its deck height; each end is a stair and lift `tower` on open
  *  ground or lands at a `hall` (a gallery with a way to each of its levels). */
-export interface Footbridge { a: Pt; b: Pt; z: number; ends: ['tower' | 'hall', 'tower' | 'hall']; way: number }
+export interface Footbridge { a: Pt; b: Pt; z: number; ends: ['tower' | 'hall' | 'join', 'tower' | 'hall' | 'join']; way: number }
 export interface TaxiLabel { text: string; p: Pt; ang: number }
 /** A commercial lot carved from a concourse: what it is, how big, and how many customers it holds. */
 export interface Shop {
@@ -1057,42 +1057,64 @@ export function derive(drawn: World): Derived {
   // v0.67: footbridges. Where a sidewalk crosses a road of four lanes or more, a forecourt road, a ramp or a deck, that
   // stretch of it is a bridge: clear over the road (and over a deck where there is one), with a stair and lift tower
   // where it comes down on open ground, and a gallery where it lands at a hall, with a way to each of the hall's levels.
-  const footbridges: Footbridge[] = []; const groundWalks: { a: Pt; b: Pt; ref: number }[] = [];
-  { const over: { a: Pt; b: Pt; half: number; high: boolean }[] = [{ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, half: 12, high: false }];
-    for (const r of [...world.ways.filter(q => q.kind === 'road'), ...fore, ...laidDrives]) { if (r.lanes < 4 && !r.fore) continue; for (const [a, b] of waySegs(r)) over.push({ a, b, half: r.lanes >= 4 ? 8 : 4.5, high: r.fore === 'ramp' }); }
-    for (const dk of FR.decks) for (let i = 1; i < dk.pts.length; i++) if (Math.max(dk.zs[i - 1], dk.zs[i]) > 0.05) over.push({ a: dk.pts[i - 1], b: dk.pts[i], half: Math.max(dk.ws[i - 1], dk.ws[i]) / 2, high: true });
-    for (const wk of walks) { const L = dist(wk.a, wk.b); if (L < 2) { groundWalks.push({ a: wk.a, b: wk.b, ref: wk.id }); continue; }
-      const dv = norm(sub(wk.b, wk.a)); const at = (s: number): Pt => ({ x: wk.a.x + dv.x * s, y: wk.a.y + dv.y * s });
-      const xs: { lo: number; hi: number; high: boolean }[] = [];
-      for (const r of over) { const x = segIntersection(wk.a, wk.b, r.a, r.b); if (!x) continue; const s = dist(wk.a, x);
-        // (a road met at a slant is wider along the walk)
-        const sn = Math.abs(dv.x * (r.b.y - r.a.y) - dv.y * (r.b.x - r.a.x)) / (dist(r.a, r.b) || 1); const half = r.half / Math.max(0.35, sn);
-        xs.push({ lo: s - half - FOOT.land, hi: s + half + FOOT.land, high: r.high }); }
-      xs.sort((p, q) => p.lo - q.lo); const spans: { lo: number; hi: number; high: boolean }[] = [];
-      for (const x of xs) { const l = spans[spans.length - 1]; if (l && x.lo <= l.hi + FOOT.join) { l.hi = Math.max(l.hi, x.hi); l.high = l.high || x.high; } else spans.push({ ...x }); }
-      let s0 = 0;
-      for (const sp of spans) { let lo = Math.max(0, sp.lo), hi = Math.min(L, sp.hi); if (lo < FOOT.snap) lo = 0; if (L - hi < FOOT.snap) hi = L;
-        if (lo - s0 > 1) groundWalks.push({ a: at(s0), b: at(lo), ref: wk.id });
-        footbridges.push({ a: at(lo), b: at(hi), z: (sp.high ? LEVELS[1].z0 : 0) + FOOT.clear + 0.5, ends: ['tower', 'tower'], way: wk.id }); s0 = hi; }
-      if (L - s0 > 1) groundWalks.push({ a: at(s0), b: wk.b, ref: wk.id }); } }
-  const walkNet = buildNet(groundWalks.map(w => ({ a: w.a, b: w.b, kind: 'walk', cls: 0, ref: w.ref })), 4);
+  // (the network is built from the whole sidewalks, so every joint between them is kept; the stretches over a road are
+  //  then raised: each such edge gets an upper twin, and wherever a raised stretch meets the ground, another sidewalk
+  //  or the sidewalk's end, a flight joins the two)
+  const footbridges: Footbridge[] = [];
+  const over: { a: Pt; b: Pt; half: number; high: boolean }[] = [{ a: { x: 0, y: SITE.highwayY }, b: { x: SITE.width, y: SITE.highwayY }, half: 12, high: false }];
+  for (const r of [...world.ways.filter(q => q.kind === 'road'), ...fore, ...laidDrives]) { if (r.lanes < 4 && !r.fore) continue; for (const [a, b] of waySegs(r)) over.push({ a, b, half: r.lanes >= 4 ? 8 : 4.5, high: r.fore === 'ramp' }); }
+  for (const dk of FR.decks) for (let i = 1; i < dk.pts.length; i++) if (Math.max(dk.zs[i - 1], dk.zs[i]) > 0.05) over.push({ a: dk.pts[i - 1], b: dk.pts[i], half: Math.max(dk.ws[i - 1], dk.ws[i]) / 2, high: true });
+  // where each sidewalk crosses one: the point, how far either side of it is bridge, and the line it is crossed on
+  const xings: { x: Pt; R: number; dv: Pt; ref: number; high: boolean }[] = []; const ticks: NSeg[] = [];
+  for (const wk of walks) { const L = dist(wk.a, wk.b); if (L < 1) continue; const dv = norm(sub(wk.b, wk.a));
+    for (const r of over) { const x = segIntersection(wk.a, wk.b, r.a, r.b); if (!x) continue;
+      const sn = Math.abs(dv.x * (r.b.y - r.a.y) - dv.y * (r.b.x - r.a.x)) / (dist(r.a, r.b) || 1); const R = r.half / Math.max(0.35, sn) + FOOT.land;
+      xings.push({ x, R, dv, ref: wk.id, high: r.high });
+      // (a mark across the sidewalk where the bridge comes down, so the network has a joint there)
+      for (const k of [-1, 1]) { const q = { x: x.x + dv.x * R * k, y: x.y + dv.y * R * k }; ticks.push({ a: { x: q.x - dv.y * 0.6, y: q.y + dv.x * 0.6 }, b: { x: q.x + dv.y * 0.6, y: q.y - dv.x * 0.6 }, kind: 'tick', cls: 0, ref: 0 }); } } }
+  const walkNet = buildNet([...walks.map(w => ({ a: w.a, b: w.b, kind: 'walk', cls: 0, ref: w.id })), ...ticks], 4);
   const wOff = ped.length;
   for (const p of walkNet.nodes) ped.push({ p, level: 0, zones: zs.filter(z => z.level === 0 && inRect(p, z, 3)).map(z => z.id) });
-  for (const e of walkNet.edges) pedE.push([wOff + e.u, wOff + e.v, e.len]);
-  for (const fb of footbridges) { const top: number[] = [];
-    ([fb.a, fb.b] as Pt[]).forEach((p, k) => {
-      // the ground under this end: the sidewalk's own node there, or the ground-level module it stands at
-      let G = walkNet.nodes.findIndex(q => dist(q, p) < 1.5); G = G >= 0 ? wOff + G : ped.push({ p, level: 0, zones: zs.filter(z => z.level === 0 && inRect(p, z, 3)).map(z => z.id) }) - 1;
-      const up = zs.filter(z => z.level === 1 && ZONES[z.type].terminal || (z.level === 1 && z.type === 'curb')).filter(z => inZone(p, z, 3)).map(z => z.id);
-      const hall = up.length > 0 || ped[G].zones.some(id => { const z = zs.find(q => q.id === id); return !!z && (z.type === 'curb' || ZONES[z.type].terminal); });
-      fb.ends[k] = hall ? 'hall' : 'tower';
-      // (at a hall the bridge runs on over the curb to the building's own face)
-      if (hall) { const e = norm(sub(p, k ? fb.a : fb.b)); for (let t = 2; t <= 44; t += 2) { const q = { x: p.x + e.x * t, y: p.y + e.y * t };
-        if (zs.some(z => ZONES[z.type].terminal && inZone(q, z))) { if (k) fb.b = q; else fb.a = q; break; } } }
-      // (the bridge's own end: at a hall it is on the upper level's floor plan, a gallery over it, a short flight from it)
-      const B = ped.push({ p, level: 1, zones: up }) - 1; platNodes.add(B); top.push(B);
-      pedE.push([B, G, FOOT.stairs + (fb.z > LEVELS[1].z0 ? 14 : 0)]); });
-    pedE.push([top[0], top[1], dist(fb.a, fb.b)]); }
+  // which edges are bridge: on the crossed sidewalk's own line (or its own curve), within the crossing's reach
+  const wEdges = walkNet.edges.filter(e => e.kind === 'walk'); const raised = new Map<number, boolean>();
+  for (const e of wEdges) { const m = lerpPt(walkNet.nodes[e.u], walkNet.nodes[e.v], 0.5);
+    for (const c of xings) { if (dist(m, c.x) > c.R + 0.5) continue; const offLine = Math.abs((m.x - c.x.x) * c.dv.y - (m.y - c.x.y) * c.dv.x);
+      if (e.ref === c.ref || offLine < 2) raised.set(e.id, (raised.get(e.id) ?? false) || c.high); } }
+  const wAdj = (n: number) => walkNet.adj[n].map(k => walkNet.edges[k]).filter(e => e.kind === 'walk');
+  // (a bridge that would come down within a few metres of the sidewalk's own end runs on to it)
+  for (let pass = 0; pass < 2; pass++) for (const e of wEdges) { if (raised.has(e.id)) continue;
+    for (const [n, o] of [[e.u, e.v], [e.v, e.u]] as [number, number][]) { const up = wAdj(n).find(q => raised.has(q.id)); if (!up) continue;
+      if (wAdj(o).length === 1 && e.len < FOOT.snap) { raised.set(e.id, raised.get(up.id)!); break; } } }
+  for (const e of wEdges) if (!raised.has(e.id)) pedE.push([wOff + e.u, wOff + e.v, e.len]);
+  // the raised stretches, bridge by bridge
+  { const seen = new Set<number>(); const upper = new Map<number, number>();
+    for (const e0 of wEdges) { if (!raised.has(e0.id) || seen.has(e0.id)) continue;
+      const comp: typeof wEdges = []; const st = [e0]; seen.add(e0.id);
+      while (st.length) { const e = st.pop()!; comp.push(e); for (const n of [e.u, e.v]) for (const q of wAdj(n)) if (raised.has(q.id) && !seen.has(q.id)) { seen.add(q.id); st.push(q); } }
+      const nodes = [...new Set(comp.flatMap(e => [e.u, e.v]))];
+      const upZ = (n: number) => zs.filter(z => z.level === 1 && (z.type === 'checkin' || z.type === 'curb') && inZone(walkNet.nodes[n], z, 3)).map(z => z.id);
+      const hallAt = (n: number) => upZ(n).length > 0 || ped[wOff + n].zones.some(id => { const z = zs.find(q => q.id === id); return !!z && (z.type === 'curb' || z.type === 'claim' || z.type === 'checkin'); });
+      const foot = (n: number) => wAdj(n).some(q => !raised.has(q.id)) || wAdj(n).length === 1 || hallAt(n);
+      // over a deck or a ramp it clears Level 1's roadway; and it meets a hall's upper level on that level's floor at least
+      let zB = (comp.some(e => raised.get(e.id)) ? LEVELS[1].z0 : 0) + FOOT.clear + 0.5; if (nodes.some(n => upZ(n).length > 0)) zB = Math.max(zB, LEVELS[1].z0);
+      for (const n of nodes) { const B = ped.push({ p: walkNet.nodes[n], level: 1, zones: upZ(n) }) - 1; platNodes.add(B); upper.set(n, B);
+        if (foot(n)) pedE.push([B, wOff + n, FOOT.stairs + (zB > LEVELS[1].z0 + 1 ? 14 : 0)]); }
+      for (const e of comp) pedE.push([upper.get(e.u)!, upper.get(e.v)!, e.len]);
+      // as drawn: straight runs through joints that are no foot are one bridge
+      const kindOf = (n: number): 'tower' | 'hall' | 'join' => (hallAt(n) ? 'hall' : foot(n) ? 'tower' : 'join');
+      let runs = comp.map(e => ({ u: e.u, v: e.v, ref: e.ref }));
+      for (let again = true; again;) { again = false;
+        outer: for (let a = 0; a < runs.length; a++) for (let b = a + 1; b < runs.length; b++) { const A = runs[a], Bq = runs[b];
+          for (const n of [A.u, A.v]) { if (n !== Bq.u && n !== Bq.v) continue; if (kindOf(n) !== 'join' || comp.filter(e => e.u === n || e.v === n).length !== 2) continue;
+            const ao = A.u === n ? A.v : A.u, bo = Bq.u === n ? Bq.v : Bq.u; const P = walkNet.nodes[n], d1 = norm(sub(P, walkNet.nodes[ao])), d2 = norm(sub(walkNet.nodes[bo], P));
+            if (Math.abs(d1.x * d2.y - d1.y * d2.x) > 0.02) continue;
+            runs[a] = { u: ao, v: bo, ref: A.ref }; runs.splice(b, 1); again = true; break outer; } } }
+      for (const r of runs) { const fb: Footbridge = { a: { ...walkNet.nodes[r.u] }, b: { ...walkNet.nodes[r.v] }, z: zB, ends: [kindOf(r.u), kindOf(r.v)], way: r.ref };
+        // (at a hall the bridge runs on over the curb to the building's own face)
+        ([r.u, r.v] as number[]).forEach((n, k) => { if (fb.ends[k] !== 'hall') return; const p = walkNet.nodes[n]; const e = norm(sub(p, walkNet.nodes[k ? r.u : r.v]));
+          for (let t = 2; t <= 44; t += 2) { const q = { x: p.x + e.x * t, y: p.y + e.y * t }; if (zs.some(z => ZONES[z.type].terminal && inZone(q, z))) { if (k) fb.b = q; else fb.a = q; break; } } });
+        footbridges.push(fb); } } }
+  const groundWalks = wEdges.filter(e => !raised.has(e.id)).map(e => ({ a: walkNet.nodes[e.u], b: walkNet.nodes[e.v], ref: e.ref }));
   const byZone = new Map<number, number[]>();
   ped.forEach((n, i) => { for (const z of n.zones) byZone.set(z, [...(byZone.get(z) ?? []), i]); });
   for (const ns of byZone.values()) for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++)

@@ -731,11 +731,12 @@ export class Renderer3D {
     let p = 0;
     if (this.ren.lod !== 'airfield') {
       const cols = ['#3E5A72', PAL.warn, PAL.bad];
+      const curbs1 = sim.d.footbridges.length ? sim.d.zones.filter(z => z.level === 1 && (z.type === 'curb' || ZONES[z.type].terminal)) : [];   // (someone standing on the upper level under a bridge is not on it)
       for (const q of sim.pax) {
         if (q.stage === 'done' || p >= 8000) continue;
         if (q.ride) continue;   // on the AirTrain
         // (v0.67: on a footbridge, at its height)
-        let fz = -1; if (q.level === 1) for (const fb of sim.d.footbridges) if (segDist(q, fb.a, fb.b) < 2.5) { fz = fb.z; break; }
+        let fz = -1; if (q.level === 1) for (const fb of sim.d.footbridges) if (segDist(q, fb.a, fb.b) < 2.5) { if (!curbs1.some(z => inZone(q, z))) fz = fb.z; break; }
         o.position.set(q.x, (fz >= 0 ? fz : LEVELS[q.level].z0) + 0.5, q.y); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1); o.updateMatrix();
         this.people.setMatrixAt(p, o.matrix); this.people.setColorAt(p, this.col.set(q.mood ? cols[q.mood] : q.id % 3 ? '#3E5A72' : q.id % 2 ? '#8A6BB0' : '#5E7A55')); p++;
       }
