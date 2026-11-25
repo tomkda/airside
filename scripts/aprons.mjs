@@ -48,7 +48,7 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
   // v0.64: with two long approach roads the sample's hall takes flyovers: each ramp leaves its road on the far side from
   // the terminal, and the deck crosses over the road and loops down beside it
   const face = r.d.autoRoads.find(w => w.fore === 'face'); const hallX = 3050;
-  check('the forecourt of the sample is laid as flyovers: a loop at each end, crossing over its approach road at deck height', face.scheme === 'flyover' && geo.every(g => g.fly && g.path) && links.every(l => dk.pts.some((p, i) => dk.zs[i] >= 0.99 && Math.abs(p.x - l.a.x) < 6 && Math.abs(p.y - face.a.y) < 2)));
+  check('the forecourt of the sample is laid as flyovers: a loop at each end, crossing over its approach road at deck height', face.scheme === 'flyover' && geo.every(g => g.fly && g.path) && links.every(l => dk.pts.some((p, i) => i > 0 && dk.zs[i] >= 0.99 && dk.zs[i - 1] >= 0.99 && (p.x - l.a.x) * (dk.pts[i - 1].x - l.a.x) <= 0 && Math.abs(p.y - face.a.y) < 2 && Math.abs(dk.pts[i - 1].y - face.a.y) < 2)));
   check('traffic climbs at the east end and comes down at the west, so it passes the doors with the kerb on its right', geo.find(g => g.up).T.x > hallX && geo.find(g => !g.up).T.x < hallX);
   { const R = r.d.road; const kind = new Map(r.d.autoRoads.map(w => [w.id, w])); let badNode = 0, joins = 0;
     R.nodes.forEach((p, n) => { const ws = R.adj[n].map(e => kind.get(R.edges[e].ref)); const br = ws.filter(w => w && w.bridge !== undefined), other = ws.filter(w => !w || w.bridge === undefined);
@@ -65,7 +65,16 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
     const d = derive(w); const f = d.autoRoads.find(q => q.fore === 'face'); const g2 = d.autoRoads.filter(q => q.rg).map(q => q.rg);
     console.log('one approach road:', f ? f.scheme : 'no forecourt', '|', d.autoRoads.filter(q => q.fore === 'link').length, 'link(s),', g2.length, 'ramps, decks', d.decks.filter(q => !q.branch).length, '+', d.decks.filter(q => q.branch).length, 'branch |', d.terminals.map(t => t.name + (t.active ? ' open' : ' closed')).join(', '));
     check('with one road in reach the forecourt is a trumpet: a ramp up inside the corner and a flyover down over it, on the same road', !!f && f.scheme === 'trumpet' && g2.length === 2 && g2.filter(g => g.up).length === 1 && g2.filter(g => g.fly).length === 1 && Math.abs(g2[0].T.x - g2[1].T.x) < 1 && d.decks.filter(q => q.branch).length === 1 && d.terminals[0].active);
+    const main = d.decks.find(q => !q.branch); const endZ = [main.zs[0], main.zs[main.zs.length - 1]], wide = Math.max(...main.ws);
+    check('its deck stays level at the far end and widens into a turning head (' + wide + ' m)', endZ.filter(v => v === 1).length === 1 && wide >= 30);
     const sim = flyDay(w, 'a day on the trumpet'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000); }
+  // v0.65: a hall turned 12°: its approach roads meet the frontage off square, and it still gets a loop at each end
+  { const w = sampleWorld(); for (const z of w.zones) if (z.type === 'checkin' || z.type === 'claim') z.rot = 12 * Math.PI / 180;
+    const d = derive(w); const f = d.autoRoads.find(q => q.fore === 'face'); const g2 = d.autoRoads.filter(q => q.rg).map(q => q.rg);
+    const ang = g2.map(g => Math.round(Math.acos(Math.max(-1, Math.min(1, -(g.u.x * (f.b.x - f.a.x) + g.u.y * (f.b.y - f.a.y)) / Math.hypot(f.b.x - f.a.x, f.b.y - f.a.y)))) * 180 / Math.PI));
+    console.log('hall turned 12°:', f ? f.scheme : 'no forecourt', '| loops', g2.filter(g => g.path).length, '| roads meet the frontage at', ang.join('° and ') + '° |', d.terminals.map(t => t.name + (t.active ? ' open' : ' closed')).join(', '));
+    check('a turned hall gets loop flyovers too, one up and one down, each landing on its frontage road', !!f && f.scheme === 'flyover' && g2.length === 2 && g2.every(g => g.path) && g2.filter(g => g.up).length === 1 && d.terminals[0].active);
+    const sim = flyDay(w, 'a day on the turned hall'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000); }
   // a road drawn where the west loop would swing out: no ramp is laid low across it, and a roundabout there is left alone
   { const w = sampleWorld(); w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 2760, y: 3230 }, b: { x: 2760, y: 2992 }, cls: 0, lanes: 2 });
     const d = derive(w); const f = d.autoRoads.find(q => q.fore === 'face'); let least = 1e9;
