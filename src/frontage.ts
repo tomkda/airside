@@ -374,7 +374,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
    *  `over` is the least length of that swing (so that it is at deck height before it reaches the link it crosses). */
   const slipOn = (line: Pt[], n: Pt, u: Pt, h: number, k: number, pastE: number, ring: number, rest: { a: Pt; b: Pt }[], fam: Zone[], bent: boolean, target: number, over = 0): RampGeo | null => {
     const o = h + DECK.lane / 2, qo = o + FLY.out;
-    const Ls = target ? Math.max(SLIP.shift * k, 1.5 * (target - qo), over) : SLIP.shift * k, Lc = SLIP.climb * k, Ld = SLIP.draw * k, Lp = Math.max(RAMP.minLane, RAMP.lane * k), Lt = Math.max(RAMP.minTaper, RAMP.taper * k);
+    const Ls = Math.max(SLIP.shift * k, over, target ? 1.5 * (target - qo) : 0), Lc = SLIP.climb * k, Ld = SLIP.draw * k, Lp = Math.max(RAMP.minLane, RAMP.lane * k), Lt = Math.max(RAMP.minTaper, RAMP.taper * k);
     const lc = [0]; for (let j = 1; j < line.length; j++) lc.push(lc[j - 1] + dist(line[j - 1], line[j]));
     const d0 = norm(sub(line[1], line[0])); const sg = dot({ x: -d0.y, y: d0.x }, n) >= 0 ? 1 : -1;
     const atS = (s2: number) => { let j = 1; while (j < line.length - 1 && lc[j] < s2) j++; const dv = norm(sub(line[j], line[j - 1])); return { p: { x: line[j - 1].x + dv.x * (s2 - lc[j - 1]), y: line[j - 1].y + dv.y * (s2 - lc[j - 1]) }, dv, nv: { x: -dv.y * sg, y: dv.x * sg } }; };
@@ -598,15 +598,19 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
           let k = Math.min(1, avail / sum);
           // v0.74: the road stops too soon for a ramp, at a dead end: the hall runs it on to a turnaround of its own,
           // far enough for a slip ramp at half its full length
-          if (!fc.lines && k < SLIP.least && past >= 0 && !ring && !rest.some(c => segDist(E, c.a, c.b) < 3)) for (const size of [1, 0]) { const R = ROUNDS[size].icd / 2;
-            const p2 = Math.ceil(SLIP.ext * sum + SLIP.land + RAMP.clear + R); const E2 = { x: H0.x + u.x * p2, y: H0.y + u.y * p2 };
+          // (v0.81: or where a road turns away from the building too near the hall for a ramp inside the corner: the
+          //  frontage is run straight on past that junction, and the ramp is at deck height before it reaches it)
+          const tee = !!fc.given?.[ei]; const overS = tee ? past + 24 - SLIP.land : 0; const more = Math.max(0, overS - SLIP.shift * SLIP.ext);
+          const atE = tee ? rest.filter(c => !(segDist(E, c.a, c.b) < 3 && Math.abs(dot(norm(sub(c.b, c.a)), oE)) > 0.7)) : rest;
+          if (!fc.lines && k < SLIP.least && past >= 0 && !ring && !atE.some(c => segDist(E, c.a, c.b) < 3)) for (const size of [1, 0]) { const R = ROUNDS[size].icd / 2;
+            const p2 = Math.ceil(SLIP.ext * sum + more + SLIP.land + RAMP.clear + R); const E2 = { x: H0.x + u.x * p2, y: H0.y + u.y * p2 };
             const side = (q: Pt, d2: number) => ({ x: q.x + oE.x * d2, y: q.y + oE.y * d2 });
             if (blocked(E, E2, fam) || blocked(side(E, h), side(E2, h), fam) || blocked(side(E, -h), side(E2, -h), fam)) continue;
             if ([0.25, 0.5, 0.75].some(t => rest.some(c => segDist(lerpPt(E, E2, t), c.a, c.b) < 12)) || !headRoom(E2, R, fam, rest)) continue;
             exts[ei] = { a: E, b: E2, size, first: dot({ x: u.y, y: -u.x }, oE) < 0 }; line[1] = E2;
-            ring = R; avail = p2 - ring - RAMP.clear - SLIP.land; k = Math.min(1, avail / sum); break; }
+            ring = R; avail = p2 - ring - RAMP.clear - SLIP.land - more; k = Math.min(1, avail / sum); break; }
           const pastE = exts[ei] ? dist(H0, exts[ei]!.b) : past;
-          if (k >= SLIP.least) [{ x: -oE.x, y: -oE.y }, oE].forEach((n, si) => { slips[ei][si] = slipOn(line, n, u, h, k, pastE, ring, rest, fam, !!fc.lines, 0); }); }
+          if (k >= SLIP.least) [{ x: -oE.x, y: -oE.y }, oE].forEach((n, si) => { slips[ei][si] = slipOn(line, n, u, h, k, pastE, ring, rest, fam, !!fc.lines, 0, exts[ei] ? overS : 0); }); }
         // v0.77: the link is too short for a ramp of its own, but it meets a road that runs parallel to the frontage: a
         // ramp that leaves that road on the hall's side well out past the hall, climbs beside it, and swings across to
         // land on the frontage road, over the link and the corner
