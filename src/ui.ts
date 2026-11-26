@@ -22,7 +22,8 @@ import { AREA, CURVE_MIN } from './config';
 import { Los, losKind, losDay, losNow, losFix } from './los';
 import { Advice, advise } from './advisor';
 import { runwayExits, rapidExit, exitFactor } from './airfield';
-import { FORE, FACE_ID, FORECOURTS, HEAD_ID } from './frontage';
+import { FORE, FACE_ID, FORECOURTS, RAMP_ID, EAR_ID, HEAD_ID } from './frontage';
+import type { RampGeo } from './world';
 import { sectionOf, sectionAlong, Section } from './section';
 import { EXITS } from './config';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
@@ -2613,7 +2614,16 @@ export class UI {
     if (z.type !== 'checkin' && z.type !== 'claim') return '';
     const ids = [z.id, this.twin(z)?.id].filter((q): q is number => q !== undefined);
     const f = this.sim.d.autoRoads.find(w => w.fore === 'face' && ids.some(id => w.id === FORE + id * 4 || (w.id >= FACE_ID + id * 32 && w.id < FACE_ID + id * 32 + 32)));
-    if (!f?.scheme) return '';
+    if (!f?.scheme) {
+      // v0.73: the frontage road is the player's own: say what ramps its deck was given
+      const dk = this.sim.d.decks.find(q => !q.branch && ids.includes(this.sim.d.zones.find(c => c.auto?.road === q.road && c.auto.deck === 'dep')?.auto?.module ?? -1));
+      if (!dk) return '';
+      const rs = this.sim.d.autoRoads.filter(w => w.rg && ids.some(id => (w.id >= RAMP_ID + id * 16 && w.id < RAMP_ID + id * 16 + 16) || (w.id >= EAR_ID + id * 64 && w.id < EAR_ID + id * 64 + 64))).map(w => w.rg!);
+      const kind = (g: RampGeo) => (g.path ? (g.top === 16 ? 'a loop over the road that turns away' : 'a slip ramp beside the road') : g.fly ? 'a turn over the corner' : 'a ramp inside the corner');
+      const up = rs.find(g => g.up), dn = rs.find(g => !g.up);
+      const say = rs.length ? `${up ? `Up by ${kind(up)}` : 'No ramp up'}; ${dn ? `down by ${kind(dn)}` : 'no ramp down'}.` : 'No ramp fits: the deck comes down along the road beneath it.';
+      return `<h3>Forecourt</h3><dl class="kv"><dt>Frontage road</dt><dd>Drawn by hand</dd></dl><p class="muted small">${say} A ramp is laid where the road runs straight on about 140 m past the hall, or meets a road that turns away from the building 46 to 150 m past it.</p>`;
+    }
     const F = FORECOURTS[f.scheme];
     // v0.72: and its turnaround, if only one road reaches it
     const hd = this.sim.d.heads.find(h => h.face.includes(f.id) || ids.some(id => h.id === HEAD_ID + id));
