@@ -76,7 +76,9 @@ export function advise(sim: Sim): Advice[] {
     } }
   // ---- the terminal: modules below optimum
   for (const z of d.zones) {
-    if (z.auto) continue; const L = losDay(sim, z); if (!L || L.band < 2) continue;
+    if (z.auto) continue; const L0 = losDay(sim, z);
+    // (v0.79: judged on its own queue: floor lost to another module's queue is that module's to fix)
+    const L = L0?.own ? { ...L0, ...L0.own } : L0; if (!L || L.band < 2) continue;
     const name = z.type === 'concourse' ? `Concourse ${d.gateLetter.get(z.id) ?? ''}` : ZONES[z.type].short; const unit = ZONES[z.type].unit;
     const w0 = L.band * 20 + (L.wait ?? 0);
     if (L.wBand === 2 && (z.type === 'checkin' || z.type === 'security' || z.type === 'passport')) {

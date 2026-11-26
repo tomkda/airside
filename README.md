@@ -37,7 +37,11 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.78)
+## What's in the alpha (v0.79)
+
+- **A queue that outgrows its room takes the next one's floor (v0.79):** a check-in, security or passport queue longer than its own module holds has always been drawn standing in the room before it. That now counts. The people who do not fit are counted on the floor of the module they stand in (typically a security queue in the check-in hall), so that module's space per waiting passenger falls with them. Its inspector shows a **Shared floor** line (how many of whose queue stood there at the peak, and what its space would be without them); the module that overflowed shows an **Overflow** line (how many stood outside, where, and how many its own floor holds in line). The advisor still judges each module on its own queue, so the card goes to the module that is too small, not to the room it spilled into.
+
+  ![A security queue standing in the check-in hall](docs/shots/v079-overflow.png)
 
 - **The hall's roof over the departures kerb (v0.78, 3D model only):** a departures kerb had the same low canopy as any other. Over it the check-in hall's own roof now reaches out at eaves height, as far as the planted island between the pull-in lanes and the through lanes, carried on tall paired columns that stand in that island with a beam back to the building, and with a glazed screen hung from its edge. It takes the terminal's architecture (roof, edge and column colours). Arrivals kerbs and single-level kerbs keep the low canopy.
 
@@ -541,6 +545,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 
 - A taxilane's way round obstacles (v0.37) turns at the corners of their bounding boxes, so round a bent pier or a free area it can be longer than it needs to be; it cannot go round the lake or a roundabout, or reach a taxiway more than 400 m from the stands.
 - Construction is instant; no build time or disruption yet.
+- Overflow (v0.79): the people who do not fit are counted on the next room's floor but do not get in anyone's way (walking speed and the hall's own queues are unchanged); a queue's room is a share of its module's depth (42%), not its drawn barriers; a queue that overflows out of doors is counted nowhere.
 - Architecture (v0.61): four styles, per terminal, in the 3D model only (the plan does not show them); a vault is built of stepped courses, not a true curve; hubs and free-drawn buildings take a style's materials and eaves but keep their flat roofs; curbs, car parks and landside buildings have no styles.
 - v0.60 also fixed an old fault at bag claim: a passenger whose bag was one more than the flight's estimate waited at the belt for good and kept the belt from being reused, so by mid-morning the sample's carousels jammed. Every bag checked is now carried.
 - Banks (v0.60): connections are only within one bank (not between banks or with ordinary flights), every bank is eight flights of the airline's main aircraft, connecting bags are not carried (departing bags are not simulated at all), and a bank brings no fee beyond its landings and passenger charges and no penalty beyond the passengers it leaves behind.

@@ -2690,6 +2690,8 @@ export class UI {
       <span class="muted small">${per.toFixed(1)} min held per movement · taxi ${(g.taxi / g.moves).toFixed(1)} min · ${g.standoffs} stand-off${g.standoffs === 1 ? '' : 's'} ${g.tows ? ` · ${g.tows} towed clear after a long hold` : ''} · ${g.gate.toFixed(0)} min held on stand${worst && (worst[1].min > 1 || worst[1].so) ? ` · worst: taxiway ${esc(s.d.taxiLetter.get(worst[0]) ?? '')} (${worst[1].min.toFixed(0)} min)` : ''}</span></li></ul>`;
   }
   /** v0.57: a module's level of service: the day's band, the two counts behind it, and what would lift it. */
+  /** A module's name as the panels give it. */
+  zoneName(id: number): string { const q = this.sim.d.zones.find(o => o.id === id); return q ? ZONES[q.type].label : 'another module'; }
   losHTML(z: Zone) {
     const kind = losKind(z); if (!kind) return '';
     const s = this.sim; const L = losDay(s, z); const std = LOS.std[kind];
@@ -2699,6 +2701,8 @@ export class UI {
     return `<dt>Level of service</dt><dd>${chip(L.band, LOS.names[L.band])} <span class="muted small">${L.today ? 'today so far' : 'last day'}${now && now.peakQ ? ` · now ${LOS.names[now.band].toLowerCase()}` : ''}</span></dd>
       <dt>Space</dt><dd>${isFinite(L.space) ? `${L.space.toFixed(1)} m² each` : 'nobody waiting'} <span class="muted small">· ${L.peakQ} at the peak on ${n0(L.area)} m² · ${ax[L.sBand]} (${std.space[0]}–${std.space[1]})</span></dd>
       ${L.wBand !== undefined && std.wait ? `<dt>Wait</dt><dd>${(L.wait ?? 0).toFixed(0)} min at the peak <span class="muted small">· ${ax[L.wBand]} (${std.wait[0]}–${std.wait[1]})</span></dd>` : ''}
+      ${L.spill ? `<dt>Overflow</dt><dd>${L.spill} of its queue stood ${L.into !== undefined ? `in ${esc(this.zoneName(L.into))}` : 'outside'} at the peak <span class="muted small">· its own floor holds ${this.sim.procs.get(z.id) ? this.sim.queueRoom(this.sim.procs.get(z.id)!) : '?'} in line</span></dd>` : ''}
+      ${L.guests && L.own ? `<dt>Shared floor</dt><dd>${L.guests} of the queue for ${esc(this.zoneName(L.from ?? -1))} stood here at the peak <span class="muted small">· without them ${isFinite(L.own.space) ? `${L.own.space.toFixed(1)} m² each, ${ax[L.own.sBand]}` : 'nobody waiting here'}</span></dd>` : ''}
       ${L.capMax ? `<dt>Busiest hour</dt><dd>${n0(L.demand)} people <span class="muted small">· needs ${L.need} ${ZONES[z.type].unit} staffed</span></dd>` : ''}
       ${fix ? `<dt></dt><dd class="${L.band >= 2 ? 'bad' : 'muted'} small">${esc(fix[0].toUpperCase() + fix.slice(1))}.</dd>` : ''}`;
   }
