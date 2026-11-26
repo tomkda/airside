@@ -37,7 +37,11 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.74)
+## What's in the alpha (v0.75)
+
+- **Decks and ramps built as structures (v0.75, 3D model only):** a departures deck was a bare slab on posts. It now has a parapet along every raised edge that follows the slope of a ramp, a crosshead over each pair of piers, a solid abutment under a ramp's low end (below about 3 m, where no pier would fit and never across a road), and lamp standards with an arm over the carriageway on the level deck, on alternate sides every 60 m.
+
+  ![A loop ramp with parapets, crossheads and lamp standards](docs/shots/v075-deck-structure.png)
 
 - **A frontage road run on to a turnaround (v0.74):** a frontage road drawn only as long as the hall (fed from its middle, or stopping dead at one end) left no room for a ramp. Where such a road ends at a dead end with open ground beyond, the hall now runs it straight on, about 200 m, to a roundabout of its own, and lays a slip ramp on the added stretch. With both ends short the result is a dumbbell: a car comes in under the deck, goes round one turnaround, climbs the ramp, passes the doors with the kerb on its right, comes down at the other end and goes round the second turnaround to leave. Cars for the ground kerb use the turnaround that brings them back along the kerb. The added road and roundabouts are the hall's, not the player's: they are not charged, cannot be selected, and go when the road is drawn longer or the ground is built on. Where the ground past the end is built on, the design check still says what a ramp needs.
 
