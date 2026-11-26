@@ -7,7 +7,7 @@ import {
   polyLen, along,
 } from './geom';
 import { STYLES, Style, FOOT, LEVELS, GROUND, ZONES, ZoneType, Level, SITE, TUNE, MOVER, PIER, HALL, CLASSES, Cls, rwyClass, TAXI_CLASSES, ROAD_LANES, WALK, ROADS, FRONTAGE, ShopType, TenantId, SITES, GROWTH, APRON, AREA, COMMERCE as SC, CURVE_MIN } from './config';
-import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide } from './frontage';
+import { autoFrontage, autoForecourt, curbCuts, autoWalks, autoRoads, trainLinks, SELF_CONNECT, AutoTag, DeckSpan, FrontGuide, Head } from './frontage';
 import { NSeg, Net, buildNet, dijkstra, allPairs, nearestNode } from './net';
 import { Round, Piece, roadPieces, isRingRef, RING_REF, wayDist, waySegs, wayLen, wayMid, wayPts, curveOK, roundOuter, roundDef, chordWays } from './ways';
 export type { Round, Piece } from './ways';
@@ -273,6 +273,8 @@ export interface Derived {
   /** v0.10: access drives facilities laid for themselves; the AirTrain's guideway; facilities that work (road and a way in on foot). */
   /** v0.11: every road as straight pieces (curves in chords, roundabout rings included), and the roundabouts. */
   roadPieces: Piece[]; rounds: Round[];
+  /** v0.72: the turnarounds forecourts laid (they are in `rounds` too) */
+  heads: Head[];
   /** v0.13: road ids that are ramps up to a departures deck. Only cars bound for or leaving that deck use them. */
   rampRefs: Set<number>;
   /** `apm`: an airside people mover between two concourses (v0.16), with the ids of the zones it joins. */
@@ -570,7 +572,10 @@ export function derive(drawn: World): Derived {
   // Curbs grow where roads run along terminal faces (frontage.ts). Everything below sees them as ordinary zones.
   // v0.12: first, a hall with no road along its face lays its own forecourt to the nearest road.
   const runways = runwayInfos(source);
-  const fore = autoForecourt(source, buildGateAreas(source, runways, runwayWidth).aprons.map(a => a.rect), SITE.highwayY, SITE.width);
+  const heads: Head[] = [];
+  const fore = autoForecourt(source, buildGateAreas(source, runways, runwayWidth).aprons.map(a => a.rect), SITE.highwayY, SITE.width, heads);
+  // (v0.72: a forecourt's turnaround is a roundabout to everything below)
+  if (heads.length) source.rounds = [...(source.rounds ?? []), ...heads];
   const FR = autoFrontage(source, fore);
   const world: World = { ...source, zones: [...source.zones, ...FR.curbs] };
   const units = new Map<number, Units>();
@@ -1461,7 +1466,7 @@ export function derive(drawn: World): Derived {
     road, hwyEnds, attach, roadOK, crosswalks, footbridges, groundWalks, units, frames, issues, links, longest, maxCls, coverage,
     zoneAt, pedRoute, inCut: (p: Pt, lv: Level) => !!inWall(p, lv) && !onFloor(p, lv), zoneReach, gateUsable, shops, terminals, termOf, gateLetter, gateSlots: GA.slots, gateGuides: GA.guides, lease, budgets,   // (inCut: in a cut-out, and off the floor: a notch's rounded corners keep a little of it)
     zones: zs, decks: FR.decks, frontGuides: FR.guides, autoWalks: laid,
-    roadPieces: pieces, rounds, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),
+    roadPieces: pieces, rounds, heads, rampRefs: new Set(fore.filter(w => w.fore === 'ramp').map(w => w.id)),
     wayPieces: source.ways.filter(w => w.kind !== 'road'), autoRoads: laidRoads, trainLinks: [...tLinks.map(l => ({ a: center(l.a), b: center(l.b) })), ...movers.map(m => ({ ...m, apm: true }))], served, isTrainNode: (p: Pt) => tKeys.has(tKey(p)),
   };
 }
