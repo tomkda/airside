@@ -37,7 +37,11 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.82)
+## What's in the alpha (v0.83)
+
+- **Landside buildings in their terminal's architecture (v0.83, 3D model only):** garages, hotels, rental centres, bus and rideshare shelters and AirTrain stations were the same white and grey whatever the terminal beside them. Each now takes the architecture of the terminal whose site is nearest: its roof, edge, plinth and column colours; vertical fins up the faces of a garage or hotel where the terminal has fins; a spandrel band at each floor where it has bands. Beside a Model white terminal they are as before.
+
+  ![A garage in the timber terminal's fins](docs/shots/v083-landside-styles.png)
 
 - **A review of the new forecourts, and its fixes (v0.82):** a second reader went through v0.72 to v0.81 and found six faults, all now fixed and checked in `forecourts.mjs`:
   - on a frontage road the hall had run on to turnarounds, **cars for the deck never drove the ramps**: they took the ground road to the kerb, and the second turnaround was never used. They now go round the turnaround by the way up, climb the ramp, pass the doors, come down the other ramp and go round the second turnaround to leave (on four such layouts, every one of about 1,740 cars a day each way; it was none);
@@ -563,7 +567,7 @@ The sim never reads the renderer, and the renderer never writes the sim. That sp
 - A taxilane's way round obstacles (v0.37) turns at the corners of their bounding boxes, so round a bent pier or a free area it can be longer than it needs to be; it cannot go round the lake or a roundabout, or reach a taxiway more than 400 m from the stands.
 - Construction is instant; no build time or disruption yet.
 - Overflow (v0.79): the people who do not fit are counted on the next room's floor but do not get in anyone's way (walking speed and the hall's own queues are unchanged); a queue's room is a share of its module's depth (42%), not its drawn barriers; a queue that overflows out of doors is counted nowhere.
-- Architecture (v0.61): four styles, per terminal, in the 3D model only (the plan does not show them); a vault is built of stepped courses, not a true curve; hubs and free-drawn buildings take a style's materials and eaves but keep their flat roofs; curbs, car parks and landside buildings have no styles.
+- Architecture (v0.61): four styles, per terminal; a vault is built of stepped courses, not a true curve; hubs and free-drawn buildings take a style's materials and eaves but keep their flat roofs; landside buildings (v0.83) take the nearest terminal's colours, fins and bands but not its roof form, and a surface car park has none.
 - v0.60 also fixed an old fault at bag claim: a passenger whose bag was one more than the flight's estimate waited at the belt for good and kept the belt from being reused, so by mid-morning the sample's carousels jammed. Every bag checked is now carried.
 - Banks (v0.60): connections are only within one bank (not between banks or with ordinary flights), every bank is eight flights of the airline's main aircraft, connecting bags are not carried (departing bags are not simulated at all), and a bank brings no fee beyond its landings and passenger charges and no penalty beyond the passengers it leaves behind.
 - The advisor (v0.59) offers at most six causes; it does not yet lay a holding bay or a second runway by itself, enlarges only upright modules (a turned or bent one is reshaped by its grips) and does not widen a crowded concourse, lengthens only straight concourses, and does not weigh an upgrade's cost against what it would earn.
