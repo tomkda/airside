@@ -22,6 +22,7 @@ import { aircraftGeo, treeGeo, towerGeo, poleGeo, glowTexture, textTexture, skyT
 
 const UP = 0.05;   // lift flat things a little off the ground so they don't flicker
 const ROOF = '#F1ECE2', PLINTH = '#8C8576', MULLION = '#E4DDCF';
+const ROOF0 = ROOF, PLINTH0 = PLINTH;
 const GLASS: Record<ZoneType, string> = {
   checkin: '#B6C3C4', security: '#AEB9BA', concourse: '#BBC8C9', claim: '#B1BDBE', curb: '#A49E92', parking: '#C9BEA8',
   passport: '#B3BFC6', rideshare: '#A7A39A', rental: '#B9C2BE', bus: '#B9C2BE', hotel: '#AFC0CC', train: '#BFCBCB',
@@ -470,20 +471,35 @@ export class Renderer3D {
 
     // ---- landside facilities (v0.10): garages, hotels, rental centres, bus stations, rideshare lots, the AirTrain
     const glassF: Box[] = [];
+    // v0.83: each takes the architecture of the terminal whose site is nearest: its roof, edge, plinth and column
+    // colours, fins up a garage's or hotel's faces where the terminal has fins, a spandrel band where it has bands
+    const nearStyle = (z: Zone): Style => { const c = centreOf(z); let best: Style = STYLES[0], bd = Infinity;
+      for (const st of sim.world.sites ?? []) { const dd = dist(c, { x: st.x + st.w / 2, y: st.y + st.h / 2 }); if (dd < bd) { bd = dd; best = STYLES[st.style ?? 0] ?? STYLES[0]; } } return best; };
+    // (fins or a band round a box's four faces, between two heights)
+    const dress = (r: Rect, z0: number, z1: number, S: Style, floors: number[]) => {
+      if (S.fins) { for (let x = r.x + 1.5; x < r.x + r.w - 0.5; x += 3) for (const y of [r.y - 0.55, r.y + r.h + 0.1]) misc.push({ x: x - 0.12, y, w: 0.24, h: 0.45, z0, z1, c: S.finC, plain: true });
+        for (let y = r.y + 1.5; y < r.y + r.h - 0.5; y += 3) for (const x of [r.x - 0.55, r.x + r.w + 0.1]) misc.push({ x, y: y - 0.12, w: 0.45, h: 0.24, z0, z1, c: S.finC, plain: true }); }
+      if (S.band) for (const f of floors) { misc.push({ x: r.x - 0.25, y: r.y - 0.25, w: r.w + 0.5, h: 0.25, z0: f, z1: f + 1.1, c: S.bandC, plain: true }, { x: r.x - 0.25, y: r.y + r.h, w: r.w + 0.5, h: 0.25, z0: f, z1: f + 1.1, c: S.bandC, plain: true },
+        { x: r.x - 0.25, y: r.y, w: 0.25, h: r.h, z0: f, z1: f + 1.1, c: S.bandC, plain: true }, { x: r.x + r.w, y: r.y, w: 0.25, h: r.h, z0: f, z1: f + 1.1, c: S.bandC, plain: true }); }
+    };
     for (const z of d.zones) {
       const horiz = z.w >= z.h;
+      const LS = ZONES[z.type].terminal || z.type === 'curb' ? STYLES[0] : nearStyle(z); const lp = LS === STYLES[0];
+      const ROOF = lp ? ROOF0 : LS.roofC, PLINTH = lp ? PLINTH0 : LS.plinth, EDGE = lp ? '#CFC8BA' : LS.edgeC, POST = lp ? '#8C8576' : LS.finC;
       if (z.type === 'parking' && (z.floors ?? 1) > 1) {
         const n = z.floors!;
-        for (let k = 1; k <= n; k++) misc.push({ ...z, z0: k * 3.2 - 0.5, z1: k * 3.2, c: k === n ? '#A7A39A' : '#CFC8BA' });
-        for (let x = z.x + 1; x <= z.x + z.w; x += 9) for (const y of [z.y + 0.4, z.y + z.h - 1]) misc.push({ x: x - 0.3, y, w: 0.6, h: 0.6, z0: 0, z1: n * 3.2, c: '#8C8576' });
-        for (let y = z.y + 9; y < z.y + z.h; y += 9) for (const x of [z.x + 0.4, z.x + z.w - 1]) misc.push({ x, y: y - 0.3, w: 0.6, h: 0.6, z0: 0, z1: n * 3.2, c: '#8C8576' });
+        for (let k = 1; k <= n; k++) misc.push({ ...z, z0: k * 3.2 - 0.5, z1: k * 3.2, c: k === n ? '#A7A39A' : EDGE });
+        for (let x = z.x + 1; x <= z.x + z.w; x += 9) for (const y of [z.y + 0.4, z.y + z.h - 1]) misc.push({ x: x - 0.3, y, w: 0.6, h: 0.6, z0: 0, z1: n * 3.2, c: POST });
+        for (let y = z.y + 9; y < z.y + z.h; y += 9) for (const x of [z.x + 0.4, z.x + z.w - 1]) misc.push({ x, y: y - 0.3, w: 0.6, h: 0.6, z0: 0, z1: n * 3.2, c: POST });
+        if (!lp) dress(z, 0.4, n * 3.2 + 1.1, LS, Array.from({ length: n }, (_, k) => (k + 1) * 3.2 - 0.5));
         misc.push({ x: z.x + 3, y: z.y + 3, w: 9, h: 9, z0: 0, z1: n * 3.2 + 3, c: '#B9B2A4' });   // stair and lift core
       } else if (z.type === 'hotel') {
         const H = GROWTH.hotelFloors * 3.6;
         misc.push({ ...z, z0: 0, z1: 4.4, c: PLINTH });
         glassF.push({ x: z.x + 0.5, y: z.y + 0.5, w: z.w - 1, h: z.h - 1, z0: 4.4, z1: H + 4, c: GLASS.hotel });
         for (let k = 0; k <= GROWTH.hotelFloors; k++) misc.push({ x: z.x - 0.3, y: z.y - 0.3, w: z.w + 0.6, h: z.h + 0.6, z0: 4.4 + k * 3.6 - 0.35, z1: 4.4 + k * 3.6, c: ROOF });
-        misc.push({ x: z.x + z.w * 0.3, y: z.y + z.h * 0.3, w: z.w * 0.4, h: z.h * 0.4, z0: H + 4, z1: H + 6.5, c: '#CFC8BA' });
+        misc.push({ x: z.x + z.w * 0.3, y: z.y + z.h * 0.3, w: z.w * 0.4, h: z.h * 0.4, z0: H + 4, z1: H + 6.5, c: EDGE });
+        if (!lp) dress(z, 4.4, H + 4.4, LS, Array.from({ length: GROWTH.hotelFloors }, (_, k) => 4.4 + k * 3.6));
       } else if (z.type === 'rental') {
         misc.push({ ...z, z0: 0, z1: 0.11, c: '#A7A39A' });
         const bw = Math.min(z.w, z.h) * 0.3; const b = horiz ? { x: z.x, y: z.y, w: z.w, h: bw } : { x: z.x, y: z.y, w: bw, h: z.h };
