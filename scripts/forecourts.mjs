@@ -92,6 +92,20 @@ for (const gap of [150, 250]) { const w = sampleWorld(); through(w, 2900, 1500, 
   const hit = low.filter(q => kerbs.some(z => q.x > z.x - 1 && q.x < z.x + z.w + 1 && q.y > z.y - 1 && q.y < z.y + z.h + 1)).length;
   console.log('a second hall ' + gap + ' m west on the same drawn road:', d.autoRoads.filter(q => q.rg).length, 'ramps,', hit, 'ramp points on a kerb');
   check('with a second hall ' + gap + ' m along the same road, no ramp lies on either hall kerb', hit === 0); }
+// (v0.84: and the two other faults of that review)
+{ const cross = (a, b, c, d) => { const o = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x); return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0; };
+  // a second hall just past the end of a road the first hall ran on: its forecourt does not cross the added stretch or stand on the turnaround
+  const w = sampleWorld(); layouts[16][1](w);
+  w.zones.push({ id: 980, type: 'checkin', level: 1, x: 3420, y: 2810, w: 300, h: 60, tier: 0, pair: 981, site: w.sites[0].id }, { id: 981, type: 'claim', level: 0, x: 3420, y: 2810, w: 300, h: 60, tier: 0, pair: 980, site: w.sites[0].id });
+  const d = derive(w); const mine = q => q.id >= 800000 + 11 * 4 && q.id < 800000 + 11 * 4 + 4; const ext = d.autoRoads.filter(q => q.fore === 'link' && mine(q)); const other = d.autoRoads.filter(q => (q.fore === 'face' || q.fore === 'link') && !mine(q));
+  const x = other.filter(q => ext.some(e => cross(q.a, q.b, e.a, e.b))).length; const onHead = other.filter(q => d.heads.some(h => { const t = Math.max(0, Math.min(1, ((h.x - q.a.x) * (q.b.x - q.a.x) + (h.y - q.a.y) * (q.b.y - q.a.y)) / ((q.b.x - q.a.x) ** 2 + (q.b.y - q.a.y) ** 2 || 1))); return Math.hypot(h.x - q.a.x - t * (q.b.x - q.a.x), h.y - q.a.y - t * (q.b.y - q.a.y)) < 20; })).length;
+  console.log('a second hall past the end of a road the first ran on:', ext.length, 'added stretch(es),', other.length, 'forecourt roads of the second hall,', x, 'crossing a stretch,', onHead, 'through a turnaround');
+  check('a hall is not run on along a second hall face: the second lays its own forecourt, and nothing of it crosses an added stretch or a turnaround', other.length >= 3 && x === 0 && onHead === 0); }
+{ // a taxiway stub beside where the turnaround would go: no turnaround on its pavement
+  const w = sampleWorld(); layouts[16][1](w); w.ways.push({ id: w.nextId++, kind: 'taxi', a: { x: 3470, y: 2700 }, b: { x: 3470, y: 2882 }, cls: 2 });
+  const d = derive(w); const near = d.heads.filter(h => Math.abs(h.x - 3470) < 52 && h.y > 2690 && h.y < 2940).length;
+  console.log('a taxiway stub ending beside the run-on:', d.heads.length, 'turnaround(s),', near, 'within reach of the taxiway');
+  check('no turnaround is laid on or beside a taxiway', near === 0); }
 // v0.81: a terminal facing each way (its airside to the north, east, south, west), on bare ground: a road drawn through
 // along the hall's landside face, and one running past 110 m off it
 for (const air of ['n', 'e', 's', 'w']) for (const off of [27, 110]) {
