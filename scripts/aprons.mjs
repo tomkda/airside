@@ -82,6 +82,36 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
       check('every car bound for the ground kerb drives to the turnaround first and comes back along the kerb (' + seen.length + ' cars)', h.first && seen.length > 50 && seen.every(round) && seen.every(back));
       const wrong = s2.cars.filter(c => c.stage === 'out' && c.pts.some(p => Math.hypot(p.x - h.x, p.y - h.y) < 30)).length;
       check('and none goes back to it to leave', wrong === 0); } }
+  // v0.73: a frontage road drawn by hand gets ramps to its deck too
+  { const base = () => { const w = sampleWorld(); w.rounds = []; w.zones = w.zones.filter(z => z.type !== 'parking'); return w; };
+    const R = (w, id) => w.ways.find(q => q.id === id); const rgs = d => d.autoRoads.filter(q => q.rg).map(q => q.rg); const deck = d => d.decks.find(q => !q.branch);
+    const noRamp = d => d.issues.filter(i => /no ramp/.test(i.text)).length;
+    // a through road along the face
+    { const w = base(); R(w, 14).a = { x: 2200, y: 5700 }; R(w, 14).b = { x: 2200, y: 2900 }; R(w, 15).a = { x: 2200, y: 2900 }; R(w, 15).b = { x: 3900, y: 2900 }; R(w, 16).a = { x: 3900, y: 2900 }; R(w, 16).b = { x: 3900, y: 5700 };
+      const d = derive(w); const g = rgs(d); const dk = deck(d);
+      console.log('drawn through road:', g.length, 'ramps', g.map(q => (q.up ? 'up' : 'down') + (q.path ? ' slip' : ' other')).join(', '), '| forecourt ways', d.autoRoads.filter(q => q.fore === 'face' || q.fore === 'link').length, '|', d.terminals.map(t => t.name + (t.active ? ' open' : ' closed')).join(', '));
+      check('a road drawn straight through along the hall lays no forecourt but gets a slip ramp at each end, one up and one down, both on the hall side', g.length === 2 && g.every(q => q.path && q.n.y < -0.9) && g.filter(q => q.up).length === 1 && d.autoRoads.every(q => q.fore === 'ramp') && d.terminals[0].active && noRamp(d) === 0);
+      check('traffic goes up at the east end and comes down at the west, so it passes the doors with the kerb on its right', g.find(q => q.up).T.x > 3050 && g.find(q => !q.up).T.x < 3050);
+      check('each slip ramp leaves the road at its edge, stands clear of it while it climbs and is at deck height before it swings over the road', g.every(q => Math.abs(q.T.y - 2900) < 0.1 && Math.abs(q.N.y - 2900) < 10 && q.path.slice(6, q.top + 1).every(p => 2900 - p.y > 14) && Math.abs(q.D.y - 2900) < 0.1)
+        && dk.pts.every((p, i) => dk.zs[i] >= 0.99 || Math.abs(p.y - 2900) > 7 || dk.ws[i] < 4.5 || dk.zs[i] === 0));
+      check('the deck is level over the kerb and its ramps are at grade where they join the road', dk.zs[0] === 0 && dk.zs[dk.zs.length - 1] === 0 && Math.max(...dk.zs) === 1);
+      const sim = flyDay(w, 'a day on the slip ramps'); check('and a day flies on it with 0 missed and 0 stranded', sim.stats.missed === 0 && sim.stats.stranded === 0 && sim.stats.paxDep > 1000);
+      for (const r of w.ways) if (r.kind === 'road') r.lanes = 2; const d2 = derive(w); check('a two-lane road gets them too', rgs(d2).length === 2 && rgs(d2).every(q => q.path)); }
+    // roads that turn away at each end of the frontage
+    { const w = base(); R(w, 14).b = { x: 2780, y: 2900 }; R(w, 15).a = { x: 2780, y: 2900 }; R(w, 15).b = { x: 3320, y: 2900 }; R(w, 16).a = { x: 3320, y: 2900 };
+      const d = derive(w); const g = rgs(d);
+      console.log('drawn frontage with a corner at each end:', g.length, 'ramps', g.map(q => (q.up ? 'up' : 'down') + (q.path ? ' path' : q.fly ? ' fly' : ' corner')).join(', '));
+      check('a drawn frontage road that turns away 100 m past each end of the hall gets a ramp inside each corner, one up and one down', g.length === 2 && g.every(q => !q.path && !q.fly) && g.filter(q => q.up).length === 1 && d.terminals[0].active && noRamp(d) === 0);
+      w.rounds = [{ id: 17, x: 2780, y: 2900, size: 1 }, { id: 18, x: 3320, y: 2900, size: 1 }]; const d2 = derive(w); const g2 = rgs(d2);
+      const clear = Math.min(...deck(d2).pts.flatMap(p => w.rounds.map(r => Math.hypot(p.x - r.x, p.y - r.y) - 28)));
+      check('with a roundabout at each of those corners the ramps pass inside it, ' + clear.toFixed(0) + ' m clear of its kerb', g2.length === 2 && clear >= 6 && d2.terminals[0].active);
+      const sim = flyDay(w, 'a day on drawn corners with roundabouts'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000); }
+    // a frontage road no longer than the hall, fed from its middle: no ramp fits, and the design check says so
+    { const w = base(); w.ways = w.ways.filter(q => q.id !== 16); R(w, 14).a = { x: 3050, y: 5700 }; R(w, 14).b = { x: 3050, y: 2900 }; R(w, 15).a = { x: 2840, y: 2900 }; R(w, 15).b = { x: 3260, y: 2900 };
+      const d = derive(w); check('a frontage road that stops at the ends of the hall gets no ramp, and the design check says what one needs', rgs(d).length === 0 && noRamp(d) === 1 && d.terminals[0].active && noRamp(derive(sampleWorld())) === 0); }
+    // one end runs on, the other stops: the way up and the way down share the long end
+    { const w = base(); w.ways = w.ways.filter(q => q.id !== 16); R(w, 14).a = { x: 2400, y: 5700 }; R(w, 14).b = { x: 2400, y: 2900 }; R(w, 15).a = { x: 2400, y: 2900 }; R(w, 15).b = { x: 3260, y: 2900 };
+      const d = derive(w); const g = rgs(d); check('where only one end runs on, a slip ramp each side of the road there carries the way up and the way down', g.length === 2 && g.every(q => q.path && q.T.x < 2880) && g.filter(q => q.up).length === 1 && g[0].n.y * g[1].n.y < 0 && d.decks.filter(q => q.branch).length === 1); } }
   // v0.67: footbridges: the car park's sidewalk is carried over the forecourt, and lands at the hall with a way to both levels
   { const w = sampleWorld(); const d = derive(w); const fb = d.footbridges[0]; const ci = w.zones.find(z => z.type === 'checkin'), cl = w.zones.find(z => z.type === 'claim'), pk = w.zones.find(z => z.type === 'parking');
     const c = z => ({ x: z.x + z.w / 2, y: z.y + z.h / 2 }); const onB = r => !!r && r.pts.some((p, i) => r.lvs[i] === 1 && Math.hypot(p.x - fb.a.x, p.y - fb.a.y) < 2);

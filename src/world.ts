@@ -1405,6 +1405,8 @@ export function derive(drawn: World): Derived {
   // v0.36: a cut-out that cuts a building in two: no one can walk from one part to the other
   for (const z of world.zones.filter(q => q.type === 'concourse')) if (shells.filter(sh => sh.ids.includes(z.id)).length > 1 && !issues.some(q => q.zoneId === z.id && q.text.startsWith('A cut-out')))
     issues.push({ level: 'warn', zoneId: z.id, text: `A cut-out cuts Concourse ${GA.letters.get(z.id) ?? ''} in two: no one can walk from one part to the other. Fill it in, make it smaller, or link the parts.` });
+  // v0.73: a departures deck with no ramp of its own at an end
+  for (const dk of FR.decks) if (dk.flat && !dk.branch) issues.push({ level: 'info', ...(dk.hall !== undefined ? { zoneId: dk.hall } : {}), text: `The departures deck has no ramp at ${dk.flat === 2 ? 'either end' : 'one end'}: it comes down along the road beneath it. A ramp needs the frontage road to run straight on about 140 m past the hall, or to meet a road that turns away from the building 46 to 150 m past it.` });
   if (!runways.length) issues.push({ level: 'error', text: 'Draw a runway. 2,100 m lets A320s operate; 3,000 m lets A380s operate.' });
   else if (maxCls < 0) issues.push({ level: 'error', text: `Longest runway is ${Math.round(longest).toLocaleString()} m. Turboprops need 1,200 m.` });
   else if (maxCls < 2) issues.push({ level: 'warn', text: `Longest runway is ${Math.round(longest).toLocaleString()} m: up to ${CLASSES[maxCls].example}. A320s need 2,100 m.` });
