@@ -67,7 +67,9 @@ export interface Flight {
 type WaitKey = 'curb' | 'checkin' | 'security' | 'claim' | 'passport';
 /** v0.57: a module's day, for its level of service: the most people waiting at once, the longest wait (smoothed at a desk, the longest for a bag), and arrivals hour by hour. */
 export interface LosStat { peakQ: number; peakWait: number; in: number[];
-  /** how many desks were staffed when the wait peaked */ open?: number }
+  /** how many desks were staffed when the wait peaked */ open?: number;
+  /** v0.79: the most of its queue that stood outside it at once, and the module they stood in (if any) */ spill?: number; into?: number;
+  /** v0.79: the most of other modules' queues that stood in it at once, and the module most of them were queuing for */ guests?: number; from?: number }
 export interface DayStats {
   paxDep: number; paxArr: number; missed: number; stranded: number; satSum: number; satN: number;
   waits: Record<WaitKey, { sum: number; n: number; max: number }>;
@@ -1188,6 +1190,10 @@ export class Sim {
     return { x: lot.x + 8 + (i % cols) * 6 + 3, y: lot.y + 8 + Math.floor(i / cols) * 14 + 5 };
   }
 
+  /** v0.79: how many of a desk queue stand inside its own module (the rest stand outside its entry: see `queueSlot`). */
+  queueRoom(proc: Proc): number {
+    const f = proc.frame; return Math.max(4, Math.floor((f.edgeLen * 0.8) / 1.15)) * Math.max(1, Math.floor((f.depth * 0.42) / 1.9));
+  }
   queueSlot(proc: Proc, i: number): Pt {
     const f = proc.frame; const per = Math.max(4, Math.floor((f.edgeLen * 0.8) / 1.15));
     const row = Math.floor(i / per), k = i % per;
@@ -1258,6 +1264,15 @@ export class Sim {
     for (const p of this.procs.values()) if (p.queue.length && (p.type === 'checkin' || p.type === 'security' || p.type === 'passport')) {
       const w = this.t - p.queue[0].since; const L = this.losStat(p.zone.id); if (w > L.peakWait) { L.peakWait = w; L.open = p.servers; }
     }
+    // v0.79: a queue longer than its module holds stands in the room before it, and takes that room's floor
+    const guests = new Map<number, { n: number; top: number; from: number }>();
+    for (const p of this.procs.values()) if (p.type === 'checkin' || p.type === 'security' || p.type === 'passport') {
+      const room = this.queueRoom(p); const out = p.queue.length - room; if (out <= 0) continue;
+      const host = this.d.zoneAt(this.queueSlot(p, room), p.zone.level); const L = this.losStat(p.zone.id);
+      if (out > (L.spill ?? 0)) { L.spill = out; L.into = host && host.id !== p.zone.id ? host.id : undefined; }
+      if (host && host.id !== p.zone.id) { const g = guests.get(host.id) ?? { n: 0, top: 0, from: p.zone.id }; g.n += out; if (out > g.top) { g.top = out; g.from = p.zone.id; } guests.set(host.id, g); }
+    }
+    for (const [id, g] of guests) { const H = this.losStat(id); if (g.n > (H.guests ?? 0)) { H.guests = g.n; H.from = g.from; } }
   }
   arrive(p: Pax) {
     const step = p.steps[0];

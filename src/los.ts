@@ -19,6 +19,11 @@ export interface Los {
   need: number; open: number; max: number;
   /** (losDay) from today's figures so far, not the last full day's */
   today?: boolean;
+  /** v0.79: how much of its queue stood outside it at the peak, and in which module */
+  spill?: number; into?: number;
+  /** v0.79: how many of other modules' queues stood on its floor at the peak (they are counted in `space`), whose, and
+   *  what its space and band would be without them */
+  guests?: number; from?: number; own?: { space: number; sBand: Axis; band: Band };
 }
 export const losKind = (z: Zone): LosKind | null => (z.type in LOS.std ? z.type as LosKind : null);
 const floor = (z: Zone) => (z.poly ? polyArea(z.poly) : z.w * z.h);
@@ -37,13 +42,15 @@ export function bandOf(s: Axis, w: Axis | undefined, space: number, lo: number):
 }
 /** A module's level of service from a day's figures (or the moment's). Null where nobody has waited. */
 export function losFrom(sim: Sim, z: Zone, st: LosStat | undefined): Los | null {
-  const kind = losKind(z); if (!kind || !st || (!st.peakQ && !st.peakWait)) return null;
-  const std = LOS.std[kind]; const area = losArea(sim, z);
-  const space = st.peakQ ? area / st.peakQ : Infinity; const sBand = spaceAxis(space, std.space);
+  const kind = losKind(z); if (!kind || !st || (!st.peakQ && !st.peakWait && !st.guests)) return null;
+  const std = LOS.std[kind]; const area = losArea(sim, z); const g = st.guests ?? 0;
+  const space = st.peakQ + g ? area / (st.peakQ + g) : Infinity; const sBand = spaceAxis(space, std.space);
+  const space0 = st.peakQ ? area / st.peakQ : Infinity, sBand0 = spaceAxis(space0, std.space);
   const wait = std.wait ? st.peakWait : undefined; const wBand = std.wait ? waitAxis(st.peakWait, std.wait) : undefined;
   const p = sim.procs.get(z.id); const svc = p && (kind === 'checkin' || kind === 'security' || kind === 'passport') ? sim.svcTime(p) : 0;
   const demand = Math.max(0, ...st.in);
-  return { kind, band: bandOf(sBand, wBand, space, std.space[0]), space, sBand, wait, wBand, peakQ: st.peakQ, area, demand,
+  return { ...(st.spill ? { spill: st.spill, into: st.into } : {}), ...(g ? { guests: g, from: st.from, own: { space: space0, sBand: sBand0, band: bandOf(sBand0, wBand, space0, std.space[0]) } } : {}),
+    kind, band: bandOf(sBand, wBand, space, std.space[0]), space, sBand, wait, wBand, peakQ: st.peakQ, area, demand,
     cap: svc && p ? p.servers * 60 / svc : 0, capMax: svc && p ? p.maxServers * 60 / svc : 0, need: svc ? Math.ceil(demand * svc / 60) : 0, open: st.open ?? p?.servers ?? 0, max: p?.maxServers ?? 0 };
 }
 /** The day's level of service: the last full day's, until today has seen at least half as many people (or already

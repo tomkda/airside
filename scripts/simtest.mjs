@@ -43,6 +43,13 @@ console.log('log:', sim.log.slice(0, 6));
   const after = losFrom(sim, sec, sim.losLast.get(sec.id));
   console.log('security with its dial at 2 lanes (was ' + open0 + '):', LOS.names[before.band], Math.round(before.wait) + ' min →', LOS.names[after.band], Math.round(after.wait) + ' min,', after.open + '/' + after.max, 'staffed,', after.need, 'needed');
   check('a module staffed below its busiest hour waits longer and drops a band', after.open === 2 && after.wait > before.wait && after.band > before.band && after.need > 2);
+  // v0.79: a queue that outgrows its own floor stands in the room before it, which loses floor to it
+  check('with security as large as in the sample nothing overflows, even at 2 lanes', !before.spill && !after.spill);
+  { const w2 = sampleWorld(); const s2z = w2.zones.find(z => z.type === 'security'); s2z.x = 3042; s2z.w = 16;
+    const s2 = new Sim(w2, 7); s2.relayout(); s2.startDay(); const dd = s2.day; while (s2.day === dd) s2.step(0.25);
+    const hall = w2.zones.find(z => z.type === 'checkin'); const S2 = losFrom(s2, s2z, s2.losLast.get(s2z.id)), H = losFrom(s2, hall, s2.losLast.get(hall.id)); const room = s2.queueRoom(s2.procs.get(s2z.id));
+    console.log('a 16 m security checkpoint: ' + S2.peakQ + ' in its queue at the peak, ' + room + ' fit in line inside, ' + (S2.spill ?? 0) + ' stood ' + (S2.into === hall.id ? 'in the check-in hall' : 'elsewhere') + ' | the hall: ' + (H.guests ?? 0) + ' of the security queue on its floor, ' + H.space.toFixed(1) + ' m2 each with them, ' + (H.own ? (isFinite(H.own.space) ? H.own.space.toFixed(1) : 'inf') : '-') + ' without (' + LOS.names[H.band] + ', ' + (H.own ? LOS.names[H.own.band] : '-') + ' on its own)');
+    check('the queue that does not fit in a small security checkpoint stands in the check-in hall, and is counted on the hall floor', S2.spill > 0 && Math.abs(S2.peakQ - S2.spill - room) <= 10 && S2.into === hall.id && H.guests > 0 && H.from === s2z.id && !!H.own && H.space < H.own.space && H.band >= H.own.band); }
   delete sec.staff; sim.relayout(); check('with the dial off it takes its share again', sim.procs.get(sec.id).servers === open0);
   // turned down while people are being served: they go back to the head of the line, nobody is left at a closed lane
   { const d1 = sim.day; while (sim.day === d1 && !(sim.procs.get(sec.id).busy.filter(Boolean).length >= 3)) sim.step(0.25);
