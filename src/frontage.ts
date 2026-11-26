@@ -354,7 +354,7 @@ function rampLine(rg: RampGeo, W: number): RampLine {
  *  own (generated, never saved; ids from `HEAD_ID`). `face` are its frontage road's ids. With traffic on the right the
  *  kerb is on a driver's right in one direction only: `first` says that is the way back from the turnaround, so cars
  *  bound for the kerb drive past to the far end and turn first; otherwise they pull in on the way and turn to leave. */
-export interface Head extends Round { face: number[]; first: boolean }
+export interface Head extends Round { face: number[]; first: boolean; /** v0.82: the stretch the hall added to reach it, if any (the way it is entered by) */ link?: number }
 export const HEAD_ID = 2000000;
 export function autoForecourt(world: World, aprons: Rect[], highwayY: number, siteW: number, heads?: Head[]): Way[] {
   const out: Way[] = [];
@@ -362,10 +362,13 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
   const chords = [...drawn.flatMap(w => waySegs(w).map(([a, b]) => ({ a, b }))), { a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY } }];
   const blocked = blocker(world, world.zones, aprons);
   const over = (a: Zone, b: Zone) => rectsOverlap(shrink(a, 1), b);
+  /** v0.82: is a point within `k` m of a taxiway's or runway's pavement (`blocked` only sees a line that crosses one)? */
+  const nearAir = (p: Pt, k: number) => world.ways.some(w => w.kind === 'taxi' && segDist(p, w.a, w.b) < k + 12) || world.runways.some(r => segDist(p, r.a, r.b) < k + 40);
   /** Is there room for a turnaround of radius R at E: on the site, off every road in `roadsBy`, clear of other roundabouts and of everything `blocked` knows. */
   const headRoom = (E: Pt, R: number, fam: Zone[], roadsBy: { a: Pt; b: Pt }[]) => {
     if (E.x < R + 10 || E.x > siteW - R - 10 || E.y < R + 10 || E.y > highwayY - R - 30) return false;
     if (roadsBy.some(c => segDist(E, c.a, c.b) < R + 10) || (world.rounds ?? []).some(r => dist(E, { x: r.x, y: r.y }) < R + roundDef(r).icd / 2 + 8) || (heads ?? []).some(r => dist(E, r) < R + roundDef(r).icd / 2 + 8)) return false;
+    if (nearAir(E, R + 12)) return false;
     return ![0, 1, 2, 3, 4, 5].some(k => { const dv = { x: Math.cos(k * Math.PI / 6) * (R + 5), y: Math.sin(k * Math.PI / 6) * (R + 5) }; return blocked({ x: E.x - dv.x, y: E.y - dv.y }, { x: E.x + dv.x, y: E.y + dv.y }, fam); });
   };
   /** v0.73: a slip ramp along `line` (a road from abreast of the hall's end to its own end, point by point), on its side
@@ -392,7 +395,9 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       for (let i2 = 0; i2 <= nS; i2++) { const x = lerpPt(a2, b2, i2 / nS);
         if (lowHere && rest.some(c => segDist(x, c.a, c.b) < 12)) return true;
         if ((world.rounds ?? []).some(r => dist(x, { x: r.x, y: r.y }) < roundDef(r).icd / 2 + 10)) return true;
-        if (world.zones.some(z => z.level === 1 && !fam.includes(z) && inZone(x, z, 2))) return true; }
+        if (world.zones.some(z => z.level === 1 && !fam.includes(z) && inZone(x, z, 2))) return true;
+        // (v0.82: nor along another hall's face, where its kerbs will be: they are laid after this)
+        if (world.zones.some(z => !fam.includes(z) && (z.type === 'checkin' || z.type === 'claim') && inZone(x, z, FRONTAGE.maxGap + 14))) return true; }
       return false; };
     const edge = (q: Pt) => ({ x: q.x + n.x * 6, y: q.y + n.y * 6 });
     if (path.some((q, j) => j > 0 && (target || j <= top + 2) && (blocked(path[j - 1], q, fam) || blocked(edge(path[j - 1]), edge(q), fam))) || blocked(pt(o + 4, sN + Lp), path[0], fam)) return null;
@@ -469,6 +474,8 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       const at = (t: number, k: number): Pt => ({ x: sd.a.x + al.x * t + sd.out.x * k, y: sd.a.y + al.y * t + sd.out.y * k });
       const a = at(-ext, off), b = at(L + ext, off);
       if (blocked(a, b, fam) || blocked(at(-ext, off - half), at(L + ext, off - half), fam)) continue;
+      // (v0.82: nor across what an earlier hall laid: its roads, or a turnaround)
+      if (out.some(q => q.fore !== 'ramp' && segsCross(a, b, q.a, q.b)) || (heads ?? []).some(hd => segDist(hd, a, b) < roundDef(hd).icd / 2 + 8)) continue;
       // the curb's own ground must be clear too
       const lot = faceBox(sd.a, sd.b, sd.out, off + half);
       if (world.zones.some(o => o.level === 0 && !fam.includes(o) && hits(shrink(lot, 1), o))) continue;
@@ -606,11 +613,15 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
             const p2 = Math.ceil(SLIP.ext * sum + more + SLIP.land + RAMP.clear + R); const E2 = { x: H0.x + u.x * p2, y: H0.y + u.y * p2 };
             const side = (q: Pt, d2: number) => ({ x: q.x + oE.x * d2, y: q.y + oE.y * d2 });
             if (blocked(E, E2, fam) || blocked(side(E, h), side(E2, h), fam) || blocked(side(E, -h), side(E2, -h), fam)) continue;
-            if ([0.25, 0.5, 0.75].some(t => rest.some(c => segDist(lerpPt(E, E2, t), c.a, c.b) < 12)) || !headRoom(E2, R, fam, rest)) continue;
+            if ([0.25, 0.5, 0.75].some(t => rest.some(c => segDist(lerpPt(E, E2, t), c.a, c.b) < 12) || nearAir(lerpPt(E, E2, t), h + 6)) || !headRoom(E2, R, fam, rest)) continue;
             exts[ei] = { a: E, b: E2, size, first: dot({ x: u.y, y: -u.x }, oE) < 0 }; line[1] = E2;
             ring = R; avail = p2 - ring - RAMP.clear - SLIP.land - more; k = Math.min(1, avail / sum); break; }
+          // v0.82: a dead end long enough for its ramp gets a turnaround too, at the road's own end, if the ramp still fits short of it
+          if (!exts[ei] && !fc.lines && k >= SLIP.least && past >= 0 && !ring && !atE.some(c => segDist(E, c.a, c.b) < 3)) for (const size of [1, 0]) { const R = ROUNDS[size].icd / 2;
+            const k2 = Math.min(1, (past - R - RAMP.clear - SLIP.land) / sum); if (k2 < SLIP.least || !headRoom(E, R, fam, rest)) continue;
+            exts[ei] = { a: E, b: E, size, first: dot({ x: u.y, y: -u.x }, oE) < 0 }; ring = R; k = k2; break; }
           const pastE = exts[ei] ? dist(H0, exts[ei]!.b) : past;
-          if (k >= SLIP.least) [{ x: -oE.x, y: -oE.y }, oE].forEach((n, si) => { slips[ei][si] = slipOn(line, n, u, h, k, pastE, ring, rest, fam, !!fc.lines, 0, exts[ei] ? overS : 0); }); }
+          if (k >= SLIP.least) [{ x: -oE.x, y: -oE.y }, oE].forEach((n, si) => { slips[ei][si] = slipOn(line, n, u, h, k, pastE, ring, rest, fam, !!fc.lines, 0, exts[ei] && dist(exts[ei]!.a, exts[ei]!.b) > 1 ? overS : 0); }); }
         // v0.77: the link is too short for a ramp of its own, but it meets a road that runs parallel to the frontage: a
         // ramp that leaves that road on the hall's side well out past the hall, climbs beside it, and swings across to
         // land on the frontage road, over the link and the corner
@@ -660,8 +671,9 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     if (!best) continue;
     if (best.own) {
       // (v0.74: and the stretches it added to the drawn road, each with its turnaround)
-      (best.exts ?? []).forEach((x, i) => { out.push({ id: FORE + m.id * 4 + 1 + i, kind: 'road', a: x.a, b: x.b, cls: 0, lanes: best!.own!.lanes, fore: 'link' });
-        heads?.push({ id: HEAD_ID + m.id * 2 + 1 + i, x: x.b.x, y: x.b.y, size: x.size, face: [best!.own!.id], first: x.first }); });
+      (best.exts ?? []).forEach((x, i) => { const run = dist(x.a, x.b) > 1;   // (v0.82: a turnaround at the road's own dead end has no added stretch)
+        if (run) out.push({ id: FORE + m.id * 4 + 1 + i, kind: 'road', a: x.a, b: x.b, cls: 0, lanes: best!.own!.lanes, fore: 'link' });
+        heads?.push({ id: HEAD_ID + m.id * 4 + 1 + i, x: x.b.x, y: x.b.y, size: x.size, face: [best!.own!.id], first: x.first, ...(run ? { link: FORE + m.id * 4 + 1 + i } : {}) }); });
       emitRamps(best.ramps, m.id, () => best!.own!.id); continue; }
     const id = FORE + m.id * 4;
     // v0.28: where a link comes square out of an end of the frontage road, the ground road sweeps round the corner
@@ -687,7 +699,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     else out.push({ id, kind: 'road', a: face.a, b: face.b, cls: 0, lanes: 4, fore: 'face', scheme: best.scheme });
     // (a ramp belongs to the chord nearest where it lands, of those that front the hall: not the straight run past an end)
     const faceNear = (p: Pt) => { if (!chain) return id; let bi = 1; for (let c = 1; c < chain.length - 2; c++) if (segDist(p, chain[c], chain[c + 1]) < segDist(p, chain[bi], chain[bi + 1])) bi = c; return faceIds[Math.min(bi, faceIds.length - 1)]; };
-    if (best.head && heads) heads.push({ id: HEAD_ID + m.id * 2, x: best.head.p.x, y: best.head.p.y, size: best.head.size, face: chain ? faceIds : [id], first: best.head.first });
+    if (best.head && heads) heads.push({ id: HEAD_ID + m.id * 4, x: best.head.p.x, y: best.head.p.y, size: best.head.size, face: chain ? faceIds : [id], first: best.head.first });
     legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
     corners.forEach((k, i) => out.push({ id: RAMP_ID + m.id * 16 + 12 + i, kind: 'road', a: k.a, b: k.b, c: k.c, cls: 0, lanes: 4, fore: 'corner' }));
     // each ramp: the taper and the speed-change lane one lane wide, the curve two; all one-way in the ramp's direction

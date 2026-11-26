@@ -37,7 +37,18 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.81)
+## What's in the alpha (v0.82)
+
+- **A review of the new forecourts, and its fixes (v0.82):** a second reader went through v0.72 to v0.81 and found six faults, all now fixed and checked in `forecourts.mjs`:
+  - on a frontage road the hall had run on to turnarounds, **cars for the deck never drove the ramps**: they took the ground road to the kerb, and the second turnaround was never used. They now go round the turnaround by the way up, climb the ramp, pass the doors, come down the other ramp and go round the second turnaround to leave (on four such layouts, every one of about 1,740 cars a day each way; it was none);
+  - a dead-end frontage road long enough for its ramp had no turnaround at its end; it gets one now;
+  - a slip ramp could be laid along a second hall's kerbs on the same road; it no longer is;
+  - a car park's drive joining a turnaround could make cars reverse at its mouth instead of going round;
+  - a later hall's forecourt could be laid across an earlier hall's added road or turnaround, and a turnaround could sit on a taxiway's pavement;
+  - two halls' turnarounds could be given the same number.
+- **The fit-out in its materials (v0.82, 3D model only):** with the roof lifted at terminal detail, the interior was all one brown. Counters are now oak, security lanes and trays steel, belts and carousels dark, seats upholstered blue-grey, cores plastered, on paler floors.
+
+  ![The terminal with its roof lifted](docs/shots/v082-lid-off.png)
 
 - **A frontage run on past a corner that is too near (v0.81):** approach roads that meet a hand-drawn frontage road at the hall's own corners (anything under 46 m past its ends) left no room for a ramp inside the corner, and the deck had none. The hall now runs the frontage road straight on past that junction to a turnaround of its own (as v0.74 does from a dead end) and lays the slip ramp on the added stretch; the ramp is at deck height before it reaches the junction and crosses over it. `forecourts.mjs` gains those three layouts and a terminal facing each of the four ways (with a road along its landside face, and one running past 110 m off): 38 layouts in all, every one but the curved road that swings away with a built ramp up and a built ramp down.
 

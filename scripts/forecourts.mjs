@@ -69,6 +69,29 @@ check('all the layouts but one have both ramps (' + two + ' of ' + layouts.lengt
 // a day's flying on four of them, one of each kind of ramp
 for (const i of [0, 4, 7, 15]) { const [name, edit] = layouts[i]; const w = sampleWorld(); edit(w); const sim = new Sim(w, 7); sim.relayout(); let ms = 0, st = 0, px = 0; sim.onDayEnd = r => { ms += r.stats.missed; st += r.stats.stranded; px += r.stats.paxDep; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
   console.log('   a day on ' + name + ': departing', px, 'missed', ms, 'stranded', st); check('a day on ' + name + ' flies with 0 missed and 0 stranded', ms === 0 && st === 0 && px > 1000); }
+// v0.82 (from a review): cars for the deck drive the ramps, on every layout that has turnarounds; and three faults found then
+const byRamp = (name, edit) => { const w = sampleWorld(); edit(w); const sim = new Sim(w, 7); sim.relayout(); const E = sim.d.road.edges; const ramps = sim.d.rampRefs; let inN = 0, inR = 0, outN = 0, outR = 0; const deckCars = new Set();
+  const sp = sim.spawnCar.bind(sim); sim.spawnCar = (party, pick, pts, eids, stage, curb, entry) => { const on = eids.some(e => e >= 0 && ramps.has(E[e].ref));
+    if (stage === 'in' && curb && curb.zone.auto && curb.zone.auto.deck === 'dep') { inN++; if (on) inR++; deckCars.add(party); } else if (stage === 'out' && deckCars.has(party)) { outN++; if (on) outR++; }
+    return sp(party, pick, pts, eids, stage, curb, entry); };
+  const lv = sim.exitRoute.bind(sim); sim.exitRoute = (from, zoneId, avoid) => { const r = lv(from, zoneId, avoid); const z = sim.d.zones.find(q => q.id === zoneId); if (z && z.auto && z.auto.deck === 'dep') { outN++; if (r.eids.some(e => e >= 0 && ramps.has(E[e].ref))) outR++; } return r; };
+  let st = 0, ms = 0; sim.onDayEnd = r => { st += r.stats.stranded; ms += r.stats.missed; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
+  console.log('   ' + name + ': to the deck by its ramp', inR, 'of', inN, '| from it by its ramp', outR, 'of', outN, '| turnarounds', sim.d.heads.length, '| missed', ms, 'stranded', st);
+  return { inN, inR, outN, outR, st, ms, sim }; };
+for (const i of [15, 16, 17, 14]) { const [name, edit] = layouts[i]; const r = byRamp(name, edit);
+  check(name + ': nine in ten cars for the deck climb its ramp and nine in ten leave by its ramp, with nobody stranded', r.inN > 500 && r.inR >= r.inN * 0.9 && r.outN > 500 && r.outR >= r.outN * 0.9 && r.st === 0); }
+// a drive that joins a turnaround too does not confuse which way round it is
+{ const w = sampleWorld(); layouts[1][1](w); w.zones.push({ id: 960, type: 'parking', level: 0, x: 3345, y: 2850, w: 120, h: 100, tier: 0 });
+  const sim = new Sim(w, 7); sim.relayout(); const hd = sim.d.heads[0]; const far = hd ? sim.ringFar(hd) : -1; const p = far >= 0 ? sim.d.road.nodes[far] : null;
+  console.log('one approach road with a car park by the turnaround:', hd ? 'turnaround at ' + hd.x.toFixed(0) + ', the way round passes ' + (p ? p.x.toFixed(0) + ',' + p.y.toFixed(0) : '-') : 'no turnaround');
+  check('with a car park whose drive joins the turnaround, the way round still passes its far side', !!hd && !!p && p.x > hd.x + 10); }
+// a second hall on the same drawn road: no ramp is laid along its face
+for (const gap of [150, 250]) { const w = sampleWorld(); through(w, 2900, 1500, 3900); const x = 2880 - gap - 330;
+  w.zones.push({ id: 970, type: 'checkin', level: 1, x, y: 2810, w: 330, h: 60, tier: 0, pair: 971, site: w.sites[0].id }, { id: 971, type: 'claim', level: 0, x, y: 2810, w: 330, h: 60, tier: 0, pair: 970, site: w.sites[0].id });
+  const d = derive(w); const low = d.decks.flatMap(dk => dk.pts.filter((q, i) => dk.zs[i] < 0.99 || dk.ws[i] < 12)); const kerbs = d.zones.filter(z => z.type === 'curb' && z.auto);
+  const hit = low.filter(q => kerbs.some(z => q.x > z.x - 1 && q.x < z.x + z.w + 1 && q.y > z.y - 1 && q.y < z.y + z.h + 1)).length;
+  console.log('a second hall ' + gap + ' m west on the same drawn road:', d.autoRoads.filter(q => q.rg).length, 'ramps,', hit, 'ramp points on a kerb');
+  check('with a second hall ' + gap + ' m along the same road, no ramp lies on either hall kerb', hit === 0); }
 // v0.81: a terminal facing each way (its airside to the north, east, south, west), on bare ground: a road drawn through
 // along the hall's landside face, and one running past 110 m off it
 for (const air of ['n', 'e', 's', 'w']) for (const off of [27, 110]) {

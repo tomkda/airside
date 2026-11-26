@@ -6,6 +6,7 @@ import { BANK, Bank, GROUND, CLASSES, AcClass, Cls, AIRLINES, Airline, Level, SI
 import { runwayExits } from './airfield';
 import { World, Derived, Zone, Gate, RunwayInfo, Wind, Route, Terminal, Shop, Flow, derive, runwayUsable, unitsOf, Frame } from './world';
 import { wayLen, isRingRef, ringRef } from './ways';
+import type { Head } from './frontage';
 import { toLocal, clampInto, frameOf, polyArea } from './shapes';
 import { flowBins, newFlow, tenantsOf } from './commerce';
 import { Goal, checkGoals } from './goals';
@@ -217,6 +218,7 @@ export class Sim {
   private airCache = new Map<string, DJ>();
   private roadCache = new Map<number, DJ>();
   private headCache = new Map<number, { n: number; first: boolean } | null>();
+  private deckCache = new Map<number, { up: number; down: number } | null>();
   private noted = new Set<string>();
   private pending: { at: number; party: Party }[] = [];
   private openArr = new Map<number, Party>();
@@ -266,7 +268,7 @@ export class Sim {
   }
   relayout() {
     this.d = derive(this.world);
-    this.airCache.clear(); this.roadCache.clear(); this.headCache.clear(); this.shopLoad.clear(); this.walkCache.clear();
+    this.airCache.clear(); this.roadCache.clear(); this.headCache.clear(); this.deckCache.clear(); this.shopLoad.clear(); this.walkCache.clear();
     for (const f of this.flights) f.route = undefined;   // (v0.58: the airfield's nodes are new ones)
     this.roadLoad = new Float32Array(this.d.road.edges.length);
     // v0.11: how much of its length each road edge can use. Traffic stops and starts at a crossroads or T, so an
@@ -1402,24 +1404,45 @@ export class Sim {
     const tr = trace(this.d.road, dj, from);
     return { pts: tr.nodes.map(n => this.d.road.nodes[n]), eids: tr.eids };
   }
-  /** v0.72: the turnaround of a ground-level curb's forecourt, if it has one: the node on its ring furthest from where
-   *  the frontage road joins it (a route through that node goes right round), and whether cars turn before the kerb. */
+  /** v0.72: the node on a turnaround's ring furthest from where its own road joins it: a route through that node goes
+   *  right round. (v0.82: its own road is its forecourt's frontage road or the stretch the hall added, not a drive that
+   *  happens to join the ring too.) */
+  ringFar(hd: Head): number {
+    const net = this.d.road; const ref = ringRef(hd.id); const ring = new Set<number>(); let entry = -1, any = -1;
+    for (const e of net.edges) if (e.ref === ref) { ring.add(e.u); ring.add(e.v); }
+    const own = new Set<number>([...hd.face, ...(hd.link !== undefined ? [hd.link] : [])]);
+    for (const n of ring) for (const k of net.adj[n]) { const r = net.edges[k].ref; if (r === ref) continue; any = n; if (own.has(r)) entry = n; }
+    if (entry < 0) entry = any; if (entry < 0) return -1;
+    let far = -1; for (const n of ring) if (far < 0 || dist(net.nodes[n], net.nodes[entry]) > dist(net.nodes[far], net.nodes[entry])) far = n;
+    return far === entry ? -1 : far;
+  }
+  /** The turnaround of a ground-level curb's forecourt, if it has one, and whether cars turn before the kerb. */
   headOf(curb: Zone | undefined): { n: number; first: boolean } | null {
     if (!curb || curb.auto?.deck === 'dep' || curb.auto?.road === undefined || !this.d.heads.length) return null;
     const road = curb.auto.road; let h = this.headCache.get(road);
     if (h === undefined) {
       h = null; const hd = this.d.heads.find(q => q.face.includes(road) && q.first) ?? this.d.heads.find(q => q.face.includes(road));
-      if (hd) { const net = this.d.road; const ref = ringRef(hd.id); const ring = new Set<number>(); let entry = -1;
-        for (const e of net.edges) if (e.ref === ref) { ring.add(e.u); ring.add(e.v); }
-        for (const n of ring) if (net.adj[n].some(k => net.edges[k].ref !== ref)) entry = n;
-        if (entry >= 0) { let far = -1; for (const n of ring) if (far < 0 || dist(net.nodes[n], net.nodes[entry]) > dist(net.nodes[far], net.nodes[entry])) far = n; if (far !== entry) h = { n: far, first: hd.first }; } }
+      if (hd) { const far = this.ringFar(hd); if (far >= 0) h = { n: far, first: hd.first }; }
       this.headCache.set(road, h);
     }
     return h;
   }
+  /** v0.82: for a departures kerb on a road with turnarounds: the one by its way up (cars for the deck go round it and
+   *  climb the ramp) and the one by its way down (they come down the ramp and go round it to leave). -1 where there is none. */
+  deckHeads(curb: Zone | undefined): { up: number; down: number } | null {
+    if (!curb || curb.auto?.deck !== 'dep' || curb.auto.road === undefined || !this.d.heads.length) return null;
+    const road = curb.auto.road; let h = this.deckCache.get(road);
+    if (h === undefined) {
+      h = null; const hs = this.d.heads.filter(q => q.face.includes(road)); const rgs = this.d.autoRoads.filter(w => w.rg && w.face === road).map(w => w.rg!);
+      if (hs.length && rgs.length) { const by = (up: boolean) => { const g = rgs.find(q => q.up === up); if (!g) return -1; const hd = hs.reduce((m, q) => (dist(q, g.T) < dist(m, g.T) ? q : m)); return dist(hd, g.T) < 150 ? this.ringFar(hd) : -1; };
+        h = { up: by(true), down: by(false) }; }
+      this.deckCache.set(road, h);
+    }
+    return h;
+  }
   /** A road route from one node to another by way of a third. */
-  roadVia(from: number, via: number, to: number): { pts: Pt[]; eids: number[] } | null {
-    const a = this.roadRoute(from, via), b = this.roadRoute(via, to);
+  roadVia(from: number, via: number, to: number, deck = false): { pts: Pt[]; eids: number[] } | null {
+    const a = this.roadRoute(from, via, deck), b = this.roadRoute(via, to, deck);
     return a && b ? { pts: [...a.pts, ...b.pts.slice(1)], eids: [...a.eids, ...b.eids] } : null;
   }
   /** Drivers are already near the airport: start them 500 m up the highway from their exit. */
@@ -1474,10 +1497,10 @@ export class Sim {
   driveTo(party: Party, curb: Proc, pick: boolean): boolean {
     const o = this.hwyEnd();
     let best: { pts: Pt[]; eids: number[] } | null = null, bn = -1;
-    const deck = curb.zone.auto?.deck === 'dep'; const hd = this.headOf(curb.zone);
+    const deck = curb.zone.auto?.deck === 'dep'; const hd = this.headOf(curb.zone); const dh = this.deckHeads(curb.zone);
     for (const n of this.d.attach.get(curb.zone.id) ?? []) {
       // (v0.72: where the kerb is on the right only on the way back from the forecourt's turnaround, go round it first)
-      const r0 = (hd?.first ? this.roadVia(o, hd.n, n) : null) ?? this.roadRoute(o, n, deck); const r = r0 && this.trimHwy(r0);
+      const r0 = (hd?.first ? this.roadVia(o, hd.n, n) : dh && dh.up >= 0 ? this.roadVia(o, dh.up, n, true) : null) ?? this.roadRoute(o, n, deck); const r = r0 && this.trimHwy(r0);
       if (r && (!best || polyLen(r.pts) < polyLen(best.pts))) { best = r; bn = n; }
     }
     if (!best) return false;
@@ -1504,10 +1527,10 @@ export class Sim {
   exitRoute(from: Pt, zoneId: number, avoid: number): { pts: Pt[]; eids: number[] } {
     const dest = this.hwyEnd();
     let best: { pts: Pt[]; eids: number[] } | null = null, bc = Infinity;
-    const zn = this.d.zones.find(z => z.id === zoneId); const deck = zn?.auto?.deck === 'dep'; const hd = zn?.type === 'curb' ? this.headOf(zn) : null;
+    const zn = this.d.zones.find(z => z.id === zoneId); const deck = zn?.auto?.deck === 'dep'; const hd = zn?.type === 'curb' ? this.headOf(zn) : null; const dh = zn?.type === 'curb' ? this.deckHeads(zn) : null;
     for (const n of this.d.attach.get(zoneId) ?? []) {
       // (v0.72: and where it was on the right on the way in, turn at the far end to leave)
-      const r = (hd && !hd.first ? this.roadVia(n, hd.n, dest) : null) ?? this.roadRoute(n, dest, deck);
+      const r = (hd && !hd.first ? this.roadVia(n, hd.n, dest) : dh && dh.down >= 0 ? this.roadVia(n, dh.down, dest, true) : null) ?? this.roadRoute(n, dest, deck);
       if (!r) continue;
       const c = polyLen(r.pts) + dist(from, r.pts[0]) + (n === avoid ? 120 : 0);
       if (c < bc) { bc = c; best = r; }
