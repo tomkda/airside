@@ -392,7 +392,31 @@ export class Renderer3D {
         let k = 0; while (k < cum.length - 2 && cum[k + 1] < u) k++;
         const t = (u - cum[k]) / (cum[k + 1] - cum[k] || 1); const zk = dk.zs[k] + (dk.zs[k + 1] - dk.zs[k]) * t; if (zk < 0.35) continue;
         const p = lerpPt(dk.pts[k], dk.pts[k + 1], t); const dir = norm(sub(dk.pts[k + 1], dk.pts[k])); const w = dk.ws[k] + (dk.ws[k + 1] - dk.ws[k]) * t;
-        for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); if (d.roadPieces.some(q => q.ref !== dk.road && !dk.roads?.includes(q.ref) && !d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + 0.8)) continue; misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
+        let stood = 0;
+        for (const side of [-1, 1]) { const c = add(p, { x: -dir.y * side * (w / 2), y: dir.x * side * (w / 2) }); if (d.roadPieces.some(q => q.ref !== dk.road && !dk.roads?.includes(q.ref) && !d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + 0.8)) continue; stood++; misc.push({ x: c.x - 0.8, y: c.y - 0.8, w: 1.6, h: 1.6, z0: 0, z1: Math.max(0.5, z1 * zk - 0.8), c: '#8C8576' }); }
+        // v0.75: a lamp standard on the level deck at every other bent, on alternate sides, with an arm over the road
+        if (zk > 0.97 && Math.round(u / 30) % 2 === 0) { const sd = Math.round(u / 60) % 2 ? 1 : -1; const nv = { x: -dir.y * sd, y: dir.x * sd }; const q = add(p, mul(nv, w / 2 + 0.2)); const zt = z1 * zk;
+          misc.push({ x: q.x - 0.14, y: q.y - 0.14, w: 0.28, h: 0.28, z0: zt, z1: zt + 9, c: '#6F6A60', plain: true });
+          const arm = add(q, mul(nv, -1.6)); misc.push({ x: arm.x - 1.7, y: arm.y - 0.12, w: 3.4, h: 0.24, z0: zt + 8.8, z1: zt + 9.05, c: '#6F6A60', rot: Math.atan2(nv.y, nv.x), plain: true }); }
+        // v0.75: a crosshead over each pair of piers, under the slab
+        if (stood === 2 && zk * z1 > 3.5) misc.push({ x: p.x - 0.9, y: p.y - (w + 2.2) / 2, w: 1.8, h: w + 2.2, z0: z1 * zk - 1.9, z1: z1 * zk - 0.75, c: '#8C8576', rot: Math.atan2(dir.y, dir.x) });
+      }
+      // v0.75: the deck as a structure. A parapet along each raised edge (not where it runs beside its own road at
+      // grade); and under a ramp's low end, where no pier would fit, a solid abutment up to the slab
+      for (let i = 0; i + 1 < dk.pts.length; i++) {
+        const A = dk.pts[i], B = dk.pts[i + 1]; const LL = dist(A, B); if (LL < 0.5) continue;
+        const zA = 0.2 + (z1 - 0.2) * dk.zs[i], zB = 0.2 + (z1 - 0.2) * dk.zs[i + 1];
+        const dir = norm(sub(B, A)); const ang = Math.atan2(dir.y, dir.x);
+        // (in short lengths where it climbs, so the parapet follows the slope)
+        const nS = Math.abs(zA - zB) > 0.2 ? Math.max(1, Math.ceil(LL / 3)) : 1;
+        for (let j = 0; j < nS; j++) { const t0 = j / nS, t1 = (j + 1) / nS; const L = LL / nS; const c = lerpPt(A, B, (t0 + t1) / 2);
+          const za = zA + (zB - zA) * t0, zb = zA + (zB - zA) * t1; const zt = Math.max(za, zb), zl = Math.min(za, zb);
+          const w = dk.ws[i] + (dk.ws[i + 1] - dk.ws[i]) * (t0 + t1) / 2; if (w < 3) continue;
+          if (zt > 0.9) for (const side of [-1, 1]) { if (dk.abut[i] === side && zl < 0.6) continue;
+            const e = add(c, { x: -dir.y * side * (w / 2 + 0.45), y: dir.x * side * (w / 2 + 0.45) });
+            misc.push({ x: e.x - (L + 0.3) / 2, y: e.y - 0.16, w: L + 0.3, h: 0.32, z0: zl - 0.3, z1: zl + 1.1, c: '#D8D0BF', rot: ang, plain: true }); }
+          if (zt > 0.6 && zl < z1 * 0.36 && !d.roadPieces.some(q => !d.rampRefs.has(q.ref) && segDist(c, q.a, q.b) < (q.lanes >= 4 ? 8 : 4.5) + w / 2 - 0.5))
+            misc.push({ x: c.x - (L + 0.2) / 2, y: c.y - (w + 0.6) / 2, w: L + 0.2, h: w + 0.6, z0: 0, z1: Math.max(0.3, zl - 0.7), c: '#A39C8D', rot: ang, plain: true }); }
       }
     }
     // v0.67: footbridges: a slab with glazed sides on slender legs, and a stair and lift tower where it comes down
