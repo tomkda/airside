@@ -2622,11 +2622,14 @@ export class UI {
       const kind = (g: RampGeo) => (g.path ? (g.top === 16 ? 'a loop over the road that turns away' : 'a slip ramp beside the road') : g.fly ? 'a turn over the corner' : 'a ramp inside the corner');
       const up = rs.find(g => g.up), dn = rs.find(g => !g.up);
       const say = rs.length ? `${up ? `Up by ${kind(up)}` : 'No ramp up'}; ${dn ? `down by ${kind(dn)}` : 'no ramp down'}.` : 'No ramp fits: the deck comes down along the road beneath it.';
-      return `<h3>Forecourt</h3><dl class="kv"><dt>Frontage road</dt><dd>Drawn by hand</dd></dl><p class="muted small">${say} A ramp is laid where the road runs straight on about 140 m past the hall, or meets a road that turns away from the building 46 to 150 m past it.</p>`;
+      // (v0.74: and whether the hall ran the road on to a turnaround)
+      const nx = this.sim.d.heads.filter(h => ids.some(id => h.id === HEAD_ID + id * 2 + 1 || h.id === HEAD_ID + id * 2 + 2)).length;
+      const ran = nx ? ` The road stopped too soon for a ramp, so the hall ran it on to a turnaround at ${nx === 2 ? 'each end' : 'one end'}.` : '';
+      return `<h3>Forecourt</h3><dl class="kv"><dt>Frontage road</dt><dd>Drawn by hand${nx ? ', run on by the hall' : ''}</dd></dl><p class="muted small">${say}${ran} A ramp is laid where the road runs straight on about 140 m past the hall, or meets a road that turns away from the building 46 to 150 m past it.</p>`;
     }
     const F = FORECOURTS[f.scheme];
     // v0.72: and its turnaround, if only one road reaches it
-    const hd = this.sim.d.heads.find(h => h.face.includes(f.id) || ids.some(id => h.id === HEAD_ID + id));
+    const hd = this.sim.d.heads.find(h => h.face.includes(f.id) || ids.some(id => h.id === HEAD_ID + id * 2));
     const turn = hd ? `<dt>Ground road</dt><dd>Turnaround at its far end</dd>` : '';
     const how = hd ? ` Cars keep right, so the kerb is on a driver's right in one direction only: ${hd.first ? 'they drive past to the turnaround and come back along the kerb' : 'they pull in on the way and go round the turnaround to leave'}.` : '';
     return `<h3>Forecourt</h3><dl class="kv"><dt>Way up to the deck</dt><dd>${F.name}</dd>${turn}</dl><p class="muted small">Laid by the hall itself: ${F.why}.${how} It is laid again whenever the roads or the ground around it change.</p>`;

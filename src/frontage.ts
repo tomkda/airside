@@ -282,7 +282,7 @@ export const EAR_ID = 4800000;
 /** v0.73: a slip ramp, for a frontage road the player drew that runs on past the hall: it parts from the road's edge,
  *  draws `draw` m along to stand `FLY.out` off it, climbs beside it for `climb` m (as a flyover does), then swings over
  *  the road in `shift` m at deck height and lands `land` m short of the kerb. Scaled down to `least` on a short run. */
-const SLIP = { land: 8, shift: 55, climb: 110, draw: 28, least: 0.4, reach: 150 };
+const SLIP = { land: 8, shift: 55, climb: 110, draw: 28, least: 0.4, reach: 150, ext: 0.5 };
 /** v0.64: the ways a hall's forecourt reaches its departures deck, chosen by what the site allows. */
 export const FORECOURTS = {
   flyover: { name: 'Flyovers', why: 'both approach roads are long enough for a ramp to climb beside them and cross over the corner, so traffic passes the doors with the kerb on its right' },
@@ -357,6 +357,12 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
   const chords = [...drawn.flatMap(w => waySegs(w).map(([a, b]) => ({ a, b }))), { a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY } }];
   const blocked = blocker(world, world.zones, aprons);
   const over = (a: Zone, b: Zone) => rectsOverlap(shrink(a, 1), b);
+  /** Is there room for a turnaround of radius R at E: on the site, off every road in `roadsBy`, clear of other roundabouts and of everything `blocked` knows. */
+  const headRoom = (E: Pt, R: number, fam: Zone[], roadsBy: { a: Pt; b: Pt }[]) => {
+    if (E.x < R + 10 || E.x > siteW - R - 10 || E.y < R + 10 || E.y > highwayY - R - 30) return false;
+    if (roadsBy.some(c => segDist(E, c.a, c.b) < R + 10) || (world.rounds ?? []).some(r => dist(E, { x: r.x, y: r.y }) < R + roundDef(r).icd / 2 + 8) || (heads ?? []).some(r => dist(E, r) < R + roundDef(r).icd / 2 + 8)) return false;
+    return ![0, 1, 2, 3, 4, 5].some(k => { const dv = { x: Math.cos(k * Math.PI / 6) * (R + 5), y: Math.sin(k * Math.PI / 6) * (R + 5) }; return blocked({ x: E.x - dv.x, y: E.y - dv.y }, { x: E.x + dv.x, y: E.y + dv.y }, fam); });
+  };
   const halls = world.zones.filter(z => z.type === 'checkin' || (z.type === 'claim' && !world.zones.some(o => o.type === 'checkin' && over(z, o)))).sort((p, q) => p.id - q.id);
   const half = roadWidth(4) / 2; const off = FRONTAGE.ideal + half; const ext = FRONTAGE.ramp + 24;
   for (const m of halls) {
@@ -379,7 +385,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       if (!own) continue;
     }
     if (out.some(w => w.fore === 'face' && sides.some(q => q.L >= FRONTAGE.minLen && fronts(w, q.sd, q.L, q.al)))) continue;   // a neighbour's forecourt already serves it
-    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[]; chain?: Pt[]; scheme: NonNullable<Way['scheme']>; own?: Way; head?: { p: Pt; size: number; first: boolean } } | null = null;
+    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[]; chain?: Pt[]; scheme: NonNullable<Way['scheme']>; own?: Way; exts?: { a: Pt; b: Pt; size: number; first: boolean }[]; head?: { p: Pt; size: number; first: boolean } } | null = null;
     // the faces a forecourt might front: each straight side, and (v0.34) each curved wall, whose frontage road follows
     // it as a chain of chords
     const fcs: FC[] = own ? [own.fc] : [];
@@ -417,7 +423,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     for (const fc of fcs) {
       const { a, b } = fc;
       const legs: { a: Pt; b: Pt }[] = []; let cost = 0; let rampsHere: RampGeo[] = []; const flies: (RampGeo | null)[] = [], corners0: (RampGeo | null)[] = [], hasLeg: boolean[] = [];
-      const slips: [RampGeo | null, RampGeo | null][] = [];
+      const slips: [RampGeo | null, RampGeo | null][] = []; const exts: ({ a: Pt; b: Pt; size: number; first: boolean } | undefined)[] = [];
       for (const [E, away, oE] of fc.ends) {
         // straight out from the building first, else straight on along the frontage
         let leg: { a: Pt; b: Pt; d: number; via?: Pt } | null = null;
@@ -528,16 +534,27 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
         // v0.73: no road turns away here, but the drawn road runs on: a slip ramp beside it, on the terminal's side
         // first (traffic then passes the doors with the kerb on its right), and one on the far side
         if (fc.given && !leg && own) { const u = away, h = roadWidth(own.r.lanes) / 2, o = h + DECK.lane / 2;
-          const ring = (world.rounds ?? []).filter(r => dist({ x: r.x, y: r.y }, E) < roundDef(r).icd / 2 + 2).reduce((mx, r) => Math.max(mx, roundDef(r).icd / 2), 0);
-          const H0 = { x: E.x - u.x * past, y: E.y - u.y * past };   // on the road, abreast of the hall's end
-          const avail = past - ring - (ring ? RAMP.clear : 6) - SLIP.land;
-          const k = Math.min(1, avail / (SLIP.shift + SLIP.climb + SLIP.draw + RAMP.lane + RAMP.taper));
+          const sum = SLIP.shift + SLIP.climb + SLIP.draw + RAMP.lane + RAMP.taper;
           const rest = [...drawn.filter(w => w !== own!.r).flatMap(w => waySegs(w).map(([a2, b2]) => ({ a: a2, b: b2 }))), { a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY } }, ...out.flatMap(q => waySegs(q).map(([a2, b2]) => ({ a: a2, b: b2 })))];
+          let ring = (world.rounds ?? []).filter(r => dist({ x: r.x, y: r.y }, E) < roundDef(r).icd / 2 + 2).reduce((mx, r) => Math.max(mx, roundDef(r).icd / 2), 0);
+          const H0 = { x: E.x - u.x * past, y: E.y - u.y * past };   // on the road, abreast of the hall's end
+          let avail = past - ring - (ring ? RAMP.clear : 6) - SLIP.land;
+          let k = Math.min(1, avail / sum);
+          // v0.74: the road stops too soon for a ramp, at a dead end: the hall runs it on to a turnaround of its own,
+          // far enough for a slip ramp at half its full length
+          if (k < SLIP.least && past >= 0 && !ring && !rest.some(c => segDist(E, c.a, c.b) < 3)) for (const size of [1, 0]) { const R = ROUNDS[size].icd / 2;
+            const p2 = Math.ceil(SLIP.ext * sum + SLIP.land + RAMP.clear + R); const E2 = { x: H0.x + u.x * p2, y: H0.y + u.y * p2 };
+            const side = (q: Pt, d2: number) => ({ x: q.x + oE.x * d2, y: q.y + oE.y * d2 });
+            if (blocked(E, E2, fam) || blocked(side(E, h), side(E2, h), fam) || blocked(side(E, -h), side(E2, -h), fam)) continue;
+            if ([0.25, 0.5, 0.75].some(t => rest.some(c => segDist(lerpPt(E, E2, t), c.a, c.b) < 12)) || !headRoom(E2, R, fam, rest)) continue;
+            exts[ei] = { a: E, b: E2, size, first: dot({ x: u.y, y: -u.x }, oE) < 0 };
+            ring = R; avail = p2 - ring - RAMP.clear - SLIP.land; k = Math.min(1, avail / sum); break; }
+          const pastE = exts[ei] ? dist(H0, exts[ei]!.b) : past;
           if (k >= SLIP.least) [{ x: -oE.x, y: -oE.y }, oE].forEach((n, si) => {
             const Ls = SLIP.shift * k, Lc = SLIP.climb * k, Ld = SLIP.draw * k, Lp = Math.max(RAMP.minLane, RAMP.lane * k), Lt = Math.max(RAMP.minTaper, RAMP.taper * k);
             const pt = (q: number, s2: number): Pt => ({ x: H0.x + u.x * s2 + n.x * q, y: H0.y + u.y * s2 + n.y * q });
             const sD = SLIP.land, sM = sD + Ls, sC = sM + Lc, sN = sC + Ld, qo = o + FLY.out; const sm = (t: number) => t * t * (3 - 2 * t);
-            if (sN + Lp + Lt > past - ring) return;
+            if (sN + Lp + Lt > pastE - ring) return;
             const path: Pt[] = [];
             for (let j = 0; j <= 6; j++) path.push(pt(o + (qo - o) * sm(j / 6), sN - Ld * (j / 6)));
             for (let j = 1; j <= 4; j++) path.push(pt(qo, sC - Lc * (j / 4)));
@@ -570,7 +587,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
         const Rs = [0, 1].map(i => flies[i] ?? slips[i][0]), Ls = [0, 1].map(i => corners0[i] ?? slips[i][1]);
         const both = [0, 1].find(i => Rs[i] && Ls[i]);
         rampsHere = Rs[0] && Rs[1] ? [Rs[0], Rs[1]] : Ls[0] && Ls[1] ? [Ls[0], Ls[1]] : both !== undefined ? [Rs[both]!, Ls[both]!] : [...Rs, ...Ls].filter((q): q is RampGeo => !!q).slice(0, 1);
-        if (rampsHere.length) best = { a, b, legs: [], cost: 0, ramps: rampsHere, scheme: 'none', own: own!.r };
+        if (rampsHere.length) best = { a, b, legs: [], cost: 0, ramps: rampsHere, scheme: 'none', own: own!.r, exts: exts.filter((q): q is NonNullable<typeof q> => !!q) };
         continue;
       }
       if (flies.length === 2 && flies[0] && flies[1]) { rampsHere = [flies[0], flies[1]]; scheme = 'flyover'; }
@@ -582,14 +599,16 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       if (one >= 0) { const [E, , oE] = fc.ends[1 - one]; const t = norm(sub(fc.ends[one][0], E));
         const roadsBy = [...chords, ...out.flatMap(q => waySegs(q).map(([a2, b2]) => ({ a: a2, b: b2 })))];
         for (const size of [1, 0]) { const R = ROUNDS[size].icd / 2;
-          if (E.x < R + 10 || E.x > siteW - R - 10 || E.y < R + 10 || E.y > highwayY - R - 30) continue;
-          if (roadsBy.some(c => segDist(E, c.a, c.b) < R + 10) || (world.rounds ?? []).some(r => dist(E, { x: r.x, y: r.y }) < R + roundDef(r).icd / 2 + 8) || (heads ?? []).some(r => dist(E, r) < R + roundDef(r).icd / 2 + 8)) continue;
-          if ([0, 1, 2, 3, 4, 5].some(k => { const dv = { x: Math.cos(k * Math.PI / 6) * (R + 5), y: Math.sin(k * Math.PI / 6) * (R + 5) }; return blocked({ x: E.x - dv.x, y: E.y - dv.y }, { x: E.x + dv.x, y: E.y + dv.y }, fam); })) continue;
+          if (!headRoom(E, R, fam, roadsBy)) continue;
           head = { p: E, size, first: dot({ x: -t.y, y: t.x }, oE) < 0 }; break; } }
       if (!best || cost < best.cost) best = { a, b, legs, cost, ramps: rampsHere, scheme, ...(fc.chain ? { chain: fc.chain } : {}), ...(head ? { head } : {}) };
     }
     if (!best) continue;
-    if (best.own) { emitRamps(best.ramps, m.id, () => best!.own!.id); continue; }
+    if (best.own) {
+      // (v0.74: and the stretches it added to the drawn road, each with its turnaround)
+      (best.exts ?? []).forEach((x, i) => { out.push({ id: FORE + m.id * 4 + 1 + i, kind: 'road', a: x.a, b: x.b, cls: 0, lanes: best!.own!.lanes, fore: 'link' });
+        heads?.push({ id: HEAD_ID + m.id * 2 + 1 + i, x: x.b.x, y: x.b.y, size: x.size, face: [best!.own!.id], first: x.first }); });
+      emitRamps(best.ramps, m.id, () => best!.own!.id); continue; }
     const id = FORE + m.id * 4;
     // v0.28: where a link comes square out of an end of the frontage road, the ground road sweeps round the corner
     // on a curve of its own (a generated `corner` way) instead of turning it square: the frontage road and the link
@@ -614,7 +633,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     else out.push({ id, kind: 'road', a: face.a, b: face.b, cls: 0, lanes: 4, fore: 'face', scheme: best.scheme });
     // (a ramp belongs to the chord nearest where it lands, of those that front the hall: not the straight run past an end)
     const faceNear = (p: Pt) => { if (!chain) return id; let bi = 1; for (let c = 1; c < chain.length - 2; c++) if (segDist(p, chain[c], chain[c + 1]) < segDist(p, chain[bi], chain[bi + 1])) bi = c; return faceIds[Math.min(bi, faceIds.length - 1)]; };
-    if (best.head && heads) heads.push({ id: HEAD_ID + m.id, x: best.head.p.x, y: best.head.p.y, size: best.head.size, face: chain ? faceIds : [id], first: best.head.first });
+    if (best.head && heads) heads.push({ id: HEAD_ID + m.id * 2, x: best.head.p.x, y: best.head.p.y, size: best.head.size, face: chain ? faceIds : [id], first: best.head.first });
     legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
     corners.forEach((k, i) => out.push({ id: RAMP_ID + m.id * 16 + 12 + i, kind: 'road', a: k.a, b: k.b, c: k.c, cls: 0, lanes: 4, fore: 'corner' }));
     // each ramp: the taper and the speed-change lane one lane wide, the curve two; all one-way in the ramp's direction
