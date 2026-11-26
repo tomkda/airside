@@ -37,7 +37,9 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.83)
+## What's in the alpha (v0.84)
+
+- **Two halls on one road (v0.84):** a hall no longer runs its frontage road on, or puts its turnaround, along the face of a second hall: that ground is left for the second hall's own forecourt. A later hall's links may now end on a road an earlier hall laid (its frontage road, a link, an added stretch), as they do on a drawn road. `forecourts.mjs` gains checks for this and for a turnaround kept off a taxiway, the two fixes of v0.82 that had no test.
 
 - **Landside buildings in their terminal's architecture (v0.83, 3D model only):** garages, hotels, rental centres, bus and rideshare shelters and AirTrain stations were the same white and grey whatever the terminal beside them. Each now takes the architecture of the terminal whose site is nearest: its roof, edge, plinth and column colours; vertical fins up the faces of a garage or hotel where the terminal has fins; a spandrel band at each floor where it has bands. Beside a Model white terminal they are as before.
 

@@ -481,6 +481,8 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       if (world.zones.some(o => o.level === 0 && !fam.includes(o) && hits(shrink(lot, 1), o))) continue;
       fcs.push({ a, b, ends: [[a, { x: -al.x, y: -al.y }, sd.out], [b, al, sd.out]] });
     }
+    // v0.84: a link may end on a road an earlier hall laid (its frontage road, a link, a stretch it added), as on a drawn one
+    const reachable = [...chords, ...out.filter(q => q.fore === 'face' || q.fore === 'link').map(q => ({ a: q.a, b: q.b }))];
     for (const fc of fcs) {
       const { a, b } = fc;
       const legs: { a: Pt; b: Pt }[] = []; let cost = 0; let rampsHere: RampGeo[] = []; const flies: (RampGeo | null)[] = [], corners0: (RampGeo | null)[] = [], hasLeg: boolean[] = [];
@@ -492,7 +494,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
         // (v0.73: along a drawn frontage road the link is the road that turns away at its end, if it ends near the hall)
         if (fc.given) { const g = fc.given[ei]; if (g && past >= 46 && past <= SLIP.reach) leg = { ...g, d: dist(g.a, g.b) }; }
         else for (const [dir, pen] of [[oE, 0], [away, 40]] as const) {
-          const q = rayHit(E, dir, FRONTAGE.reach, chords); if (!q) continue;
+          const q = rayHit(E, dir, FRONTAGE.reach, reachable); if (!q) continue;
           const d = dist(E, q) + pen;
           if (d - pen < 6 || blocked(E, q, fam)) continue;
           if (!leg || d < leg.d) leg = { a: E, b: q, d };
@@ -614,6 +616,8 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
             const side = (q: Pt, d2: number) => ({ x: q.x + oE.x * d2, y: q.y + oE.y * d2 });
             if (blocked(E, E2, fam) || blocked(side(E, h), side(E2, h), fam) || blocked(side(E, -h), side(E2, -h), fam)) continue;
             if ([0.25, 0.5, 0.75].some(t => rest.some(c => segDist(lerpPt(E, E2, t), c.a, c.b) < 12) || nearAir(lerpPt(E, E2, t), h + 6)) || !headRoom(E2, R, fam, rest)) continue;
+            // (v0.84: nor along another hall's face, or with its turnaround before one: that ground is the other hall's forecourt)
+            if ([0.25, 0.5, 0.75, 1].some(t => world.zones.some(z => !fam.includes(z) && (z.type === 'checkin' || z.type === 'claim') && inZone(lerpPt(E, E2, t), z, FRONTAGE.maxGap + 14 + (t === 1 ? R : 0))))) continue;
             exts[ei] = { a: E, b: E2, size, first: dot({ x: u.y, y: -u.x }, oE) < 0 }; line[1] = E2;
             ring = R; avail = p2 - ring - RAMP.clear - SLIP.land - more; k = Math.min(1, avail / sum); break; }
           // v0.82: a dead end long enough for its ramp gets a turnaround too, at the road's own end, if the ramp still fits short of it
