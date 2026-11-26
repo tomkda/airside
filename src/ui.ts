@@ -22,7 +22,7 @@ import { AREA, CURVE_MIN } from './config';
 import { Los, losKind, losDay, losNow, losFix } from './los';
 import { Advice, advise } from './advisor';
 import { runwayExits, rapidExit, exitFactor } from './airfield';
-import { FORE, FACE_ID, FORECOURTS } from './frontage';
+import { FORE, FACE_ID, FORECOURTS, HEAD_ID } from './frontage';
 import { sectionOf, sectionAlong, Section } from './section';
 import { EXITS } from './config';
 import { carryStands, inZone, zonesOverlap, zoneBox, centreOf, shaped, polyArea, zonePts, Grip, Geom, GripLimits, geomOf, setGeom, gripsOf, regrip, arcOf, heart, endWidths, frameOf } from './shapes';
@@ -2615,7 +2615,11 @@ export class UI {
     const f = this.sim.d.autoRoads.find(w => w.fore === 'face' && ids.some(id => w.id === FORE + id * 4 || (w.id >= FACE_ID + id * 32 && w.id < FACE_ID + id * 32 + 32)));
     if (!f?.scheme) return '';
     const F = FORECOURTS[f.scheme];
-    return `<h3>Forecourt</h3><dl class="kv"><dt>Way up to the deck</dt><dd>${F.name}</dd></dl><p class="muted small">Laid by the hall itself: ${F.why}. It is laid again whenever the roads or the ground around it change.</p>`;
+    // v0.72: and its turnaround, if only one road reaches it
+    const hd = this.sim.d.heads.find(h => h.face.includes(f.id) || ids.some(id => h.id === HEAD_ID + id));
+    const turn = hd ? `<dt>Ground road</dt><dd>Turnaround at its far end</dd>` : '';
+    const how = hd ? ` Cars keep right, so the kerb is on a driver's right in one direction only: ${hd.first ? 'they drive past to the turnaround and come back along the kerb' : 'they pull in on the way and go round the turnaround to leave'}.` : '';
+    return `<h3>Forecourt</h3><dl class="kv"><dt>Way up to the deck</dt><dd>${F.name}</dd>${turn}</dl><p class="muted small">Laid by the hall itself: ${F.why}.${how} It is laid again whenever the roads or the ground around it change.</p>`;
   }
   /** v0.63: one more exit for a runway, where landing aircraft can take it. */
   layExit(id: number) {

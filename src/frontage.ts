@@ -12,10 +12,10 @@
 // Generated curbs are ordinary Zone objects with negative ids and an `auto` tag. They are rebuilt on every
 // derive and never saved, so moving a road or a module moves its curb with it.
 import { Pt, Rect, sub, dot, dist, norm, lerpPt, rectsOverlap, polyLen, segDist } from './geom';
-import { FRONTAGE, Level, ZoneType } from './config';
+import { FRONTAGE, Level, ZoneType, ROUNDS } from './config';
 import type { World, Zone, Way, RampGeo } from './world';
 import { sidesOf } from './gates';
-import { waySegs, wayPts, roundDef } from './ways';
+import { waySegs, wayPts, roundDef, Round } from './ways';
 import { zonesOverlap, shaped, zonePts, inZone, Shaped, arcOf, curved, frameOf, toWorld, toLocal } from './shapes';
 
 export type Deck = 'dep' | 'arr' | 'both';
@@ -339,7 +339,13 @@ function rampLine(rg: RampGeo, W: number): RampLine {
   const arrows = [0.3, 0.75].map(f => ({ p: along(Lt + Lp * f, h + wl / 2), ang }));
   return { pts, zs, ws, nIn, gore: gore.length > 3 ? [...gore, ...edge.reverse()] : null, seam: [along(0, h - 0.5), along(Lt + Lp, h - 0.5)], arrows };
 }
-export function autoForecourt(world: World, aprons: Rect[], highwayY: number, siteW: number): Way[] {
+/** v0.72: the turnaround a forecourt lays at the end of its ground road that no road reaches: a roundabout of its
+ *  own (generated, never saved; ids from `HEAD_ID`). `face` are its frontage road's ids. With traffic on the right the
+ *  kerb is on a driver's right in one direction only: `first` says that is the way back from the turnaround, so cars
+ *  bound for the kerb drive past to the far end and turn first; otherwise they pull in on the way and turn to leave. */
+export interface Head extends Round { face: number[]; first: boolean }
+export const HEAD_ID = 2000000;
+export function autoForecourt(world: World, aprons: Rect[], highwayY: number, siteW: number, heads?: Head[]): Way[] {
   const out: Way[] = [];
   const drawn = world.ways.filter(w => w.kind === 'road');
   const chords = [...drawn.flatMap(w => waySegs(w).map(([a, b]) => ({ a, b }))), { a: { x: 0, y: highwayY }, b: { x: siteW, y: highwayY } }];
@@ -354,7 +360,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     // the player drew its frontage (v0.39: a curved road too, along a curved face or a straight one)
     if (sides.some(q => q.L >= FRONTAGE.minLen && drawn.some(r => { const rr = opposite(r, q.sd, q.L, q.al); return !!rr && !!fronts(rr, q.sd, q.L, q.al); }))) continue;
     if (out.some(w => w.fore === 'face' && sides.some(q => q.L >= FRONTAGE.minLen && fronts(w, q.sd, q.L, q.al)))) continue;   // a neighbour's forecourt already serves it
-    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[]; chain?: Pt[]; scheme: NonNullable<Way['scheme']> } | null = null;
+    let best: { a: Pt; b: Pt; legs: { a: Pt; b: Pt }[]; cost: number; ramps: RampGeo[]; chain?: Pt[]; scheme: NonNullable<Way['scheme']>; head?: { p: Pt; size: number; first: boolean } } | null = null;
     // the faces a forecourt might front: each straight side, and (v0.34) each curved wall, whose frontage road follows
     // it as a chain of chords
     type FC = { a: Pt; b: Pt; ends: [Pt, Pt, Pt][]; chain?: Pt[] };
@@ -505,7 +511,17 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
       if (flies.length === 2 && flies[0] && flies[1]) { rampsHere = [flies[0], flies[1]]; scheme = 'flyover'; }
       else if (one >= 0 && corners0[one] && flies[one]) { rampsHere = [corners0[one]!, flies[one]!]; scheme = 'trumpet'; }
       else { rampsHere = corners0.filter((q): q is RampGeo => !!q); if (rampsHere.length) scheme = 'corner'; }
-      if (!best || cost < best.cost) best = { a, b, legs, cost, ramps: rampsHere, scheme, ...(fc.chain ? { chain: fc.chain } : {}) };
+      // v0.72: with one road only, the ground road's far end is a turnaround: the larger roundabout if the ground is
+      // clear for it, else the compact one
+      let head: { p: Pt; size: number; first: boolean } | undefined;
+      if (one >= 0) { const [E, , oE] = fc.ends[1 - one]; const t = norm(sub(fc.ends[one][0], E));
+        const roadsBy = [...chords, ...out.flatMap(q => waySegs(q).map(([a2, b2]) => ({ a: a2, b: b2 })))];
+        for (const size of [1, 0]) { const R = ROUNDS[size].icd / 2;
+          if (E.x < R + 10 || E.x > siteW - R - 10 || E.y < R + 10 || E.y > highwayY - R - 30) continue;
+          if (roadsBy.some(c => segDist(E, c.a, c.b) < R + 10) || (world.rounds ?? []).some(r => dist(E, { x: r.x, y: r.y }) < R + roundDef(r).icd / 2 + 8) || (heads ?? []).some(r => dist(E, r) < R + roundDef(r).icd / 2 + 8)) continue;
+          if ([0, 1, 2, 3, 4, 5].some(k => { const dv = { x: Math.cos(k * Math.PI / 6) * (R + 5), y: Math.sin(k * Math.PI / 6) * (R + 5) }; return blocked({ x: E.x - dv.x, y: E.y - dv.y }, { x: E.x + dv.x, y: E.y + dv.y }, fam); })) continue;
+          head = { p: E, size, first: dot({ x: -t.y, y: t.x }, oE) < 0 }; break; } }
+      if (!best || cost < best.cost) best = { a, b, legs, cost, ramps: rampsHere, scheme, ...(fc.chain ? { chain: fc.chain } : {}), ...(head ? { head } : {}) };
     }
     if (!best) continue;
     const id = FORE + m.id * 4;
@@ -532,6 +548,7 @@ export function autoForecourt(world: World, aprons: Rect[], highwayY: number, si
     else out.push({ id, kind: 'road', a: face.a, b: face.b, cls: 0, lanes: 4, fore: 'face', scheme: best.scheme });
     // (a ramp belongs to the chord nearest where it lands, of those that front the hall: not the straight run past an end)
     const faceNear = (p: Pt) => { if (!chain) return id; let bi = 1; for (let c = 1; c < chain.length - 2; c++) if (segDist(p, chain[c], chain[c + 1]) < segDist(p, chain[bi], chain[bi + 1])) bi = c; return faceIds[Math.min(bi, faceIds.length - 1)]; };
+    if (best.head && heads) heads.push({ id: HEAD_ID + m.id, x: best.head.p.x, y: best.head.p.y, size: best.head.size, face: chain ? faceIds : [id], first: best.head.first });
     legs.forEach((l, i) => out.push({ id: id + 1 + i, kind: 'road', a: l.a, b: l.b, cls: 0, lanes: 4, fore: 'link' }));
     corners.forEach((k, i) => out.push({ id: RAMP_ID + m.id * 16 + 12 + i, kind: 'road', a: k.a, b: k.b, c: k.c, cls: 0, lanes: 4, fore: 'corner' }));
     // each ramp: the taper and the speed-change lane one lane wide, the curve two; all one-way in the ramp's direction

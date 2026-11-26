@@ -68,7 +68,20 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
     check('with one road in reach the forecourt is a trumpet: a ramp up inside the corner and a flyover down over it, on the same road', !!f && f.scheme === 'trumpet' && g2.length === 2 && g2.filter(g => g.up).length === 1 && g2.filter(g => g.fly).length === 1 && Math.abs(g2[0].T.x - g2[1].T.x) < 1 && d.decks.filter(q => q.branch).length === 1 && d.terminals[0].active);
     const main = d.decks.find(q => !q.branch); const endZ = [main.zs[0], main.zs[main.zs.length - 1]], wide = Math.max(...main.ws);
     check('its deck stays level at the far end and widens into a turning head (' + wide + ' m)', endZ.filter(v => v === 1).length === 1 && wide >= 30);
-    const sim = flyDay(w, 'a day on the trumpet'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000); }
+    const sim = flyDay(w, 'a day on the trumpet'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000);
+    // v0.72: the ground road's far end is a turnaround, and cars for the ground kerb go round it so the kerb is on their right
+    { const h = d.heads[0]; const hall = w.zones.find(z => z.type === 'checkin');
+      check('the ground road of a one-road forecourt ends in a turnaround beyond the hall, and the sample (two roads) has none', d.heads.length === 1 && !!h && d.rounds.includes(h) && h.x > hall.x + hall.w + 40 && Math.abs(h.y - f.a.y) < 1 && derive(sampleWorld()).heads.length === 0);
+      const s2 = new Sim(w, 7); s2.relayout(); const seen = []; const sp = s2.spawnCar.bind(s2);
+      s2.spawnCar = (party, pick, pts, eids, stage, curb, entry) => { if (curb && curb.zone.level === 0) seen.push({ stage, pts, curb }); return sp(party, pick, pts, eids, stage, curb, entry); };
+      s2.startDay(); const d0 = s2.day; while (s2.day === d0 && s2.t % 1440 < 720) s2.step(0.25);
+      const round = q => q.pts.some(p => Math.hypot(p.x - h.x, p.y - h.y) < 30);
+      // the last road point before the kerb lies beyond it, towards the turnaround: the car comes back along the kerb
+      const back = q => { const n = q.pts.length; const e = q.pts[n - 1], p = q.pts[n - 2]; return Math.abs(p.x - h.x) <= Math.abs(e.x - h.x) + 0.5; };
+      console.log('   turnaround: at', h.x.toFixed(0), h.y.toFixed(0), h.first ? '(cars turn before the kerb)' : '(cars turn to leave)', '|', seen.length, 'cars to the ground kerb,', seen.filter(round).length, 'by the turnaround');
+      check('every car bound for the ground kerb drives to the turnaround first and comes back along the kerb (' + seen.length + ' cars)', h.first && seen.length > 50 && seen.every(round) && seen.every(back));
+      const wrong = s2.cars.filter(c => c.stage === 'out' && c.pts.some(p => Math.hypot(p.x - h.x, p.y - h.y) < 30)).length;
+      check('and none goes back to it to leave', wrong === 0); } }
   // v0.67: footbridges: the car park's sidewalk is carried over the forecourt, and lands at the hall with a way to both levels
   { const w = sampleWorld(); const d = derive(w); const fb = d.footbridges[0]; const ci = w.zones.find(z => z.type === 'checkin'), cl = w.zones.find(z => z.type === 'claim'), pk = w.zones.find(z => z.type === 'parking');
     const c = z => ({ x: z.x + z.w / 2, y: z.y + z.h / 2 }); const onB = r => !!r && r.pts.some((p, i) => r.lvs[i] === 1 && Math.hypot(p.x - fb.a.x, p.y - fb.a.y) < 2);
