@@ -108,10 +108,19 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
       const sim = flyDay(w, 'a day on drawn corners with roundabouts'); check('and a day flies on it with nobody stranded', sim.stats.stranded === 0 && sim.stats.paxDep > 1000); }
     // a frontage road no longer than the hall, fed from its middle: no ramp fits, and the design check says so
     { const w = base(); w.ways = w.ways.filter(q => q.id !== 16); R(w, 14).a = { x: 3050, y: 5700 }; R(w, 14).b = { x: 3050, y: 2900 }; R(w, 15).a = { x: 2840, y: 2900 }; R(w, 15).b = { x: 3260, y: 2900 };
-      const d = derive(w); check('a frontage road that stops at the ends of the hall gets no ramp, and the design check says what one needs', rgs(d).length === 0 && noRamp(d) === 1 && d.terminals[0].active && noRamp(derive(sampleWorld())) === 0); }
+      // v0.74: the hall runs the road on each way to a turnaround of its own, far enough for a slip ramp
+      const d = derive(w); const g = rgs(d); const ex = d.autoRoads.filter(q => q.fore === 'link');
+      console.log('a frontage road as long as the hall, fed from its middle:', ex.length, 'stretches added,', d.heads.length, 'turnarounds,', g.length, 'ramps |', d.terminals.map(t => t.name + (t.active ? ' open' : ' closed')).join(', '));
+      check('a frontage road that stops at the ends of the hall is run on each way to a turnaround, with a slip ramp up at one end and down at the other', ex.length === 2 && d.heads.length === 2 && d.heads.filter(h => h.first).length === 1 && ex.every(q => Math.abs(q.a.y - 2900) < 0.1 && Math.abs(q.b.y - 2900) < 0.1 && d.heads.some(h => Math.hypot(h.x - q.b.x, h.y - q.b.y) < 0.1))
+        && g.length === 2 && g.every(q => q.path && q.n.y < -0.9) && g.filter(q => q.up).length === 1 && noRamp(d) === 0 && d.terminals[0].active);
+      const sim = flyDay(w, 'a day on the dumbbell'); check('and a day flies on it with 0 missed and 0 stranded', sim.stats.missed === 0 && sim.stats.stranded === 0 && sim.stats.paxDep > 1000);
+      // with the ground built on past both ends there is no room: no ramp, and the design check says what one needs
+      w.zones.push({ id: 901, type: 'parking', level: 0, x: 2640, y: 2880, w: 190, h: 60, tier: 0 }, { id: 902, type: 'parking', level: 0, x: 3270, y: 2880, w: 190, h: 60, tier: 0 });
+      const d2 = derive(w); check('with car parks past both ends it gets no ramp, and the design check says what one needs', rgs(d2).length === 0 && d2.heads.length === 0 && noRamp(d2) === 1 && noRamp(derive(sampleWorld())) === 0); }
     // one end runs on, the other stops: the way up and the way down share the long end
     { const w = base(); w.ways = w.ways.filter(q => q.id !== 16); R(w, 14).a = { x: 2400, y: 5700 }; R(w, 14).b = { x: 2400, y: 2900 }; R(w, 15).a = { x: 2400, y: 2900 }; R(w, 15).b = { x: 3260, y: 2900 };
-      const d = derive(w); const g = rgs(d); check('where only one end runs on, a slip ramp each side of the road there carries the way up and the way down', g.length === 2 && g.every(q => q.path && q.T.x < 2880) && g.filter(q => q.up).length === 1 && g[0].n.y * g[1].n.y < 0 && d.decks.filter(q => q.branch).length === 1); } }
+      w.zones.push({ id: 903, type: 'parking', level: 0, x: 3270, y: 2880, w: 190, h: 60, tier: 0 });
+      const d = derive(w); const g = rgs(d); check('where only one end runs on (a car park past the other), a slip ramp each side of the road there carries the way up and the way down', g.length === 2 && g.every(q => q.path && q.T.x < 2880) && g.filter(q => q.up).length === 1 && g[0].n.y * g[1].n.y < 0 && d.decks.filter(q => q.branch).length === 1); } }
   // v0.67: footbridges: the car park's sidewalk is carried over the forecourt, and lands at the hall with a way to both levels
   { const w = sampleWorld(); const d = derive(w); const fb = d.footbridges[0]; const ci = w.zones.find(z => z.type === 'checkin'), cl = w.zones.find(z => z.type === 'claim'), pk = w.zones.find(z => z.type === 'parking');
     const c = z => ({ x: z.x + z.w / 2, y: z.y + z.h / 2 }); const onB = r => !!r && r.pts.some((p, i) => r.lvs[i] === 1 && Math.hypot(p.x - fb.a.x, p.y - fb.a.y) < 2);

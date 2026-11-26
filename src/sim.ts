@@ -1393,7 +1393,7 @@ export class Sim {
     if (!curb || curb.auto?.deck === 'dep' || curb.auto?.road === undefined || !this.d.heads.length) return null;
     const road = curb.auto.road; let h = this.headCache.get(road);
     if (h === undefined) {
-      h = null; const hd = this.d.heads.find(q => q.face.includes(road));
+      h = null; const hd = this.d.heads.find(q => q.face.includes(road) && q.first) ?? this.d.heads.find(q => q.face.includes(road));
       if (hd) { const net = this.d.road; const ref = ringRef(hd.id); const ring = new Set<number>(); let entry = -1;
         for (const e of net.edges) if (e.ref === ref) { ring.add(e.u); ring.add(e.v); }
         for (const n of ring) if (net.adj[n].some(k => net.edges[k].ref !== ref)) entry = n;
