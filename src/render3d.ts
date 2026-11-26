@@ -443,10 +443,25 @@ export class Renderer3D {
       strip(0, 0.26, 0.22, '#EFE8DA'); strip(0.6, 0.7, 0.25, '#A9B28A');
       // (v0.64: the canopy is the terminal's architecture too: its roof colour, a fascia in its eave colour, its columns)
       const CS = styleOfZone(sim.world, d, z); const plainS = CS === STYLES[0];
+      const L = dist(a, b); const al = norm(sub(b, a));
+      // v0.78: over a departures kerb the hall's own roof reaches out, at its eaves' height, as far as the island between
+      // the pull-in lanes and the through lanes, on tall paired columns that stand in that island; a glazed screen hangs
+      // from its edge. Other kerbs keep the low canopy over the sidewalk.
+      const hallZ = d.zones.find(q => q.id === z.auto?.module);
+      if (z.level === 1 && z.auto?.deck === 'dep' && hallZ?.type === 'checkin') {
+        const top = LEVELS[1].z1, out = Math.min(D * 0.72, 22), col = plainS ? '#7C725F' : CS.finC;
+        misc.push({ ...fbox(-1.2, out), z0: top - 0.15, z1: top + 0.75, c: plainS ? ROOF : CS.roofC });
+        misc.push({ ...fbox(out - 0.2, out + 0.35), z0: top - 0.5, z1: top + 0.95, c: plainS ? '#CFC6B4' : CS.edgeC });
+        misc.push({ ...fbox(out - 0.05, out + 0.1), z0: top - 2.6, z1: top - 0.5, c: '#B9CACD', plain: true });
+        const vc = Math.min(out - 1.2, D * 0.65);
+        for (let s2 = 9; s2 < L - 4; s2 += 18) for (const k of [-0.9, 0.9]) { const p = add(add(a, mul(al, s2 + k)), mul(inw, vc)); misc.push({ x: p.x - 0.28, y: p.y - 0.28, w: 0.56, h: 0.56, z0: zz, z1: top - 0.15, c: col, plain: true }); }
+        // (and a beam back to the building over each pair)
+        for (let s2 = 9; s2 < L - 4; s2 += 18) { const p0 = add(a, mul(al, s2)); const c = add(p0, mul(inw, vc / 2)); misc.push({ x: c.x - 0.3, y: c.y - vc / 2, w: 0.6, h: vc, z0: top - 1.0, z1: top - 0.15, c: col, rot: ang, plain: true }); }
+      } else {
       misc.push({ ...fbox(0, 7), z0: zz + 5.2, z1: zz + 5.7, c: plainS ? ROOF : CS.roofC });
       if (!plainS) misc.push({ ...fbox(6.7, 7.1), z0: zz + 5.0, z1: zz + 5.8, c: CS.edgeC });
-      const L = dist(a, b); const al = norm(sub(b, a));
       for (let s = 6; s < L - 3; s += 12) { const p = add(add(a, mul(al, s)), mul(inw, 6.4)); misc.push({ x: p.x - 0.2, y: p.y - 0.2, w: 0.4, h: 0.4, z0: zz, z1: zz + 5.2, c: plainS ? '#7C725F' : CS.finC }); }
+      }
     }
 
     // ---- landside facilities (v0.10): garages, hotels, rental centres, bus stations, rideshare lots, the AirTrain
