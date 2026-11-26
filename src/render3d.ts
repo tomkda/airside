@@ -31,7 +31,11 @@ const MOD_COL: Record<ZoneType, string> = {
   passport: '#C6BCA8', rideshare: '#A7A39A', rental: '#C9BEA8', bus: '#C9BEA8', hotel: '#D4CBB8', train: '#D4CBB8',
 };
 const LOT_COL: Record<string, string> = { shop: '#6E6252', food: '#B07A3E', lounge: '#4D7390' };
-const ITEM_H: Record<string, number> = { counter: 1.1, xray: 1.6, body: 2.2, divest: 0.9, recompose: 0.9, kiosk: 1.4, wc: 3, office: 3, table: 0.75, belt: 0.5, carousel: 0.6 };
+const ITEM_H: Record<string, number> = { counter: 1.1, xray: 1.6, body: 2.2, divest: 0.9, recompose: 0.9, kiosk: 1.4, wc: 3, office: 3, table: 0.75, belt: 0.5, carousel: 0.6, seat: 0.85 };
+// v0.82: with the roof off, the fit-out in its materials (oak counters, steel lanes and trays, dark belts, upholstered
+// seats, plastered cores) on pale floors, as a presentation model with its lid lifted
+const ITEM_COL: Record<string, string> = { counter: '#C7A26B', xray: '#77848C', body: '#9AA8B0', divest: '#C3C8CA', recompose: '#C3C8CA', kiosk: '#3F6E8C', wc: '#D9D2C2', office: '#D9D2C2', table: '#C3C8CA', belt: '#3B3936', carousel: '#3B3936', seat: '#4F6B82' };
+const FLOOR_COL: Partial<Record<ZoneType, string>> = { checkin: '#ECE4D2', security: '#E4DED0', concourse: '#EEE8DA', claim: '#E2DBCB', passport: '#E4DED0' };
 const YELLOW = '#D6A43C', WHITE = '#F0ECE2';
 const RISE_MS = 1400;
 
@@ -594,13 +598,13 @@ export class Renderer3D {
       const c = sel ? '#8FB0C6' : MOD_COL[z.type];
       const own = !freeIds.has(z.id);   // (a piece of a free-drawn or cut building has no box of its own: the outline is drawn)
       if (z.level > this.ren.level) { if (own) see.push({ ...z, z0: L.z0, z1: L.z1 - 0.4, c }); continue; }
-      if (own) solid.push({ ...z, z0: L.z0, z1: L.z0 + 0.5, c });
+      if (own) solid.push({ ...z, z0: L.z0, z1: L.z0 + 0.5, c: z.level === this.ren.level && !sel ? FLOOR_COL[z.type] ?? c : c });
       if (z.level < this.ren.level) continue;
       if (own) see.push({ ...z, z0: L.z0 + 0.5, z1: L.z1 - 0.4, c });
       const f = d.frames.get(z.id);
       for (const it of f?.items ?? []) {
         const h = ITEM_H[it.k]; if (!h || !it.closed) continue;
-        const b = bbox(it.pts); fit.push({ ...b, z0: L.z0 + 0.5, z1: L.z0 + 0.5 + h, c: it.k === 'wc' || it.k === 'office' ? '#B9AF9C' : '#5F574A' });
+        const b = bbox(it.pts); fit.push({ ...b, z0: L.z0 + 0.5, z1: L.z0 + 0.5 + h, c: ITEM_COL[it.k] ?? '#5F574A', plain: true });
       }
       for (const sh of d.shops.get(z.id) ?? []) {
         if (!sim.leased(sh)) continue;
