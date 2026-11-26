@@ -535,19 +535,32 @@ for (const deg of [12, -20]) {
   const segD = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
   const wallGap = z => Math.min(...zonePts(z).map(p => Math.min(...outline.map((a, i) => segD(p, a, outline[(i + 1) % outline.length])))));
   const pl = wayPts(road); const onRoad = p => Math.min(...pl.slice(1).map((q, i) => segD(p, pl[i], q)));
-  check('a curved road drawn along the bent hall: no forecourt is laid (' + d.autoRoads.filter(r => r.fore).length + ' generated pieces)', !d.autoRoads.some(r => r.fore));
+  check('a curved road drawn along the bent hall: no forecourt road is laid, only ramps (' + d.autoRoads.filter(r => r.fore).length + ' generated pieces)', d.autoRoads.every(r => !r.fore || r.fore === 'ramp'));
   check('its curbs follow the wall a piece at a time on both levels (' + dep.length + ' and ' + arr.length + '), each against the wall', dep.length >= 6 && arr.length === dep.length && [...dep, ...arr].every(z => wallGap(z) < 1.5));
   const dk = d.decks.filter(k => k.road === road.id);
-  check('one deck runs over the curved road and comes down along the curve at each end', dk.length === 1 && dk[0].zs[0] === 0 && dk[0].zs[dk[0].zs.length - 1] === 0 && dk[0].pts.slice(0, 3).concat(dk[0].pts.slice(-3)).every(p => onRoad(p) < 1));
+  // v0.76: where the roads at its ends turn away, a ramp inside each corner, landing on the curve
+  { const g = d.autoRoads.filter(q => q.rg).map(q => q.rg);
+    check('one deck runs over the curved road, with a ramp inside the corner at each end (one up, one down) that lands on the curve', dk.length === 1 && dk[0].zs[0] === 0 && dk[0].zs[dk[0].zs.length - 1] === 0 && g.length === 2 && g.filter(q => q.up).length === 1 && g.every(q => !q.path && onRoad(q.D) < 2.5)); }
   check('Terminal 1 opens on the curved road (' + (d.terminals[0].problems.join('; ') || 'open') + ')', d.terminals[0].active);
   let missed = 0, stranded = 0; sim.onDayEnd = r => { missed += r.stats.missed; stranded += r.stats.stranded; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
   check('and flies a day with 0 missed and 0 stranded (' + missed + ', ' + stranded + ')', missed === 0 && stranded === 0); }
 { const w = sampleWorld(); const road = { id: w.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 3270, y: 2898 }, c: { x: 3050, y: 2906 }, cls: 0, lanes: 4 }; w.ways.push(road);
   w.ways.push({ id: w.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 2830, y: 3230 }, cls: 0, lanes: 4 }, { id: w.nextId++, kind: 'road', a: { x: 3270, y: 2898 }, b: { x: 3270, y: 3230 }, cls: 0, lanes: 4 });
   const d = derive(w);
-  check('a gently curved road along the upright hall is its frontage too: curbs on both levels and no forecourt', !d.autoRoads.some(r => r.fore) && d.zones.some(z => z.auto?.deck === 'dep' && z.auto.road === road.id) && d.zones.some(z => z.auto?.deck === 'arr' && z.auto.road === road.id));
+  check('a gently curved road along the upright hall is its frontage too: curbs on both levels and no forecourt', d.autoRoads.every(r => !r.fore || r.fore === 'ramp') && d.zones.some(z => z.auto?.deck === 'dep' && z.auto.road === road.id) && d.zones.some(z => z.auto?.deck === 'arr' && z.auto.road === road.id));
   { const dk = d.decks.filter(k => k.road === road.id); const pl = wayPts(road); const sd = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
-    check('and its deck follows the road the whole way', dk.length === 1 && dk[0].pts.length > 12 && dk[0].pts.every(p => Math.min(...pl.slice(1).map((q, i) => sd(p, pl[i], q))) < 3.5)); }
+    const on = p => Math.min(...pl.slice(1).map((q, i) => sd(p, pl[i], q))) < 3.5;
+    check('and its deck follows the road over the kerb, with a ramp inside the corner at each end', dk.length === 1 && dk[0].pts.length > 12 && dk[0].pts.filter((p, i) => dk[0].zs[i] === 1 && dk[0].ws[i] > 12).every(on) && d.autoRoads.filter(q => q.rg).length === 2); }
+  // v0.76: a long road that curves gently past the hall: a slip ramp along the curve at each end
+  { const w3 = sampleWorld(); w3.rounds = []; w3.zones = w3.zones.filter(z => z.type !== 'parking'); const R3 = id => w3.ways.find(q => q.id === id);
+    R3(14).b = { x: 2200, y: 2960 }; R3(15).a = { x: 2200, y: 2960 }; R3(15).b = { x: 3900, y: 2960 }; R3(15).c = { x: 3050, y: 2840 }; R3(16).a = { x: 3900, y: 2960 };
+    const d3 = derive(w3); const g = d3.autoRoads.filter(q => q.rg).map(q => q.rg); const pl3 = wayPts(R3(15)); const sd = (p, a, b) => { const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1))); return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y)); };
+    const off = p => Math.min(...pl3.slice(1).map((q, i) => sd(p, pl3[i], q)));
+    console.log('a long curved road past the hall:', g.length, 'ramps', g.map(q => (q.up ? 'up' : 'down') + (q.curve ? ' slip on the curve' : ' other')).join(', '), '| climb stands', g.map(q => Math.min(...q.path.slice(6, q.top + 1).map(off)).toFixed(1)).join(' / '), 'm off the centreline');
+    check('a long road curving gently past the hall gets a slip ramp along the curve at each end, one up and one down, on the hall side', g.length === 2 && g.every(q => q.curve && q.path) && g.filter(q => q.up).length === 1 && d3.autoRoads.every(q => q.fore === 'ramp') && d3.terminals[0].active);
+    check('each leaves the road on its centreline, keeps the same distance off the curve while it climbs and lands back on it', g.every(q => off(q.T) < 0.5 && off(q.D) < 0.5 && q.path.slice(6, q.top + 1).every(p => Math.abs(off(p) - off(q.path[6])) < 0.6 && off(p) > 14)));
+    const sim3 = new Sim(w3, 7); sim3.relayout(); let ms = 0, st = 0, px = 0; sim3.onDayEnd = r => { ms += r.stats.missed; st += r.stats.stranded; px += r.stats.paxDep; }; sim3.startDay(); while (sim3.day < 1) sim3.step(0.25);
+    check('and a day flies on it with 0 missed and 0 stranded (' + ms + ', ' + st + ')', ms === 0 && st === 0 && px > 1000); }
   { const w2 = sampleWorld(); const ci = w2.zones.find(z => z.type === 'checkin'), cl = w2.zones.find(z => z.type === 'claim'); delete ci.pair; delete cl.pair; cl.x = 2950; cl.w = 200;
     const r2 = { ...road, id: w2.nextId++, c: { x: 3050, y: 2904 } }; w2.ways.push(r2, { id: w2.nextId++, kind: 'road', a: { x: 2830, y: 2898 }, b: { x: 2830, y: 3230 }, cls: 0, lanes: 4 }, { id: w2.nextId++, kind: 'road', a: { x: 3270, y: 2898 }, b: { x: 3270, y: 3230 }, cls: 0, lanes: 4 });
     const d4 = derive(w2); const kinds = d4.zones.filter(z => z.auto?.road === r2.id).map(z => (z.level ? 'L1 ' : 'G ') + z.auto.deck).sort().join(', ');

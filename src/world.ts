@@ -80,7 +80,11 @@ export interface RampGeo { T: Pt; P: Pt; N: Pt; C: Pt; M: Pt; C2: Pt; D: Pt; u: 
    *  to D crosses over the road and the corner beneath on a bridge. */
   fly?: boolean;
   /** v0.64: a loop: the ramp's line from N to D point by point, in place of the two curves; `top` is the point by which it is at deck height */
-  path?: Pt[]; top?: number }
+  path?: Pt[]; top?: number;
+  /** v0.76: a slip ramp along a road that curves: what `rampLine` otherwise works out from a straight road. `lead` is the
+   *  taper and lane point by point (widths `leadW`, the side the ramp lies on `leadN`), `off` how far each point of `path`
+   *  stands off the road's centreline, `edge` the road's edge abreast of it, `seam` the line between road and lane. */
+  curve?: { lead: Pt[]; leadW: number[]; leadN: Pt[]; off: number[]; edge: Pt[]; seam: Pt[] } }
 export interface World { zones: Zone[]; runways: Runway[]; ways: Way[]; nextId: number; sites?: Site[]; rounds?: Round[];
   /** v0.32: cut-outs: polygons taken away from the buildings they are drawn over. */
   cuts?: Cut[] }
