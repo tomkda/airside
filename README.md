@@ -18,7 +18,7 @@ node scripts/aprons.mjs     # self-laid aprons and taxilanes, and reshaping by g
 node scripts/curves.mjs     # bent piers: stands, interiors and walking routes round a curve
 node scripts/stress.mjs   # 14 days with mid-day cuts and an A380 build-out
 node scripts/growth.mjs   # every growth facility, international flights and the AirTrain
-npm test                  # all ten sims
+npm test                  # all fourteen sims
 ```
 
 CI runs the type-check, build and all ten sims on every push and pull request. Every merge to `main` deploys the game to GitHub Pages.
@@ -37,7 +37,9 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.79)
+## What's in the alpha (v0.80)
+
+- **A standing check on the ramp to the departures hall (v0.80):** `node scripts/forecourts.mjs` (now part of `npm test`) redraws the sample's roads 27 ways and checks, for each, that Terminal 1 opens with one departures deck and what ramps it was given. 26 of the 27 have a built ramp up and a built ramp down, with no deck end that merely comes down along the road beneath it: approach roads each side, one road, a road that stops short or runs past one end, hand-drawn frontage roads (through, turning away, at roundabouts, fed from the middle, too short, dead-ended, curved, two-lane, one-way), a road running past 70 to 230 m off the face, and halls turned or bent. The one left is a curved road that swings away from the hall close by, where no ramp fits; the script expects that, and will say so if it changes. A day's flying on four of them (one for each kind of ramp) must end with nobody missed or stranded. No game code changed in this version.
 
 - **A queue that outgrows its room takes the next one's floor (v0.79):** a check-in, security or passport queue longer than its own module holds has always been drawn standing in the room before it. That now counts. The people who do not fit are counted on the floor of the module they stand in (typically a security queue in the check-in hall), so that module's space per waiting passenger falls with them. Its inspector shows a **Shared floor** line (how many of whose queue stood there at the peak, and what its space would be without them); the module that overflowed shows an **Overflow** line (how many stood outside, where, and how many its own floor holds in line). The advisor still judges each module on its own queue, so the card goes to the module that is too small, not to the room it spilled into.
 
