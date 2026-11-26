@@ -2623,9 +2623,12 @@ export class UI {
       const up = rs.find(g => g.up), dn = rs.find(g => !g.up);
       const say = rs.length ? `${up ? `Up by ${kind(up)}` : 'No ramp up'}; ${dn ? `down by ${kind(dn)}` : 'no ramp down'}.` : 'No ramp fits: the deck comes down along the road beneath it.';
       // (v0.74: and whether the hall ran the road on to a turnaround)
-      const nx = this.sim.d.heads.filter(h => h.id === HEAD_ID + z.id * 4 + 1 || h.id === HEAD_ID + z.id * 4 + 2 || (this.twin(z) && (h.id === HEAD_ID + this.twin(z)!.id * 4 + 1 || h.id === HEAD_ID + this.twin(z)!.id * 4 + 2))).length;
-      const ran = nx ? ` The road stopped too soon for a ramp, so the hall ran it on to a turnaround at ${nx === 2 ? 'each end' : 'one end'}.` : '';
-      return `<h3>Forecourt</h3><dl class="kv"><dt>Frontage road</dt><dd>Drawn by hand${nx ? ', run on by the hall' : ''}</dd></dl><p class="muted small">${say}${ran} A ramp is laid where the road runs straight on about 140 m past the hall, or meets a road that turns away from the building 46 to 150 m past it.</p>`;
+      const hs = this.sim.d.heads.filter(h => h.id === HEAD_ID + z.id * 4 + 1 || h.id === HEAD_ID + z.id * 4 + 2 || (this.twin(z) && (h.id === HEAD_ID + this.twin(z)!.id * 4 + 1 || h.id === HEAD_ID + this.twin(z)!.id * 4 + 2)));
+      // (v0.84: a turnaround at the road's own dead end is not a road run on)
+      const nx = hs.filter(h => h.link !== undefined).length, nt = hs.length - nx; const ends = (k: number) => (k === 2 ? 'each end' : 'one end');
+      const ran = (nx ? ` The road stopped too soon for a ramp, so the hall ran it on to a turnaround at ${ends(nx)}.` : '') + (nt ? ` The road ends dead at ${ends(nt)}, so the hall laid a turnaround there.` : '')
+        + (hs.length ? ' Cars for the deck go round the turnaround by the way up, climb the ramp, and leave by the ramp and turnaround at the other end.' : '');
+      return `<h3>Forecourt</h3><dl class="kv"><dt>Frontage road</dt><dd>Drawn by hand${nx ? ', run on by the hall' : nt ? ', with a turnaround' : ''}</dd></dl><p class="muted small">${say}${ran} A ramp is laid where the road runs straight on about 140 m past the hall, or meets a road that turns away from the building 46 to 150 m past it.</p>`;
     }
     const F = FORECOURTS[f.scheme];
     // v0.72: and its turnaround, if only one road reaches it
