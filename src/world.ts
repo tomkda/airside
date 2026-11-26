@@ -69,7 +69,7 @@ export interface Way { id: number; kind: WayKind; a: Pt; b: Pt; cls: number; lan
   /** v0.64: it passes over whatever it crosses, joining the network only at its two ends (a flyover's last piece) */
   bridge?: number;
   /** v0.64: on a forecourt's frontage road: how its deck is reached (`FORECOURTS` in frontage.ts) */
-  scheme?: 'corner' | 'flyover' | 'trumpet' | 'none' }
+  scheme?: 'corner' | 'flyover' | 'trumpet' | 'slip' | 'none' }
 /** v0.28: one deck ramp's geometry, all on its approach road's frame. `u` runs along the approach road away from the
  *  frontage and `n` across it towards the side the ramp is on; `h` is the road's half width. T (on the road's
  *  centreline) is where the taper starts, P where the full lane begins, N the nose of the gore, where the ramp parts

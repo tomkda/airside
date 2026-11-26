@@ -97,6 +97,14 @@ const runway = w => w.runways.push({ id: w.nextId++, a: { x: 1900, y: 2300 }, b:
       check('the deck is level over the kerb and its ramps are at grade where they join the road', dk.zs[0] === 0 && dk.zs[dk.zs.length - 1] === 0 && Math.max(...dk.zs) === 1);
       const sim = flyDay(w, 'a day on the slip ramps'); check('and a day flies on it with 0 missed and 0 stranded', sim.stats.missed === 0 && sim.stats.stranded === 0 && sim.stats.paxDep > 1000);
       for (const r of w.ways) if (r.kind === 'road') r.lanes = 2; const d2 = derive(w); check('a two-lane road gets them too', rgs(d2).length === 2 && rgs(d2).every(q => q.path)); }
+    // v0.77: a through road parallel to the hall but too far off to be its frontage, and too near for a ramp on the links
+    for (const y of [2940, 2980, 3020]) { const w = base(); R(w, 14).a = { x: 2200, y: 5700 }; R(w, 14).b = { x: 2200, y }; R(w, 15).a = { x: 2200, y }; R(w, 15).b = { x: 3900, y }; R(w, 16).a = { x: 3900, y }; R(w, 16).b = { x: 3900, y: 5700 };
+      const d = derive(w); const g = rgs(d); const f = d.autoRoads.find(q => q.fore === 'face'); const dk = deck(d);
+      console.log('a parallel road ' + (y - 2870) + ' m off the hall:', f ? f.scheme : 'no forecourt', '|', g.length, 'ramps |', d.terminals.map(t => t.name + (t.active ? ' open' : ' closed')).join(', '));
+      check('a through road ' + (y - 2870) + ' m off the hall: the forecourt is laid with slip ramps from that road, one up and one down, each leaving it on the hall side and landing on the frontage road', !!f && f.scheme === 'slip' && g.length === 2 && g.every(q => q.path && Math.abs(q.T.y - y) < 0.1 && q.n.y < -0.9 && Math.abs(q.D.y - f.a.y) < 0.1) && g.filter(q => q.up).length === 1 && d.terminals[0].active && noRamp(d) === 0);
+      const link = d.autoRoads.filter(q => q.fore === 'link');
+      check('each is at deck height where it crosses its link', link.length === 2 && link.every(l => dk.pts.some((p, i) => i > 0 && (p.x - l.a.x) * (dk.pts[i - 1].x - l.a.x) <= 0 && p.y > f.a.y + 4 && dk.zs[i] >= 0.99 && dk.zs[i - 1] >= 0.99)));
+      if (y === 2980) { const sim = flyDay(w, 'a day on slip ramps from a parallel road'); check('and a day flies on it with 0 missed and 0 stranded', sim.stats.missed === 0 && sim.stats.stranded === 0 && sim.stats.paxDep > 1000); } }
     // roads that turn away at each end of the frontage
     { const w = base(); R(w, 14).b = { x: 2780, y: 2900 }; R(w, 15).a = { x: 2780, y: 2900 }; R(w, 15).b = { x: 3320, y: 2900 }; R(w, 16).a = { x: 3320, y: 2900 };
       const d = derive(w); const g = rgs(d);

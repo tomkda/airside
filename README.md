@@ -37,7 +37,11 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.76)
+## What's in the alpha (v0.77)
+
+- **Ramps from a road that runs past (v0.77):** a road drawn parallel to a hall but 55 to about 170 m off its face is too far to be its frontage, so the hall lays its own forecourt; but the links to that road were too short for a ramp, and the deck had none. The hall now lays a slip ramp from the passing road itself: it leaves that road on the hall's side well out past the building, climbs beside it, and swings across at deck height, over the link and the corner, to land on the frontage road. Up at one end and down at the other, so traffic passes the doors with the kerb on its right. The hall's inspector calls the forecourt Slip ramps.
+
+  ![Slip ramps from a road running past 110 m off the hall](docs/shots/v077-parallel-slip.png)
 
 - **Ramps along a curved frontage road (v0.76):** the ramps of v0.73 were laid only along a straight road past a straight hall. They now follow a road that curves, and serve a bent hall: a slip ramp keeps its distance off the curve while it climbs and swings back over it at deck height; where the roads at the ends of a curved frontage turn away, a ramp is laid inside each corner and lands on the curve. Before, the deck over a curved road simply came down along it.
 
