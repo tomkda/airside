@@ -8,6 +8,7 @@ const entry = `
 import { Sim } from './src/sim';
 import { derive } from './src/world';
 import { sampleWorld } from './src/sample';
+import { planTerminal } from './src/terminalplan';
 let failed = 0; const check = (name, ok) => { if (!ok) { failed++; console.log('   FAIL: ' + name); } };
 const R = (w, id) => w.ways.find(q => q.id === id);
 const bare = w => { w.rounds = []; w.zones = w.zones.filter(z => z.type !== 'parking'); };
@@ -33,6 +34,9 @@ const layouts = [
   ['a drawn frontage fed from its middle, 250 m each way', w => { bare(w); w.ways = w.ways.filter(q => q.id !== 16); R(w, 14).a = { x: 3050, y: 5700 }; R(w, 14).b = { x: 3050, y: 2900 }; R(w, 15).a = { x: 2500, y: 2900 }; R(w, 15).b = { x: 3600, y: 2900 }; }],
   ['a drawn frontage no longer than the hall, fed from its middle', w => { bare(w); w.ways = w.ways.filter(q => q.id !== 16); R(w, 14).a = { x: 3050, y: 5700 }; R(w, 14).b = { x: 3050, y: 2900 }; R(w, 15).a = { x: 2840, y: 2900 }; R(w, 15).b = { x: 3260, y: 2900 }; }],
   ['a drawn frontage that stops dead at the east end of the hall', w => { bare(w); w.ways = w.ways.filter(q => q.id !== 16); R(w, 14).a = { x: 2400, y: 5700 }; R(w, 14).b = { x: 2400, y: 2900 }; R(w, 15).a = { x: 2400, y: 2900 }; R(w, 15).b = { x: 3260, y: 2900 }; }],
+  ['a drawn frontage whose approach roads turn away 20 m past each end of the hall', w => { bare(w); R(w, 14).a = { x: 2860, y: 5700 }; R(w, 14).b = { x: 2860, y: 2900 }; R(w, 15).a = { x: 2860, y: 2900 }; R(w, 15).b = { x: 3240, y: 2900 }; R(w, 16).a = { x: 3240, y: 2900 }; R(w, 16).b = { x: 3240, y: 5700 }; }],
+  ['a drawn frontage whose approach roads turn away at the very ends of the hall', w => { bare(w); R(w, 14).a = { x: 2880, y: 5700 }; R(w, 14).b = { x: 2880, y: 2900 }; R(w, 15).a = { x: 2880, y: 2900 }; R(w, 15).b = { x: 3220, y: 2900 }; R(w, 16).a = { x: 3220, y: 2900 }; R(w, 16).b = { x: 3220, y: 5700 }; }],
+  ['a drawn frontage whose approach roads turn away 40 m past each end of the hall', w => { bare(w); R(w, 14).a = { x: 2840, y: 5700 }; R(w, 14).b = { x: 2840, y: 2900 }; R(w, 15).a = { x: 2840, y: 2900 }; R(w, 15).b = { x: 3260, y: 2900 }; R(w, 16).a = { x: 3260, y: 2900 }; R(w, 16).b = { x: 3260, y: 5700 }; }],
   ['the sample with its hall turned 12 degrees', w => hall(w, z => { z.rot = 12 * Math.PI / 180; })],
   ['the sample with its hall turned -20 degrees', w => hall(w, z => { z.rot = -20 * Math.PI / 180; })],
   ['the sample with its hall bent', w => hall(w, z => { z.bend = 30; })],
@@ -61,10 +65,26 @@ for (const [name, edit, expect] of layouts) {
   if (dk && g.length === 2 && flat === 0) check(name + ': the deck is at grade where its ramps leave their roads and level between', (f?.scheme === 'trumpet' ? [dk.zs[0], dk.zs[dk.zs.length - 1]].sort().join() === '0,1' : dk.zs[0] === 0 && dk.zs[dk.zs.length - 1] === 0) && Math.max(...dk.zs) === 1);   // (a trumpet's deck stays level at its far end, where it is a turning head)
 }
 console.log(two + ' of ' + layouts.length + ' layouts have a built ramp up and a built ramp down');
-check('26 of the 27 layouts have both ramps (' + two + ')', two >= 26);
+check('all the layouts but one have both ramps (' + two + ' of ' + layouts.length + ')', two >= layouts.length - 1);
 // a day's flying on four of them, one of each kind of ramp
 for (const i of [0, 4, 7, 15]) { const [name, edit] = layouts[i]; const w = sampleWorld(); edit(w); const sim = new Sim(w, 7); sim.relayout(); let ms = 0, st = 0, px = 0; sim.onDayEnd = r => { ms += r.stats.missed; st += r.stats.stranded; px += r.stats.paxDep; }; sim.startDay(); while (sim.day < 1) sim.step(0.25);
   console.log('   a day on ' + name + ': departing', px, 'missed', ms, 'stranded', st); check('a day on ' + name + ' flies with 0 missed and 0 stranded', ms === 0 && st === 0 && px > 1000); }
+// v0.81: a terminal facing each way (its airside to the north, east, south, west), on bare ground: a road drawn through
+// along the hall's landside face, and one running past 110 m off it
+for (const air of ['n', 'e', 's', 'w']) for (const off of [27, 110]) {
+  const w = sampleWorld(); w.zones = []; w.sites = []; w.rounds = []; w.ways = [];
+  const site = { id: w.nextId++, x: 4200, y: 3600, w: air === 'n' || air === 's' ? 540 : 290, h: air === 'n' || air === 's' ? 290 : 540 }; w.sites.push(site);
+  const parts = planTerminal(site, air); const ids = parts.map(() => w.nextId++);
+  parts.forEach((q, i) => w.zones.push({ id: ids[i], type: q.type, level: q.level, ...q.rect, tier: 0, site: site.id, cls: q.type === 'concourse' ? 2 : undefined,
+    pair: q.type === 'checkin' ? ids[parts.findIndex(o => o.type === 'claim')] : q.type === 'claim' ? ids[parts.findIndex(o => o.type === 'checkin')] : undefined }));
+  const h = w.zones.find(z => z.type === 'checkin'); const out = { n: { x: 0, y: 1 }, s: { x: 0, y: -1 }, e: { x: -1, y: 0 }, w: { x: 1, y: 0 } }[air]; const al = { x: -out.y, y: out.x };
+  const c = { x: h.x + h.w / 2, y: h.y + h.h / 2 }; const half = (out.x ? h.w : h.h) / 2; const P = t => ({ x: c.x + out.x * (half + off) + al.x * t, y: c.y + out.y * (half + off) + al.y * t });
+  road(w, P(-900), P(900)); road(w, P(-900), { x: P(-900).x + out.x * 60, y: P(-900).y + out.y * 60 });
+  const d = derive(w); const g = d.autoRoads.filter(q => q.rg).map(q => q.rg); const dk = d.decks.find(q => !q.branch); const f = d.autoRoads.find(q => q.fore === 'face');
+  const name = 'airside to the ' + { n: 'north', e: 'east', s: 'south', w: 'west' }[air] + ', a road ' + (off === 27 ? 'drawn along the landside face' : 'running past 110 m off it');
+  console.log(name + ':', f ? 'forecourt ' + f.scheme : dk ? 'drawn frontage' : 'no deck', '|', g.map(q => (q.up ? 'up' : 'down') + (q.path ? ' slip' : ' other')).join(', ') || 'no ramp');
+  check(name + ': one deck with a slip ramp up and a slip ramp down, on the hall side of the road', !!dk && !dk.flat && g.length === 2 && g.filter(q => q.up).length === 1 && g.every(q => q.path && q.n.x * out.x + q.n.y * out.y < -0.9));
+}
 console.log(failed ? failed + ' CHECK(S) FAILED' : 'all checks passed'); if (failed) process.exit(1);
 `;
 const dir = mkdtempSync(join(tmpdir(), 'forecourts-')); const out = join(dir, 'run.mjs');
