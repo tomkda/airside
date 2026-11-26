@@ -37,7 +37,11 @@ There is no server. The build is one self-contained HTML file (~840 KB), with th
 | Time | `Space` pause · speed buttons 1× / 4× / 16× / 60× (game minutes per second) |
 | Edit | `Ctrl`+`Z` undo · `Ctrl`+`Shift`+`Z` redo · with the Pier tool set to "A path", click each corner and press `Enter` · drag a selected module to move it, or one of its grips to stretch, swing, resize, (the filled middle grip on a pier or a hall) bend or (the diamond grips on a pier end) taper it (everything follows as you drag; `Esc` puts it back) · drag a selected road's middle handle to bend it, or an end handle to move it · `Del` demolish · inspector `−`/`+` nudges unit counts · click a lot inside a concourse to see its scores |
 
-## What's in the alpha (v0.77)
+## What's in the alpha (v0.78)
+
+- **The hall's roof over the departures kerb (v0.78, 3D model only):** a departures kerb had the same low canopy as any other. Over it the check-in hall's own roof now reaches out at eaves height, as far as the planted island between the pull-in lanes and the through lanes, carried on tall paired columns that stand in that island with a beam back to the building, and with a glazed screen hung from its edge. It takes the terminal's architecture (roof, edge and column colours). Arrivals kerbs and single-level kerbs keep the low canopy.
+
+  ![The hall roof reaching over the departures kerb](docs/shots/v078-kerb-roof.png)
 
 - **Ramps from a road that runs past (v0.77):** a road drawn parallel to a hall but 55 to about 170 m off its face is too far to be its frontage, so the hall lays its own forecourt; but the links to that road were too short for a ramp, and the deck had none. The hall now lays a slip ramp from the passing road itself: it leaves that road on the hall's side well out past the building, climbs beside it, and swings across at deck height, over the link and the corner, to land on the frontage road. Up at one end and down at the other, so traffic passes the doors with the kerb on its right. The hall's inspector calls the forecourt Slip ramps.
 
